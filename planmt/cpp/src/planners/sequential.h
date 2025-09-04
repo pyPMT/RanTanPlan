@@ -1,15 +1,26 @@
 #pragma once
 
+#include <z3++.h>
+#include <memory>
+#include <vector>
+
 #include "../problem/problem.h"
 #include "../problem/plan.h"
 #include "../encoders/base_encoder.h"
 #include "propagators/propagator_strategy.h"
 #include "propagators/propagator_factory.h"
-#include <z3++.h>
-#include <memory>
+#include "../util/stats.h"
 
 // This class is able to search for a plan in a sequential manner by using an encoder.
 namespace planmt {
+
+enum class PlanningCategory {
+    SINGLE  = 0,
+    TOP_K   = 1, 
+    TOP_Q   = 2,
+    DIVERSE = 3
+};
+
 
 class SequentialPlanner {
 public:
@@ -22,6 +33,9 @@ public:
 
     // Search for a plan and return it
     Plan search();
+
+    // Search for k plans 
+    std::vector<Plan> search(int k, PlanningCategory category);
     
     // Check if the last search found a solution (even if empty plan)
     bool solution_found() const { return solution_found_; }
@@ -33,6 +47,7 @@ public:
     PropagatorType get_propagator_type() const;
 
 private:
+    int formula_length{0}; // Number of steps currently encoded in the formula
     const Problem& problem_;
     BaseEncoder& encoder_;
     z3::context& ctx_;
@@ -47,6 +62,15 @@ private:
     
     // Collect comprehensive statistics
     void collect_statistics();
+
+    // Construct a step in the formula
+    void construct_step(int timestep);
+
+    // Construct a plan from the current model
+    Plan construct_plan(int timestep);
+
+    // Forbid-Plan loop
+    std::vector<Plan> forbid_loop(const std::vector<Plan>& previous_plans, int k);
 };
 
 } // namespace planmt

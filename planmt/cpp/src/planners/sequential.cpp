@@ -1,4 +1,9 @@
-#include "sequential.h"
+#include <fstream>
+#include <iostream>
+#include <chrono>
+#include <unordered_map>
+#include <iomanip>
+
 #include "../config/config.h"
 #include "../encoders/parallelism/graph.h"
 #include "../encoders/parallelism/interference_analysis.h"
@@ -6,27 +11,31 @@
 #include "propagators/propagator_factory.h"
 #include "../util/memory_tracker.h"
 #include "../util/stats.h"
-#include <fstream>
-#include <iostream>
-#include <chrono>
-#include <unordered_map>
-#include <iomanip>
+
+#include "sequential.h"
+
 
 namespace planmt {
 
-    SequentialPlanner::SequentialPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx) 
-        : problem_(problem), encoder_(encoder), ctx_(ctx), solver_(ctx),
-          propagator_strategy_(std::make_unique<NullPropagator>()) {
-        // Initialize planner with the given problem, encoder, and Z3 context
-        // Uses null propagator by default (no propagation)
-    }
+SequentialPlanner::SequentialPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx): 
+    problem_(problem), 
+    encoder_(encoder), 
+    ctx_(ctx), 
+    solver_(ctx),
+    propagator_strategy_(std::make_unique<NullPropagator>()) {
+    // Initialize planner with the given problem, encoder, and Z3 context
+    // Uses null propagator by default (no propagation)
+}
 
-    SequentialPlanner::SequentialPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx, 
-                                       std::unique_ptr<PropagatorStrategy> propagator) 
-        : problem_(problem), encoder_(encoder), ctx_(ctx), solver_(ctx),
-          propagator_strategy_(propagator ? std::move(propagator) : std::make_unique<NullPropagator>()) {
-        // Initialize planner with the given problem, encoder, Z3 context, and propagator strategy
-    }
+SequentialPlanner::SequentialPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx, 
+    std::unique_ptr<PropagatorStrategy> propagator): 
+    problem_(problem), 
+    encoder_(encoder), 
+    ctx_(ctx), 
+    solver_(ctx),
+    propagator_strategy_(propagator ? std::move(propagator) : std::make_unique<NullPropagator>()) {
+    // Initialize planner with the given problem, encoder, Z3 context, and propagator strategy
+}
 
 void SequentialPlanner::debug_output_constraints() {
     // Output current constraints from the solver to SMT2 file
@@ -61,7 +70,7 @@ void SequentialPlanner::collect_statistics() {
 
 Plan SequentialPlanner::search() {
     auto& config = Config::instance();
-    auto& stats = Stats::instance();
+    auto& stats  = Stats::instance();
     
     if (config.is_info()) {
         std::cout << "Starting search with propagator: " << propagator_strategy_->get_name() << std::endl;
@@ -69,7 +78,6 @@ Plan SequentialPlanner::search() {
     
     // Reset solution found flag and statistics
     solution_found_ = false;
-    //stats.clear();
 
     // Add initial state constraints (these are invariant)
     solver_.add(*encoder_.encode_initial_state());
@@ -91,34 +99,15 @@ Plan SequentialPlanner::search() {
             }
             break;
         }
+
         auto step_start = std::chrono::high_resolution_clock::now();
         
         // Time formula creation
         auto formula_start = std::chrono::high_resolution_clock::now();
         
         // Add constraints for this timestep (incremental)
-        if (timestep > 0) {
-            solver_.add(*encoder_.encode_actions(timestep-1));
-            solver_.add(*encoder_.encode_frames(timestep-1));
-            
-            // Add symmetry breaking constraints if enabled
-            if (config.symmetry.detect_symmetries) {
-                solver_.add(*encoder_.encode_symmetries(timestep-1));
-            }
-            
-            // Only add parallelism constraints if not using ForallPropagator or LazyForallPropagator
-            // (ForallPropagator and LazyForallPropagator handle interference dynamically via propagation)
-            if (get_propagator_type() != PropagatorType::FORALL
-                && get_propagator_type() != PropagatorType::LAZY_FORALL
-                && get_propagator_type() != PropagatorType::HEURISTIC
-                && get_propagator_type() != PropagatorType::EXISTS) {
-                solver_.add(*encoder_.encode_parallelism(timestep-1));
-            }
-            
-            // Register variables for timestep after constraints are added
-            propagator_strategy_->register_timestep_variables(timestep);
-        }
-        
+        construct_step(timestep);
+
         // Make the goal literal imply the goal at this timestep
         std::string goal_var_name = "goal_at_" + std::to_string(timestep);
         z3::expr goal_literal = ctx_.bool_const(goal_var_name.c_str());
@@ -135,8 +124,6 @@ Plan SequentialPlanner::search() {
         if (config.is_info()) {
             std::cout << "T" << timestep;
         }
-
-        //debug_output_constraints(); // Output initial constraints
 
         // Time solving
         auto solve_start = std::chrono::high_resolution_clock::now();
@@ -163,58 +150,24 @@ Plan SequentialPlanner::search() {
             std::cout << std::endl;
         }
         
-        if (result == z3::sat) {
-            if (config.is_info()) {
-                std::cout << "\n*** PLAN FOUND at timestep " << timestep << " (total time: " << total_time << "s) ***" << std::endl;
-            }
-            
-            // Mark that we found a solution
-            solution_found_ = true;
-            
-            // Get and output the model to a file
-            z3::model model = solver_.get_model();
-            /*std::ofstream model_file("plan_model.txt");
-            if (model_file.is_open()) {
-                model_file << "Plan found at timestep " << timestep << std::endl;
-                model_file << model << std::endl;
-                model_file.close();
-                std::cout << "Model saved to plan_model.txt" << std::endl;
-            }*/
-            
-            try {
-                // Extract plan from model using encoder
-                Plan plan = encoder_.extract_plan(model, timestep);
-                //if (config.is_debug()) {
-                //    std::cout << plan.to_string() << std::endl;
-                //}
-                
-                // Record successful solve
-                stats.set("planner.plan_length", plan.length());
-                stats.set("planner.solution_timestep", timestep);
-                collect_statistics();
-                
-                // Clean up propagator before returning
-                propagator_strategy_->cleanup();
-                return plan; // Return the extracted plan
-                
-            } catch (const std::exception& e) {
-                if (config.is_info()) {
-                    std::cout << "ERROR during plan extraction: " << e.what() << std::endl;
+        switch (result) {
+            case z3::sat: {
+                    if (config.is_info()) {
+                        std::cout << "\n*** PLAN FOUND at timestep " << timestep << " (total time: " << total_time << "s) ***" << std::endl;
+                    }
+                    
+                    // Mark that we found a solution
+                    solution_found_ = true;
+                    return construct_plan(timestep); // Extract and return the plan
+                    break;
                 }
+            case z3::unsat:
+                break; // Continue to next timestep
+            default: {
                 if (config.is_info()) {
-                    std::cout << "Returning empty plan." << std::endl;
+                    std::cout << "Solver returned unknown result at timestep " << timestep << std::endl;
                 }
-                // Collect statistics even on error
-                collect_statistics();
-                propagator_strategy_->cleanup();
-                return Plan(); // Return empty plan on error
-            }
-            
-        } else if (result == z3::unsat) {
-            // let's try next iteration
-        } else {
-            if (config.is_info()) {
-                std::cout << "Solver returned unknown result at timestep " << timestep << std::endl;
+                break;
             }
         }
     }
@@ -233,6 +186,34 @@ Plan SequentialPlanner::search() {
 }
 
 
+std::vector<Plan> SequentialPlanner::search(int k, PlanningCategory category) {
+    // Search for the initial plan and construct the basic formula.
+    std::vector<Plan> ret_plans(k, Plan());
+    auto initial_plan = search();
+
+    // Return the plan if the category is SINGLE
+    switch (category) {
+        case PlanningCategory::TOP_K: {
+            ret_plans = forbid_loop(std::vector<Plan>(1, initial_plan), k);
+            break;
+        }
+
+        case PlanningCategory::TOP_Q:
+        case PlanningCategory::DIVERSE:
+            break;
+
+        default:
+        case PlanningCategory::SINGLE:
+            ret_plans.assign(0, initial_plan);
+    }
+    
+    // TODO: Remove empty plans from the return vector.
+
+    // Now we need need to think about how to find multiple plans.
+    return ret_plans; // Return empty plan
+}
+
+
 void SequentialPlanner::set_propagator_strategy(PropagatorType type) {
     propagator_strategy_ = PropagatorFactory::create_strategy(type, solver_, problem_, encoder_);
 }
@@ -247,6 +228,99 @@ std::string SequentialPlanner::get_propagator_strategy_name() const {
 
 PropagatorType SequentialPlanner::get_propagator_type() const {
     return propagator_strategy_->get_type();
+}
+
+void SequentialPlanner::construct_step(int timestep) {
+    auto& config = Config::instance();
+    
+    // Add constraints for this timestep (incremental)
+    if (timestep <= 0) { return; }
+
+    solver_.add(*encoder_.encode_actions(timestep-1));
+    solver_.add(*encoder_.encode_frames(timestep-1));
+    
+    // Add symmetry breaking constraints if enabled
+    if (config.symmetry.detect_symmetries) {
+        solver_.add(*encoder_.encode_symmetries(timestep-1));
+    }
+    
+    // Only add parallelism constraints if not using ForallPropagator or LazyForallPropagator
+    // (ForallPropagator and LazyForallPropagator handle interference dynamically via propagation)
+    if (get_propagator_type()    != PropagatorType::FORALL
+        && get_propagator_type() != PropagatorType::LAZY_FORALL
+        && get_propagator_type() != PropagatorType::HEURISTIC
+        && get_propagator_type() != PropagatorType::EXISTS) {
+        solver_.add(*encoder_.encode_parallelism(timestep-1));
+    }
+    
+    // Register variables for timestep after constraints are added
+    propagator_strategy_->register_timestep_variables(timestep);
+
+    formula_length = timestep + 1; // Update formula length
+}
+
+Plan SequentialPlanner::construct_plan(int timestep) {
+    auto& config = Config::instance();
+    auto& stats  = Stats::instance();
+    
+    Plan plan = Plan();
+    try {
+        // Get and output the model to a file
+        z3::model model = solver_.get_model();
+        // Extract plan from model using encoder
+        plan = encoder_.extract_plan(model, timestep);
+        // Record successful solve
+        stats.set("planner.plan_length", plan.length());
+        stats.set("planner.solution_timestep", timestep);    
+    } catch (const std::exception& e) {
+        if (config.is_info()) {
+            std::cout << "ERROR during plan extraction: " << e.what() << std::endl;
+            std::cout << "Returning empty plan." << std::endl;
+        }
+    } 
+
+    collect_statistics();
+    
+    // Clean up propagator before returning
+    propagator_strategy_->cleanup();
+    
+    // Return plan
+    return plan;
+}
+
+std::vector<Plan> SequentialPlanner::forbid_loop(const std::vector<Plan>& previous_plans, int k) {
+    std::vector<Plan> ret_plans(k - static_cast<int>(previous_plans.size()), Plan());
+    auto &var_factory = encoder_.get_variable_factory();
+    
+    z3::expr_vector assumptions(ctx_);
+    for (const auto& plan : previous_plans) {
+        auto &actions = plan.actions();
+        z3::expr_vector literals(ctx_);
+        for (size_t t = 0; t < plan.length(); ++t) {
+            literals.push_back(var_factory.get_action_variable(*actions[t], t));
+        }
+        assumptions.push_back(!z3::mk_and(literals));
+    }
+
+    for (int i = 0; i < k - static_cast<int>(previous_plans.size()); ++i) {
+        z3::check_result result = solver_.check(assumptions);
+        if (result != z3::sat) {
+            break;
+        }
+        // Extract the plan.
+        ret_plans.assign(i, construct_plan(formula_length));
+
+        auto &actions = ret_plans[i].actions();
+        z3::expr_vector literals(ctx_);
+        for (size_t t = 0; t < ret_plans[i].length(); ++t) {
+            literals.push_back(var_factory.get_action_variable(*actions[t], t));
+        }
+        assumptions.push_back(!z3::mk_and(literals));
+    }
+    
+    
+
+    return ret_plans;
 }
 
 } // namespace planmt
