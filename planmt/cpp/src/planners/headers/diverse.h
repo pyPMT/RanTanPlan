@@ -57,6 +57,9 @@ private:
     // Search for plans based on selected forbidding mode.
     std::vector<Plan> produce_plans(size_t k, std::vector<Plan> &planlist, ForbiddingMode mode);
     
+    // Convert a plan to a conjunction of actions.
+    z3::expr convert_plan_to_expr(const Plan& plan) const;
+    
     // Extract plan from model.
     Plan extract_plan(size_t length);
     

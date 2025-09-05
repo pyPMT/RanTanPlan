@@ -1,5 +1,6 @@
 
 #include <iostream>
+#include <set>
 
 #include "planners/headers/propagators/null_propagator.h"
 
@@ -24,13 +25,13 @@ DiversePlanner::DiversePlanner(const Problem& problem, BaseEncoder& encoder, z3:
 
 
 std::vector<Plan> DiversePlanner::search(size_t k, float q) {
-    std::vector<Plan> ret_plans(k, Plan());
+    std::vector<Plan> ret_plans;
     
     // First infer the formula length.
     construct_formula();
     
     // TODO: Get the initial plan to infer the optimal plan lenght?
-    ret_plans[0] = extract_plan(formula_length);
+    ret_plans.push_back(extract_plan(formula_length));
     
     
     // Increase the formula length based on the quality bound q.
@@ -41,16 +42,32 @@ std::vector<Plan> DiversePlanner::search(size_t k, float q) {
     // TODO: Construct behaviour space dimensions and append it to the solver.
     
     // TODO: Now it is time to start generating plans.
-    auto generated_plans = produce_plans(3, ret_plans, ForbiddingMode::PLAN);
+    auto generated_behaviours = produce_plans(k, ret_plans, ForbiddingMode::BEHAVIOUR);
+    ret_plans.insert(ret_plans.end(), generated_behaviours.begin(), generated_behaviours.end());
     
-    // Remove plans with empty actions.
-    ret_plans.erase(std::remove_if(ret_plans.begin(), ret_plans.end(), [](const Plan& p) { return p.length() == 0; }), ret_plans.end());
+    // Start forbidding plans since the required number of plans is less than the generated behaviours.
+    if(ret_plans.size() < k) {
+        auto generated_plans = produce_plans(k-ret_plans.size(), ret_plans, ForbiddingMode::PLAN);
+        ret_plans.insert(ret_plans.end(), generated_plans.begin(), generated_plans.end());
+    }
+    
+
     return ret_plans;
 }
 
 
-std::vector<Plan> produce_plans(size_t k, std::vector<Plan> &planlist, ForbiddingMode mode) {
-    std::vector<Plan> ret_plans(k, Plan());
+std::vector<Plan> DiversePlanner::produce_plans(size_t k, std::vector<Plan> &planlist, ForbiddingMode mode) {
+    
+    std::vector<Plan> ret_plans;
+    
+    // Forbid plans in planlist.
+    z3::expr_vector assumptions(ctx_);
+    for (const auto& plan : planlist) {
+        if (plan.length() == 0) { continue; }
+        assumptions.push_back(!convert_plan_to_expr(plan));
+    }
+    
+    // TODO: Collect behaviours in planlist.
     
     switch (mode) {
         case ForbiddingMode::BEHAVIOUR: {
@@ -59,7 +76,17 @@ std::vector<Plan> produce_plans(size_t k, std::vector<Plan> &planlist, Forbiddin
         }
         
         case ForbiddingMode::PLAN: {
+            // TODO: Use the behaviours generated before to help the search.
             
+            // Start generating the remaming plans.
+            for (size_t i = k; i > 0; i--) {
+                // Check satisfiability.
+                z3::check_result result = solver_.check(assumptions);
+                if (result != z3::sat) { break; }
+                auto plan = extract_plan(formula_length);
+                assumptions.push_back(!convert_plan_to_expr(plan));
+                ret_plans.push_back(plan);
+            }
             break;
         }
             
@@ -68,7 +95,6 @@ std::vector<Plan> produce_plans(size_t k, std::vector<Plan> &planlist, Forbiddin
         }
     }
     
-    ret_plans.erase(std::remove_if(ret_plans.begin(), ret_plans.end(), [](const Plan& p) { return p.length() == 0; }), ret_plans.end());
     return ret_plans;
 }
 
@@ -130,6 +156,18 @@ void DiversePlanner::increment_formula(void) {
     // Increment formula length.
     formula_length += 1;
 }
+
+
+z3::expr DiversePlanner::convert_plan_to_expr(const Plan& plan) const {
+    auto &var_factory = encoder_.get_variable_factory();
+    auto actions = plan.actions();
+    z3::expr_vector literals(ctx_);
+    for (size_t t = 0; t < plan.length(); ++t) {
+        literals.push_back(var_factory.get_action_variable(*actions[t], static_cast<int>(t)));
+    }
+    return z3::mk_and(literals);
+}
+
 
 
 }
