@@ -26,11 +26,11 @@ public:
 
     // Encoding steps
     std::shared_ptr<z3::expr> encode_initial_state() override;
-    std::shared_ptr<z3::expr> encode_actions(int t) override; // Encodes actions layer_idx 
-    std::shared_ptr<z3::expr> encode_frames(int t) override; // Encodes frame axioms for layer_idx to layer_idx+1
-    std::shared_ptr<z3::expr> encode_goal(int t) override;    // Encodes goal conditions at layer_idx
-    std::shared_ptr<z3::expr> encode_parallelism(int t) override; // Encodes parallelism semantics
-    std::shared_ptr<z3::expr> encode_symmetries(int t) override;
+    std::shared_ptr<z3::expr> encode_actions(size_t t) override; // Encodes actions layer_idx
+    std::shared_ptr<z3::expr> encode_frames(size_t t) override; // Encodes frame axioms for layer_idx to layer_idx+1
+    std::shared_ptr<z3::expr> encode_goal(size_t t) override;    // Encodes goal conditions at layer_idx
+    std::shared_ptr<z3::expr> encode_parallelism(size_t t) override; // Encodes parallelism semantics
+    std::shared_ptr<z3::expr> encode_symmetries(size_t t) override;
     
     // Strategy management
     void set_parallelism_strategy(ParallelismFactory::ParallelismType type) override;
@@ -45,7 +45,7 @@ public:
     const ParallelismStrategy* get_parallelism_strategy() const override { return parallelism_strategy_.get(); }
     
     // Plan extraction from Z3 model
-    Plan extract_plan(const z3::model& model, int max_timestep) const override;
+    Plan extract_plan(const z3::model& model, size_t max_timestep) const override;
     
     // Helper functions to convert expressions/effects to Z3 using visitor (implementing base interface)
     std::optional<z3::expr> convert_expression_to_z3(const Expression& expr, int timestep = -1) override;

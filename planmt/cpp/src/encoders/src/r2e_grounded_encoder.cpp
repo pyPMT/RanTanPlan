@@ -177,7 +177,7 @@ void R2EGroundedEncoder::build_prev_mappings() {
     }
 }
 
-std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_actions(int t) {
+std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_actions(size_t t) {
     z3::expr_vector all_constraints(ctx_);
     
     // Add main R2E constraints (equations 1-4 from paper)
@@ -197,13 +197,13 @@ std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_actions(int t) {
         std::make_shared<z3::expr>(z3::mk_and(all_constraints));
 }
 
-std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_frames(int t) {
+std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_frames(size_t t) {
     // R2E has built-in frame semantics through chain variables and linking constraints
     // No additional frame axioms are needed
     return std::make_shared<z3::expr>(ctx_.bool_val(true));
 }
 
-std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_parallelism(int t) {
+std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_parallelism(size_t t) {
     // R2E has built-in parallelism semantics, so we return true (no additional constraints)
     return std::make_shared<z3::expr>(ctx_.bool_val(true));
 }
@@ -492,7 +492,7 @@ int R2EGroundedEncoder::get_global_action_index(const Action* action) const {
     return std::distance(global_action_order_.begin(), it) + 1;  // +1 for 1-based indexing
 }
 
-Plan R2EGroundedEncoder::extract_plan(const z3::model& model, int max_timestep) const {
+Plan R2EGroundedEncoder::extract_plan(const z3::model& model, size_t max_timestep) const {
     Plan plan;
     const auto& config = Config::instance();
 

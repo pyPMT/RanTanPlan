@@ -22,11 +22,11 @@ public:
 
     // Encoding steps
     virtual std::shared_ptr<z3::expr> encode_initial_state() = 0;
-    virtual std::shared_ptr<z3::expr> encode_actions(int t) = 0;
-    virtual std::shared_ptr<z3::expr> encode_frames(int t) = 0;
-    virtual std::shared_ptr<z3::expr> encode_goal(int t) = 0;
-    virtual std::shared_ptr<z3::expr> encode_parallelism(int t) = 0;
-    virtual std::shared_ptr<z3::expr> encode_symmetries(int t) = 0;
+    virtual std::shared_ptr<z3::expr> encode_actions(size_t t) = 0;
+    virtual std::shared_ptr<z3::expr> encode_frames(size_t t) = 0;
+    virtual std::shared_ptr<z3::expr> encode_goal(size_t t) = 0;
+    virtual std::shared_ptr<z3::expr> encode_parallelism(size_t t) = 0;
+    virtual std::shared_ptr<z3::expr> encode_symmetries(size_t t) = 0;
     
     // Parallelism management
     virtual void set_parallelism_strategy(ParallelismFactory::ParallelismType type) = 0;
@@ -43,7 +43,7 @@ public:
     virtual std::optional<z3::expr> convert_effect_to_z3(const EffectExpression& effect, int timestep) = 0;
     
     // Plan extraction from Z3 model
-    virtual Plan extract_plan(const z3::model& model, int max_timestep) const = 0;
+    virtual Plan extract_plan(const z3::model& model, size_t max_timestep) const = 0;
 };
 
 } // namespace planmt

@@ -42,7 +42,7 @@ void ChainedGroundedEncoder::build_variable_modifiers_index() {
 }
 
 
-std::shared_ptr<z3::expr> ChainedGroundedEncoder::encode_actions(int t) {
+std::shared_ptr<z3::expr> ChainedGroundedEncoder::encode_actions(size_t t) {
     z3::expr_vector all_constraints(ctx_);
     auto& stats = Stats::instance();
     

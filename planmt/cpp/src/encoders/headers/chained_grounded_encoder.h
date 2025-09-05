@@ -20,7 +20,7 @@ public:
     ChainedGroundedEncoder(const Problem& problem, z3::context& ctx);
     
     // Override action encoding to implement chained effects
-    std::shared_ptr<z3::expr> encode_actions(int t) override;
+    std::shared_ptr<z3::expr> encode_actions(size_t t) override;
 
 private:
     // Map from non-Boolean variable to actions that modify it  

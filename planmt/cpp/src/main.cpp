@@ -21,6 +21,9 @@
 #include "arpg/headers/arpg.h"
 #include "abstraction/headers/achievers_analysis.h"
 
+#include "planners/headers/diverse.h"
+#include "theories/headers/diversity/diversity_base_dimension.h"
+
 
 // Function to print the complete planning problem structure using enhanced planning classes
 PlanGenerationResult solve_planning_problem(const planmt::Problem& problem) {
@@ -43,54 +46,66 @@ PlanGenerationResult solve_planning_problem(const planmt::Problem& problem) {
         std::cout << "Using parallelism strategy: " << encoder->get_parallelism_strategy_name() << std::endl;
     }
     
+    // TODO: We need a flag for selecting the planner category.
+    // TODO: We need a flag to define how many plans to generate.
+    // TODO: We need another flag to select which dimensions to add
+    std::vector<planmt::DiversityDimension> dims;
+    
     // Create planner and set propagator
-    planmt::SequentialPlanner planner(problem, *encoder, ctx);
-    planner.set_propagator_strategy(config.propagators.type);
-    if (config.is_info()) {
-        std::cout << "Using propagator strategy: " << planner.get_propagator_strategy_name() << std::endl;
-    }
-
-    // For development only.
-    std::vector<planmt::Plan> plans = planner.search(5, planmt::PlanningCategory::TOP_K);
-    std::cout << "Found " << plans.size() << " plans." << std::endl;
-
-
-    // Call planner.search() and get the result
-    planmt::Plan plan = planner.search();
-    if (planner.solution_found()) {
-        // Plan found (even if empty) - populate the result
-        result.set_status(PlanGenerationResult_Status_SOLVED_SATISFICING);
-        
-        // Convert plan to protobuf and set it in the result
-        *result.mutable_plan() = plan.to_protobuf();
-        
-        if (config.is_info()) {
-            log_message = result.add_log_messages();
-            log_message->set_level(LogMessage_LogLevel_INFO);
-            log_message->set_message("Plan found with " + std::to_string(plan.length()) + " actions.");
-        }
-    } else {
-        // No plan found
-        result.set_status(PlanGenerationResult_Status_UNSOLVABLE_INCOMPLETELY);
-        if (config.is_info()) {
-            log_message = result.add_log_messages();
-            log_message->set_level(LogMessage_LogLevel_INFO);
-            log_message->set_message("No plan found within the search limit.");
-        }
-    }
+    planmt::DiversePlannerCfg cfg(config.propagators.type, false, 100);
+    planmt::DiversePlanner planner(problem, *encoder, ctx, cfg, dims);
     
-    if (config.is_verbose()) {
-        log_message = result.add_log_messages();
-        log_message->set_level(LogMessage_LogLevel_INFO);
-        log_message->set_message("Finished solving the problem.");
-    }
+    auto plans = planner.search(5, 1.0);
     
-    // Add memory tracking information to result
-    double current_memory = planmt::MemoryTracker::instance().get_current_memory_mb();
     
-    log_message = result.add_log_messages();
-    log_message->set_level(LogMessage_LogLevel_INFO);
-    log_message->set_message("Memory usage - Current: " + std::to_string(current_memory) + " MB");
+    
+//    planmt::SequentialPlanner planner(problem, *encoder, ctx);
+//    planner.set_propagator_strategy(config.propagators.type);
+//    if (config.is_info()) {
+//        std::cout << "Using propagator strategy: " << planner.get_propagator_strategy_name() << std::endl;
+//    }
+//
+//    // For development only.
+//    std::vector<planmt::Plan> plans = planner.search(5, planmt::PlanningCategory::TOP_K);
+//    std::cout << "Found " << plans.size() << " plans." << std::endl;
+//
+//
+//    // Call planner.search() and get the result
+//    planmt::Plan plan = planner.search();
+//    if (planner.solution_found()) {
+//        // Plan found (even if empty) - populate the result
+//        result.set_status(PlanGenerationResult_Status_SOLVED_SATISFICING);
+//        
+//        // Convert plan to protobuf and set it in the result
+//        *result.mutable_plan() = plan.to_protobuf();
+//        
+//        if (config.is_info()) {
+//            log_message = result.add_log_messages();
+//            log_message->set_level(LogMessage_LogLevel_INFO);
+//            log_message->set_message("Plan found with " + std::to_string(plan.length()) + " actions.");
+//        }
+//    } else {
+//        // No plan found
+//        result.set_status(PlanGenerationResult_Status_UNSOLVABLE_INCOMPLETELY);
+//        if (config.is_info()) {
+//            log_message = result.add_log_messages();
+//            log_message->set_level(LogMessage_LogLevel_INFO);
+//            log_message->set_message("No plan found within the search limit.");
+//        }
+//    }
+//    
+//    if (config.is_verbose()) {
+//        log_message = result.add_log_messages();
+//        log_message->set_level(LogMessage_LogLevel_INFO);
+//        log_message->set_message("Finished solving the problem.");
+//    }
+//    
+//    // Add memory tracking information to result
+//    double current_memory = planmt::MemoryTracker::instance().get_current_memory_mb();
+//    
+//    log_message = result.add_log_messages();
+//    log_message->set_level(LogMessage_LogLevel_INFO);
+//    log_message->set_message("Memory usage - Current: " + std::to_string(current_memory) + " MB");
 
     return result;
 }

@@ -25,9 +25,9 @@ public:
                        ActionOrdering ordering = ActionOrdering::ARPG);
     
     // Override encoding methods to implement R2E semantics
-    std::shared_ptr<z3::expr> encode_actions(int t) override;
-    std::shared_ptr<z3::expr> encode_frames(int t) override;
-    std::shared_ptr<z3::expr> encode_parallelism(int t) override;
+    std::shared_ptr<z3::expr> encode_actions(size_t t) override;
+    std::shared_ptr<z3::expr> encode_frames(size_t t) override;
+    std::shared_ptr<z3::expr> encode_parallelism(size_t t) override;
 
 private:
     ActionOrdering action_ordering_;
@@ -85,7 +85,7 @@ private:
     int get_global_action_index(const Action* action) const;
     
     // Plan extraction for R2E semantics
-    Plan extract_plan(const z3::model& model, int max_timestep) const override;
+    Plan extract_plan(const z3::model& model, size_t max_timestep) const override;
     
     // Debug method
     void debug_print_structures() const;

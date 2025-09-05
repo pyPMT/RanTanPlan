@@ -198,6 +198,13 @@ src/util/src/memory_tracker.cpp
 src/util/src/stats.cpp
 )
 
+set(DIVERSITY_SRCS
+src/theories/headers/diversity/diversity_base_dimension.h
+src/theories/headers/diversity/behaviour_space.h
+src/theories/src/diversity/diversity_base_dimension.cpp
+src/theories/src/diversity/behaviour_space.cpp
+)
+
 add_library(pmtlib STATIC 
     ${ABSTRACTION_SRCS}
     ${ARPG_SRCS}
@@ -207,6 +214,7 @@ add_library(pmtlib STATIC
     ${PLANNERS_SRCS}
     ${SYMMETRIES_SRCS}
     ${UTIL_SRCS}
+    ${DIVERSITY_SRCS}
 )
 
 
@@ -237,6 +245,7 @@ ${CMAKE_CURRENT_SOURCE_DIR}/src/encoders/headers
 ${CMAKE_CURRENT_SOURCE_DIR}/src/planners/headers
 ${CMAKE_CURRENT_SOURCE_DIR}/src/symmetries/headers
 ${CMAKE_CURRENT_SOURCE_DIR}/src/util/headers
+${CMAKE_CURRENT_SOURCE_DIR}/src/theories/headers
 ${PROTO_OUT_DIR}
 )
 

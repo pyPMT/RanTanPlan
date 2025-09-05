@@ -20,8 +20,8 @@ public:
     ReifiedGroundedEncoder(const Problem& problem, z3::context& ctx);
 
     // TODO: Override encoding methods to add reification
-    std::shared_ptr<z3::expr> encode_actions(int t) override;
-    std::shared_ptr<z3::expr> encode_goal(int t) override;
+    std::shared_ptr<z3::expr> encode_actions(size_t t) override;
+    std::shared_ptr<z3::expr> encode_goal(size_t t) override;
     
 private:
     // TODO: Add reification data structures and methods

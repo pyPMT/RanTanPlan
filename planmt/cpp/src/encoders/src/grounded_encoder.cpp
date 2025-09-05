@@ -108,7 +108,7 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_initial_state() {
     return std::make_shared<z3::expr>(initial_state_formula);
 }
 
-std::shared_ptr<z3::expr> GroundedEncoder::encode_actions(int t) {
+std::shared_ptr<z3::expr> GroundedEncoder::encode_actions(size_t t) {
     z3::expr_vector action_constraints(ctx_);
     auto& stats = Stats::instance();
 
@@ -166,7 +166,7 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_actions(int t) {
  * axioms for the transition from time t to t+1. Returns true if no fluents
  * exist in the EPC index.
  */
-std::shared_ptr<z3::expr> GroundedEncoder::encode_frames(int t) {
+std::shared_ptr<z3::expr> GroundedEncoder::encode_frames(size_t t) {
     std::vector<z3::expr> frame_axioms;
     auto& stats = Stats::instance();
     
@@ -232,7 +232,7 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_frames(int t) {
     return std::make_shared<z3::expr>(big_and);
 }
 
-std::shared_ptr<z3::expr> GroundedEncoder::encode_goal(int t) {
+std::shared_ptr<z3::expr> GroundedEncoder::encode_goal(size_t t) {
     // Retrieve goals from the problem
     const auto& goals = problem_.goals();
     auto& stats = Stats::instance();
@@ -271,11 +271,11 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_goal(int t) {
     return std::make_shared<z3::expr>(goal_conjunction);
 }
 
-std::shared_ptr<z3::expr> GroundedEncoder::encode_parallelism(int t) {
+std::shared_ptr<z3::expr> GroundedEncoder::encode_parallelism(size_t t) {
     return parallelism_strategy_->encode_parallelism(t);
 }
 
-std::shared_ptr<z3::expr> GroundedEncoder::encode_symmetries(int t) {
+std::shared_ptr<z3::expr> GroundedEncoder::encode_symmetries(size_t t) {
     auto& config = Config::instance();
     auto& stats = Stats::instance();
     
@@ -421,7 +421,7 @@ void GroundedEncoder::build_epc_index() {
     //print_epc_index("After building EPC index");
 }
 
-Plan GroundedEncoder::extract_plan(const z3::model& model, int max_timestep) const {
+Plan GroundedEncoder::extract_plan(const z3::model& model, size_t max_timestep) const {
     Plan plan;
     
     std::cout << "Extracting plan from Z3 model with " << model.size() << " variable assignments" << std::endl;
