@@ -1,4 +1,5 @@
-cmake_minimum_required(VERSION 3.10)
+# cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.30)
 
 # ==============================================================================
 # PROJECT CONFIGURATION
@@ -62,73 +63,189 @@ endif()
 # ==============================================================================
 # TARGET DEFINITION
 # ==============================================================================
-# Create main executable
-add_executable(planmt
-    src/main.cpp
-    src/config/config.cpp
-    src/config/cli_parser.cpp
-    src/util/memory_tracker.cpp
-    src/util/stats.cpp
-    src/problem/real.cpp
-    src/problem/atom.cpp
-    src/problem/parameter.cpp
-    src/problem/expression.cpp
-    src/problem/effect_expression.cpp
-    src/problem/effect.cpp
-    src/problem/object.cpp
-    src/problem/fluent.cpp
-    src/problem/goal.cpp
-    src/problem/assignment.cpp
-    src/problem/action.cpp
-    src/problem/plan.cpp
-    src/problem/problem.cpp
-    src/problem/type.cpp
-    src/problem/visitors/expression_visitor.cpp
-    src/encoders/lifted_encoding_visitor.cpp
-    src/encoders/grounded_encoding_visitor.cpp
-    src/encoders/grounded_encoder.cpp
-    src/encoders/chained_grounded_encoder.cpp
-    src/encoders/r2e_grounded_encoder.cpp
-    src/encoders/reified_grounded_encoder.cpp
-    src/encoders/encoder_factory.cpp
-    src/encoders/parallelism/interference_analyzer.cpp
-    src/encoders/parallelism/interference_analysis.cpp
-    src/encoders/parallelism/eager_interference_analysis.cpp
-    src/encoders/parallelism/lazy_interference_analysis.cpp
-    src/encoders/parallelism/semantic_interference_analysis.cpp
-    src/encoders/parallelism/interference_analysis_factory.cpp
-    src/encoders/parallelism/sequential_semantics.cpp
-    src/encoders/parallelism/forall_semantics.cpp
-    src/encoders/parallelism/exists_semantics.cpp
-    src/encoders/parallelism/parallelism_factory.cpp
-    src/encoders/parallelism/graph.cpp
-    src/encoders/z3_variable_factory.cpp
-    src/planners/sequential.cpp
-    src/planners/propagators/forall_propagator.cpp
-    src/planners/propagators/lazy_forall_propagator.cpp
-    src/planners/propagators/exists_propagator.cpp
-    src/planners/propagators/decision_heuristic_propagator.cpp
-    src/planners/propagators/propagator_factory.cpp
-    src/symmetries/smt_symmetry_checker.cpp
-    src/arpg/supporter.cpp
-    src/arpg/arpg.cpp
-    src/abstraction/achievers_analysis.cpp
+
+set(ABSTRACTION_SRCS src/abstraction/headers/achievers_analysis.h 
+                     src/abstraction/src/achievers_analysis.cpp)
+
+set(ARPG_SRCS src/arpg/headers/supporter.h 
+              src/arpg/headers/arpg.h 
+              src/arpg/headers/interval.h
+              src/arpg/headers/relaxed_state.h
+              src/arpg/src/arpg.cpp
+              src/arpg/src/supporter.cpp)
+
+set(CONFIG_SRCS src/config/headers/config.h
+                src/config/headers/cli_parser.h
+                src/config/src/config.cpp
+                src/config/src/cli_parser.cpp)
+
+set(ENCODERS_SRCS 
+src/encoders/headers/parallelism/eager_interference_analysis.h
+src/encoders/headers/parallelism/exists_semantics.h
+src/encoders/headers/parallelism/forall_semantics.h
+src/encoders/headers/parallelism/graph.h
+src/encoders/headers/parallelism/interference_analysis_factory.h
+src/encoders/headers/parallelism/interference_analysis.h
+src/encoders/headers/parallelism/interference_analyzer.h
+src/encoders/headers/parallelism/lazy_interference_analysis.h
+src/encoders/headers/parallelism/parallelism_factory.h
+src/encoders/headers/parallelism/parallelism_strategy.h
+src/encoders/headers/parallelism/semantic_interference_analysis.h
+src/encoders/headers/parallelism/sequential_semantics.h
+src/encoders/headers/base_encoder.h
+src/encoders/headers/chained_grounded_encoder.h
+src/encoders/headers/encoder_factory.h
+src/encoders/headers/grounded_encoder.h
+src/encoders/headers/grounded_encoding_visitor.h
+src/encoders/headers/lifted_encoding_visitor.h
+src/encoders/headers/r2e_grounded_encoder.h
+src/encoders/headers/reified_grounded_encoder.h
+src/encoders/headers/z3_variable_factory.h
+src/encoders/src/parallelism/eager_interference_analysis.cpp
+src/encoders/src/parallelism/exists_semantics.cpp
+src/encoders/src/parallelism/forall_semantics.cpp
+src/encoders/src/parallelism/graph.cpp
+src/encoders/src/parallelism/interference_analysis_factory.cpp
+src/encoders/src/parallelism/interference_analysis.cpp
+src/encoders/src/parallelism/interference_analyzer.cpp
+src/encoders/src/parallelism/lazy_interference_analysis.cpp
+src/encoders/src/parallelism/parallelism_factory.cpp
+src/encoders/src/parallelism/semantic_interference_analysis.cpp
+src/encoders/src/parallelism/sequential_semantics.cpp
+src/encoders/src/chained_grounded_encoder.cpp
+src/encoders/src/encoder_factory.cpp
+src/encoders/src/grounded_encoder.cpp
+src/encoders/src/grounded_encoding_visitor.cpp
+src/encoders/src/lifted_encoding_visitor.cpp
+src/encoders/src/r2e_grounded_encoder.cpp
+src/encoders/src/reified_grounded_encoder.cpp
+src/encoders/src/z3_variable_factory.cpp
 )
 
-# Define proto files and generate C++ sources
-set(PROTO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/proto/unified_planning.proto)
-message(STATUS "PROTO_FILES: ${PROTO_FILES}")
-# generate protobuf files for the target
-protobuf_generate(TARGET planmt
-    PROTOS ${PROTO_FILES}
-    LANGUAGE cpp
+set(PLANNERS_SRCS 
+src/planners/headers/propagators/decision_heuristic_propagator.h
+src/planners/headers/propagators/exists_propagator.h
+src/planners/headers/propagators/forall_propagator.h
+src/planners/headers/propagators/lazy_forall_propagator.h
+src/planners/headers/propagators/null_propagator.h
+src/planners/headers/propagators/propagator_factory.h
+src/planners/headers/propagators/propagator_strategy.h
+src/planners/headers/propagators/propagator_types.h
+src/planners/headers/diverse.h
+src/planners/headers/sequential.h
+src/planners/headers/single.h
+src/planners/headers/topk.h
+src/planners/headers/topq.h
+src/planners/src/propagators/decision_heuristic_propagator.cpp
+src/planners/src/propagators/exists_propagator.cpp
+src/planners/src/propagators/forall_propagator.cpp
+src/planners/src/propagators/lazy_forall_propagator.cpp
+src/planners/src/propagators/propagator_factory.cpp
+src/planners/src/diverse.cpp
+src/planners/src/sequential.cpp
+src/planners/src/single.cpp
+src/planners/src/topk.cpp
+src/planners/src/topq.cpp
 )
+
+set(PROBLEM_SRCS
+src/problem/headers/visitors/expression_visitor.h
+src/problem/headers/visitors/fluent_collector.h
+src/problem/headers/visitors/fluent_polarity_collector.h
+src/problem/headers/visitors/print_visitor.h
+src/problem/headers/visitors/variable_collector.h
+src/problem/headers/action.h
+src/problem/headers/assignment.h
+src/problem/headers/atom.h
+src/problem/headers/effect_expression.h
+src/problem/headers/effect.h
+src/problem/headers/expression.h
+src/problem/headers/fluent.h
+src/problem/headers/goal.h
+src/problem/headers/object.h
+src/problem/headers/parameter.h
+src/problem/headers/plan.h
+src/problem/headers/problem.h
+src/problem/headers/protobuf_aliases.h
+src/problem/headers/real.h
+src/problem/headers/type.h
+src/problem/src/visitors/expression_visitor.cpp
+src/problem/src/action.cpp
+src/problem/src/assignment.cpp
+src/problem/src/atom.cpp
+src/problem/src/effect_expression.cpp
+src/problem/src/effect.cpp
+src/problem/src/expression.cpp
+src/problem/src/fluent.cpp
+src/problem/src/goal.cpp
+src/problem/src/object.cpp
+src/problem/src/parameter.cpp
+src/problem/src/plan.cpp
+src/problem/src/problem.cpp
+src/problem/src/real.cpp
+src/problem/src/type.cpp
+)
+
+set(SYMMETRIES_SRCS 
+src/symmetries/headers/smt_symmetry_checker.h
+src/symmetries/src/smt_symmetry_checker.cpp
+)
+
+set(UTIL_SRCS 
+src/util/headers/memory_tracker.h
+src/util/headers/stats.h
+src/util/src/memory_tracker.cpp
+src/util/src/stats.cpp
+)
+
+add_library(pmtlib STATIC 
+    ${ABSTRACTION_SRCS}
+    ${ARPG_SRCS}
+    ${CONFIG_SRCS}
+    ${PROBLEM_SRCS}
+    ${ENCODERS_SRCS}
+    ${PLANNERS_SRCS}
+    ${SYMMETRIES_SRCS}
+    ${UTIL_SRCS}
+)
+
+
+set(PROTO_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+# Generate protobuf for pmtlib and put outputs in PROTO_OUT_DIR
+set(PROTO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/proto/unified_planning.proto)
+# message(STATUS "---------------> PROTO_FILES: ${PROTO_FILES}")
+protobuf_generate(
+    TARGET   pmtlib
+    PROTOS   ${PROTO_FILES}
+    LANGUAGE cpp
+    PROTOC_OUT_DIR ${PROTO_OUT_DIR}
+)
+# pmtlib must see the generated headers to compile its own sources
+target_include_directories(pmtlib PRIVATE ${CMAKE_CURRENT_BINARY_DIR} ${PROTO_OUT_DIR}/proto ${Z3_INCLUDE_DIR})
+
+# And link protobuf to the target that owns the generated files
+target_link_libraries(pmtlib PUBLIC protobuf::libprotobuf ${Z3_LINK_LIBRARY})
+# target_include_directories(pmtlib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/proto)
+
+target_include_directories(pmtlib PUBLIC 
+${CMAKE_CURRENT_SOURCE_DIR}/src
+${CMAKE_CURRENT_SOURCE_DIR}/src/abstraction/headers
+${CMAKE_CURRENT_SOURCE_DIR}/src/arpg/headers
+${CMAKE_CURRENT_SOURCE_DIR}/src/config/headers
+${CMAKE_CURRENT_SOURCE_DIR}/src/problem/headers
+${CMAKE_CURRENT_SOURCE_DIR}/src/encoders/headers
+${CMAKE_CURRENT_SOURCE_DIR}/src/planners/headers
+${CMAKE_CURRENT_SOURCE_DIR}/src/symmetries/headers
+${CMAKE_CURRENT_SOURCE_DIR}/src/util/headers
+${PROTO_OUT_DIR}
+)
+
 
 # ==============================================================================
 # TARGET CONFIGURATION
 # ==============================================================================
 # Include directories
-target_include_directories(planmt PRIVATE
+target_include_directories(pmtlib INTERFACE
     ${CMAKE_CURRENT_BINARY_DIR}                      # generated protobuf sources
     ${CMAKE_CURRENT_BINARY_DIR}/proto                # generated protobuf headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src                  # our source headers
@@ -141,14 +258,16 @@ target_include_directories(planmt PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/symmetries/      # symmetries headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src/abstraction/     # abstraction headers
     ${Protobuf_INCLUDE_DIRS}                         # protobuf lib headers
-    ${Z3_INCLUDE_DIR}                                # Z3 headers
+                                    # Z3 headers
 )
 
-# Link libraries
-target_link_libraries(planmt PRIVATE
-    protobuf::libprotobuf
-    ${Z3_LINK_LIBRARY} # Ensure this uses the full path from Z3_LIBRARY
-)
+
+# Create main executable
+add_executable(planmt src/main.cpp)
+target_link_libraries(planmt PRIVATE pmtlib)
+target_include_directories(planmt PRIVATE ${PROTO_OUT_DIR}/proto)
+
+
 
 # ==============================================================================
 # PLATFORM-SPECIFIC FIXES
