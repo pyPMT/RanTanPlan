@@ -6,7 +6,7 @@ namespace planmt {
 
 class SinglePlanner : public DiversePlanner {
 public:
-    SinglePlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx, DiversePlannerCfg &cfg);
+    SinglePlanner(const Problem& problem, BaseEncoder& encoder, DiversePlannerCfg &cfg);
     Plan search(void);
 };
 

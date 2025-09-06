@@ -4,8 +4,8 @@
 
 namespace planmt {
 
-    SinglePlanner::SinglePlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx, DiversePlannerCfg &cfg):
-    DiversePlanner(problem, encoder, ctx, cfg, std::vector<DiversityDimension>())
+    SinglePlanner::SinglePlanner(const Problem& problem, BaseEncoder& encoder, DiversePlannerCfg &cfg):
+    DiversePlanner(problem, encoder, cfg, std::vector<DiversityDimension>())
     { }
 
     Plan SinglePlanner::search(void) {

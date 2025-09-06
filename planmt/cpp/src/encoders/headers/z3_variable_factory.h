@@ -84,6 +84,9 @@ public:
     // Timestep management queries
     int get_max_timestep() const;
     bool has_variables_for_timestep(int timestep) const;
+    
+    // Getter for the context;
+    z3::context& get_context(void) const { return ctx_; }
 
 private:
     // Helper methods for variable creation and management

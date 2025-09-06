@@ -2,6 +2,8 @@
 
 #include <string>
 #include <vector>
+#include <set>
+#include <map>
 
 #include "problem/headers/problem.h"
 #include "problem/headers/plan.h"
@@ -18,6 +20,13 @@ enum ForbiddingMode {
     BEHAVIOUR,
     PLAN,
     NONE
+};
+
+struct formula_t {
+    std::unordered_map<size_t, std::vector<z3::expr>> initial;
+    std::unordered_map<size_t, std::vector<z3::expr>> transition;
+    std::unordered_map<size_t, std::vector<z3::expr>> goal;
+    size_t length;
 };
 
 class DiversePlannerCfg {
@@ -41,7 +50,7 @@ private:
 class DiversePlanner {
 public:
     // Constructor with propagator support
-    DiversePlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx, DiversePlannerCfg &cfg, std::vector<DiversityDimension> dims);
+    DiversePlanner(const Problem& problem, BaseEncoder& encoder, DiversePlannerCfg &cfg, std::vector<DiversityDimension> dims);
     
     std::vector<Plan> search(size_t k, float q);
     
@@ -50,24 +59,27 @@ protected:
     BaseEncoder& encoder_;
     z3::context& ctx_;
     z3::solver solver_;
+    z3::expr horizon_;
     std::unique_ptr<PropagatorStrategy> propagator_strategy_;
     std::unique_ptr<DiversePlannerCfg> cfg_;
-    int formula_length{0};
-    
+
     // Search for plans based on selected forbidding mode.
-    std::vector<Plan> produce_plans(size_t k, std::vector<Plan> &planlist, ForbiddingMode mode);
+    std::vector<Plan> produce_plans(formula_t phi, size_t k, std::vector<Plan> &planlist, ForbiddingMode mode);
     
     // Convert a plan to a conjunction of actions.
     z3::expr convert_plan_to_expr(const Plan& plan) const;
     
     // Extract plan from model.
-    Plan extract_plan(size_t length);
+    Plan extract_plan(const z3::solver & solver);
     
-    // Find formula length
-    void construct_formula(void);
+    // Contruct the full formula I(0) /\ T_0 .. T_n /\ (\/ G_0 .. G_n)
+    formula_t construct_formula(void);
     
-    // Increment formula length
-    void increment_formula(void);
+    // Add formula_t elements to z3 solver.
+    z3::solver create_solver_from(formula_t f);
+    
+    // Increment formula length and return the goal literal
+    z3::expr increment_formula(formula_t &f, size_t timestep);
 };
 
 }

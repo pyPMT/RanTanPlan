@@ -59,15 +59,15 @@ PlanGenerationResult solve_planning_problem(const planmt::Problem& problem) {
     // Create planner and set propagator
     planmt::DiversePlannerCfg cfg(config.propagators.type, false, 100);
     
-    planmt::DiversePlanner diverse_planner(problem, *encoder, ctx, cfg, dims);
-    auto plans = diverse_planner.search(5, 1.0);
+//    planmt::DiversePlanner diverse_planner(problem, *encoder, ctx, cfg, dims);
+//    auto plans = diverse_planner.search(5, 1.0);
+//    
+    planmt::SinglePlanner single_planner(problem, *encoder, cfg);
+    auto plan = single_planner.search();
     
-//    planmt::SinglePlanner singler_planner(problem, *encoder, ctx, cfg);
-//    auto plan = singler_planner.search();
-//    
-//    planmt::TopKPlanner topk_planner(problem, *encoder, ctx, cfg);
-//    auto top_k_plans = topk_planner.search(1000, 1.1);
-//    
+    planmt::TopKPlanner topk_planner(problem, *encoder, cfg);
+    auto top_k_plans = topk_planner.search(100, 2.0);
+    
     std::cout << std::endl;
     
     
