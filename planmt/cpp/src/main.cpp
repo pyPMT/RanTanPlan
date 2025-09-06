@@ -22,8 +22,13 @@
 #include "abstraction/headers/achievers_analysis.h"
 
 #include "planners/headers/diverse.h"
+#include "planners/headers/single.h"
+#include "planners/headers/topk.h"
 #include "theories/headers/diversity/diversity_base_dimension.h"
 
+
+// For development.
+#include <set>
 
 // Function to print the complete planning problem structure using enhanced planning classes
 PlanGenerationResult solve_planning_problem(const planmt::Problem& problem) {
@@ -53,10 +58,17 @@ PlanGenerationResult solve_planning_problem(const planmt::Problem& problem) {
     
     // Create planner and set propagator
     planmt::DiversePlannerCfg cfg(config.propagators.type, false, 100);
-    planmt::DiversePlanner planner(problem, *encoder, ctx, cfg, dims);
     
-    auto plans = planner.search(5, 1.0);
+    planmt::DiversePlanner diverse_planner(problem, *encoder, ctx, cfg, dims);
+    auto plans = diverse_planner.search(5, 1.0);
     
+//    planmt::SinglePlanner singler_planner(problem, *encoder, ctx, cfg);
+//    auto plan = singler_planner.search();
+//    
+//    planmt::TopKPlanner topk_planner(problem, *encoder, ctx, cfg);
+//    auto top_k_plans = topk_planner.search(1000, 1.1);
+//    
+    std::cout << std::endl;
     
     
 //    planmt::SequentialPlanner planner(problem, *encoder, ctx);

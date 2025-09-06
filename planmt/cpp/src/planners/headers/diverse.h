@@ -45,7 +45,7 @@ public:
     
     std::vector<Plan> search(size_t k, float q);
     
-private:
+protected:
     const Problem& problem_;
     BaseEncoder& encoder_;
     z3::context& ctx_;
@@ -68,9 +68,6 @@ private:
     
     // Increment formula length
     void increment_formula(void);
-    
-    
-    
 };
 
 }
