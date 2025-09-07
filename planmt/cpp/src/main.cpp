@@ -24,6 +24,7 @@
 #include "planners/headers/diverse.h"
 #include "planners/headers/single.h"
 #include "planners/headers/topk.h"
+#include "planners/headers/topq.h"
 #include "theories/headers/diversity/diversity_base_dimension.h"
 
 
@@ -61,12 +62,17 @@ PlanGenerationResult solve_planning_problem(const planmt::Problem& problem) {
     
 //    planmt::DiversePlanner diverse_planner(problem, *encoder, ctx, cfg, dims);
 //    auto plans = diverse_planner.search(5, 1.0);
+
+//    // A Working planners.
+//    planmt::SinglePlanner single_planner(problem, *encoder, cfg);
+//    auto plan = single_planner.search();
+//
+//    planmt::TopKPlanner topk_planner(problem, *encoder, cfg);
+//    auto top_k_plans = topk_planner.search(100, 2.0);
 //    
-    planmt::SinglePlanner single_planner(problem, *encoder, cfg);
-    auto plan = single_planner.search();
     
-    planmt::TopKPlanner topk_planner(problem, *encoder, cfg);
-    auto top_k_plans = topk_planner.search(100, 2.0);
+    planmt::TopQPlanner topq_planner(problem, *encoder, cfg);
+    auto top_q_plans = topq_planner.search(4, 2.0);
     
     std::cout << std::endl;
     

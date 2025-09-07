@@ -6,7 +6,7 @@
 namespace planmt {
 
     TopKPlanner::TopKPlanner(const Problem& problem, BaseEncoder& encoder, DiversePlannerCfg &cfg):
-    DiversePlanner(problem, encoder, cfg, std::vector<DiversityDimension>())
+    DiversePlanner(problem, encoder, cfg)
     { }
 
     std::vector<Plan> TopKPlanner::search(size_t k, float upperbound) {

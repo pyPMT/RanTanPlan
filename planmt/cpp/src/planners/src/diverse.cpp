@@ -3,13 +3,14 @@
 #include <set>
 
 #include "encoders/headers/z3_variable_factory.h"
+#include "theories/headers/diversity/behaviour_space.h"
 #include "planners/headers/propagators/null_propagator.h"
 #include "planners/headers/diverse.h"
 
 
 namespace planmt {
 
-DiversePlanner::DiversePlanner(const Problem& problem, BaseEncoder& encoder, DiversePlannerCfg &cfg, std::vector<DiversityDimension> dims):
+DiversePlanner::DiversePlanner(const Problem& problem, BaseEncoder& encoder, DiversePlannerCfg &cfg):
 problem_(problem),
 encoder_(encoder),
 ctx_(encoder_.get_variable_factory().get_context()),
@@ -21,13 +22,14 @@ horizon_(encoder_.get_variable_factory().create_int_variable("Horizon")) {
 }
 
 
-std::vector<Plan> DiversePlanner::search(size_t k, float q) {
+std::vector<Plan> DiversePlanner::search(size_t k, float q, std::vector<std::unique_ptr<DiversityDimension>> &dims) {
     std::vector<Plan> ret_plans;
     
-    // First infer the formula length.
-    auto formula_ = construct_formula();
+    // Construct the behaviour space
+    auto behaviour_space = BehaviourSpace(problem_, encoder_, dims);
     
-    // TODO: Construct behaviour space dimensions and append it to the solver.
+    // Construct the formula
+    auto formula_ = construct_formula(behaviour_space);
     
     auto solver = create_solver_from(formula_);
     auto result = solver.check();
@@ -35,7 +37,7 @@ std::vector<Plan> DiversePlanner::search(size_t k, float q) {
     if (result != z3::sat) {return ret_plans;}
     
     // Get the initial plan to infer the optimal plan lenght?
-    ret_plans.push_back(extract_plan(solver));
+    ret_plans.push_back(extract_plan(solver, behaviour_space));
     
     // Compute upperbound formula length.
     size_t upper_bound = static_cast<size_t>(formula_.length * q);
@@ -43,8 +45,7 @@ std::vector<Plan> DiversePlanner::search(size_t k, float q) {
     // Generate the remaning plans, and increment the formula in case there are
     // no plans available in the current plan lenght.
     for(size_t i = formula_.length; i < upper_bound; i++) {
-        std::cout << "Check i: " << i << std::endl;
-        increment_formula(formula_, i);
+        increment_formula(formula_, i, behaviour_space);
     }
     
     auto generated_behaviours = produce_plans(formula_, k-ret_plans.size(), ret_plans, ForbiddingMode::BEHAVIOUR);
@@ -73,32 +74,60 @@ std::vector<Plan> DiversePlanner::produce_plans(formula_t phi, size_t k, std::ve
         assumptions.push_back(!convert_plan_to_expr(plan));
     }
     
-    // TODO: Collect behaviours in planlist.
-    
-    for (size_t i = k; i > 0; i--) {
-        // Check satisfiability.
-        z3::check_result result = solver_.check(assumptions);
-        if (result != z3::sat) { break; }
-        auto plan = extract_plan(solver_);
-        assumptions.push_back(!convert_plan_to_expr(plan));
-        // TODO: Check if we are in behaviour forbidding or not.
-        if (mode == ForbiddingMode::BEHAVIOUR) {
-            // TODO: Infer the extracted plan's behaviour and forbid it.
-        }
+    // TODO: Collect behaviours in planlist, then
+    // check if we are in behaviour forbidding or not.
+    if (mode == ForbiddingMode::BEHAVIOUR) {
+        // TODO: Infer the extracted plan's behaviour and forbid it.
+    } else {
         
-        ret_plans.push_back(plan);
     }
+    
+//    for (size_t i = k; i > 0; i--) {
+//        // Check satisfiability.
+//        z3::check_result result = solver_.check(assumptions);
+//        if (result != z3::sat) { break; }
+//        auto plan = extract_plan(solver_);
+//        assumptions.push_back(!convert_plan_to_expr(plan));
+//        // TODO: Check if we are in behaviour forbidding or not.
+//        if (mode == ForbiddingMode::BEHAVIOUR) {
+//            // TODO: Infer the extracted plan's behaviour and forbid it.
+//        } else {
+//            
+//        }
+//        
+//        ret_plans.push_back(plan);
+//    }
     
     return ret_plans;
 }
 
+
 Plan DiversePlanner::extract_plan(const z3::solver & solver) {
+    std::vector<std::unique_ptr<DiversityDimension>> dims;
+    auto bs = BehaviourSpace(problem_, encoder_, dims);
+    return extract_plan(solver, bs);
+}
+
+
+Plan DiversePlanner::extract_plan(const z3::solver & solver, BehaviourSpace & behaviour_space) {
     // Extract plan from model using encoder
     z3::model model = solver.get_model();
-    return encoder_.extract_plan(model, model.eval(horizon_, true).get_numeral_int());
+    Plan ret_plan = encoder_.extract_plan(model, model.eval(horizon_, true).get_numeral_int());
+    
+    auto behaviour = behaviour_space.extract_behaviour(model);
+    
+    return ret_plan;
 }
 
 formula_t DiversePlanner::construct_formula(void) {
+    // Create an empty behaviour.
+    std::vector<std::unique_ptr<DiversityDimension>> empty_dimension;
+    auto empty_behaviour_space = BehaviourSpace(problem_, encoder_, empty_dimension);
+    return construct_formula(empty_behaviour_space);
+    
+}
+
+formula_t DiversePlanner::construct_formula(BehaviourSpace & behaviour_space) {
     
     formula_t phi;
     auto &z3factory = encoder_.get_variable_factory();
@@ -107,21 +136,13 @@ formula_t DiversePlanner::construct_formula(void) {
         return std::pair<size_t, z3::expr>(t, expr);
     };
     
-    // Add initial state constraints (these are invariant)
-    phi.initial[0].push_back(*encoder_.encode_initial_state());
-    phi.initial[0].push_back(horizon_ >= ctx_.int_val(0));
-    phi.initial[0].push_back(horizon_ <= static_cast<int>(cfg_->get_max_step()));
-    
-    // Register variables for timestep 0 (initial state)
-    propagator_strategy_->register_timestep_variables(0);
-    
     for (size_t timestep = 0; timestep <= cfg_->get_max_step(); ++timestep) {
         
         // clear solver.
         solver_.reset();
         
         // increment the formula
-        auto g = increment_formula(phi, timestep);
+        auto g = increment_formula(phi, timestep, behaviour_space);
         
         // check if formula is satisfiable
         solver_ = create_solver_from(phi);
@@ -147,7 +168,15 @@ z3::expr DiversePlanner::increment_formula(formula_t &f, size_t timestep) {
     
     // TODO: Add behaviour space dimensions encodings.
     
-    if (timestep < 1) { return goal_literal; }
+    if (timestep < 1) {
+        // Add initial state constraints (these are invariant)
+        f.initial[timestep].push_back(*encoder_.encode_initial_state());
+        f.initial[timestep].push_back(horizon_ >= ctx_.int_val(0));
+        f.initial[timestep].push_back(horizon_ <= static_cast<int>(cfg_->get_max_step()));
+        // Register variables for timestep 0 (initial state)
+        propagator_strategy_->register_timestep_variables(timestep);
+        return goal_literal;
+    }
     
     // Add actions and frame axioms.
     f.transition[timestep - 1].push_back(*encoder_.encode_actions(timestep - 1));
@@ -164,7 +193,7 @@ z3::expr DiversePlanner::increment_formula(formula_t &f, size_t timestep) {
     }
     
     // Register variables for timestep after constraints are added
-    propagator_strategy_->register_timestep_variables(timestep - 1);
+    propagator_strategy_->register_timestep_variables(timestep);
     
     // Update the horizon variable.
     // The value of horizon variable is used to help the planner decide the number
@@ -205,6 +234,18 @@ z3::expr DiversePlanner::increment_formula(formula_t &f, size_t timestep) {
     
     return goal_literal;
 }
+
+
+z3::expr DiversePlanner::increment_formula(formula_t &f, size_t timestep, BehaviourSpace & behaviour_space) {
+    z3::expr_vector encodings(ctx_);
+    auto g = increment_formula(f, timestep);
+    auto bs_formula = behaviour_space.encode(timestep);
+    // Add the bs_formula to f.
+    f.transition[timestep].push_back(bs_formula);
+    
+    return g;
+}
+
 
 
 z3::solver DiversePlanner::create_solver_from(formula_t f) {

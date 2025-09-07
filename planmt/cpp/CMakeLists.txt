@@ -201,8 +201,10 @@ src/util/src/stats.cpp
 set(DIVERSITY_SRCS
 src/theories/headers/diversity/diversity_base_dimension.h
 src/theories/headers/diversity/behaviour_space.h
+src/theories/headers/diversity/cost_bound_dim.h
 src/theories/src/diversity/diversity_base_dimension.cpp
 src/theories/src/diversity/behaviour_space.cpp
+src/theories/src/diversity/cost_bound.dim.cpp
 )
 
 add_library(pmtlib STATIC 
