@@ -28,16 +28,17 @@ std::vector<z3::expr> CostBoundDimension::encode(size_t timestep) {
     return encoders[encoder_.get_parallelism_strategy_name()](timestep);
 }
 
-std::unique_ptr<dimension_value_t> CostBoundDimension::extract(const z3::model & model) {
-    
-    std::cout << accumlated_cost_literal_ << std::endl;
-    auto v = model.eval(accumlated_cost_literal_, true).get_numeral_int();
-    return std::make_unique<dimension_value_t>(dimension_value_t(std::string("TODO"), std::string("TODO")));
+dimension_value_t CostBoundDimension::extract(const z3::model & model) {
+    auto v = model.eval(accumlated_cost_literal_, true);
+    return dimension_value_t(std::string("cost-bound"), v.get_numeral_int(), accumlated_cost_literal_ == v);
 }
 
-
-
 std::vector<z3::expr> CostBoundDimension::sequnetial_step_encode(size_t timestep) {
+    
+    if (timestep < 1) {
+        return std::vector<z3::expr>();
+    }
+    
     auto make_actions_vector = [](auto& encoder, int t, z3::context& ctx) {
         z3::expr_vector actions(ctx);
         for (auto& a : encoder.get_variable_factory().get_all_action_variables(t)) {
@@ -50,7 +51,7 @@ std::vector<z3::expr> CostBoundDimension::sequnetial_step_encode(size_t timestep
     auto &var_factory = encoder_.get_variable_factory();
     z3::expr cost_literal = var_factory.create_int_variable("cost_at_" + std::to_string(timestep));
     
-    auto actions_step = make_actions_vector(encoder_, timestep, ctx_);
+    auto actions_step = make_actions_vector(encoder_, timestep - 1, ctx_);
     ret_exprs.push_back(z3::implies(z3::mk_or(actions_step),  cost_literal == ctx_.int_val(1)));
     ret_exprs.push_back(z3::implies(!z3::mk_or(actions_step), cost_literal == ctx_.int_val(0)));
     

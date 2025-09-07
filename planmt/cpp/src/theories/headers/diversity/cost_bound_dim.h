@@ -14,12 +14,11 @@ class CostBoundDimension : public DiversityDimension {
 public:
     CostBoundDimension(const Problem& problem, BaseEncoder& encoder, float cost_bound_factor);
     std::vector<z3::expr> encode(size_t timestep) override;
-    std::unique_ptr<dimension_value_t> extract(const z3::model & model) override;
+    dimension_value_t extract(const z3::model & model) override;
 
 private:
     float cost_bound_factor_;
     z3::context &ctx_;
-//    std::vector<z3::expr> cost_bound_vars_;
     z3::expr_vector cost_bound_vars_;
     z3::expr accumlated_cost_literal_;
     

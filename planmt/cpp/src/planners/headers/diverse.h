@@ -66,14 +66,14 @@ protected:
     std::unique_ptr<DiversePlannerCfg> cfg_;
 
     // Search for plans based on selected forbidding mode.
-    std::vector<Plan> produce_plans(formula_t phi, size_t k, std::vector<Plan> &planlist, ForbiddingMode mode);
+    std::vector<std::pair<Plan, Behaviour>> produce_plans(formula_t phi, size_t k, BehaviourSpace &bs, std::vector<std::pair<Plan, Behaviour>> &planlist, ForbiddingMode mode);
     
     // Convert a plan to a conjunction of actions.
     z3::expr convert_plan_to_expr(const Plan& plan) const;
     
     // Extract plan from model.
     Plan extract_plan(const z3::solver & solver);
-    Plan extract_plan(const z3::solver & solver, BehaviourSpace & behaviour_space);
+    std::pair<Plan, Behaviour> extract_plan(const z3::solver & solver, BehaviourSpace & behaviour_space);
     
     // Contruct the full formula I(0) /\ T_0 .. T_n /\ (\/ G_0 .. G_n)
     formula_t construct_formula(void);

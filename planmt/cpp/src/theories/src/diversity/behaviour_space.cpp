@@ -4,6 +4,15 @@
 
 namespace planmt {
 
+
+Behaviour::Behaviour(std::vector<dimension_value_t> values) {
+    dimensions_values_ = values;
+}
+
+
+
+
+
 BehaviourSpace::BehaviourSpace(const Problem& problem, BaseEncoder& encoder, std::vector<std::unique_ptr<DiversityDimension>> &dimensions):
 problem_(problem),
 encoder_(encoder),
@@ -26,12 +35,12 @@ z3::expr BehaviourSpace::encode(size_t timestep) {
 }
 
 
-std::vector<std::unique_ptr<dimension_value_t>> BehaviourSpace::extract_behaviour(z3::model &model) {
-    std::vector<std::unique_ptr<dimension_value_t>> features_values;
+Behaviour BehaviourSpace::extract_behaviour(z3::model &model) {
+    std::vector<dimension_value_t> features_values;
     for (auto &dim : dimensions_) {
         features_values.push_back(dim->extract(model));
     }
-    return features_values;
+    return Behaviour(features_values);
 }
 
 }

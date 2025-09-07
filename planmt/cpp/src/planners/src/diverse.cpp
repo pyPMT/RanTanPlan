@@ -1,6 +1,8 @@
 
+#include <fstream>
 #include <iostream>
 #include <set>
+#include <utility>
 
 #include "encoders/headers/z3_variable_factory.h"
 #include "theories/headers/diversity/behaviour_space.h"
@@ -23,7 +25,9 @@ horizon_(encoder_.get_variable_factory().create_int_variable("Horizon")) {
 
 
 std::vector<Plan> DiversePlanner::search(size_t k, float q, std::vector<std::unique_ptr<DiversityDimension>> &dims) {
-    std::vector<Plan> ret_plans;
+    
+    // I don't like this shit
+    std::vector<std::pair<Plan, Behaviour>> ret_plans;
     
     // Construct the behaviour space
     auto behaviour_space = BehaviourSpace(problem_, encoder_, dims);
@@ -34,10 +38,11 @@ std::vector<Plan> DiversePlanner::search(size_t k, float q, std::vector<std::uni
     auto solver = create_solver_from(formula_);
     auto result = solver.check();
     
-    if (result != z3::sat) {return ret_plans;}
+    if (result != z3::sat) {return std::vector<Plan>();}
     
     // Get the initial plan to infer the optimal plan lenght?
-    ret_plans.push_back(extract_plan(solver, behaviour_space));
+    auto plan_behaviour_pair = extract_plan(solver, behaviour_space);
+    ret_plans.push_back(plan_behaviour_pair);
     
     // Compute upperbound formula length.
     size_t upper_bound = static_cast<size_t>(formula_.length * q);
@@ -48,55 +53,75 @@ std::vector<Plan> DiversePlanner::search(size_t k, float q, std::vector<std::uni
         increment_formula(formula_, i, behaviour_space);
     }
     
-    auto generated_behaviours = produce_plans(formula_, k-ret_plans.size(), ret_plans, ForbiddingMode::BEHAVIOUR);
+    auto generated_behaviours = produce_plans(formula_, k-ret_plans.size(), behaviour_space, ret_plans, ForbiddingMode::BEHAVIOUR);
     ret_plans.insert(ret_plans.end(), generated_behaviours.begin(), generated_behaviours.end());
     
     // Start forbidding plans since the required number of plans is less than the generated behaviours.
     if(ret_plans.size() < k) {
-        auto generated_plans = produce_plans(formula_, k-ret_plans.size(), ret_plans, ForbiddingMode::PLAN);
+        auto generated_plans = produce_plans(formula_, k-ret_plans.size(), behaviour_space, ret_plans, ForbiddingMode::PLAN);
         ret_plans.insert(ret_plans.end(), generated_plans.begin(), generated_plans.end());
     }
     
-    return ret_plans;
+    std::vector<Plan> all_generated_plans;
+    for (auto &p: ret_plans) {
+        all_generated_plans.push_back(p.first);
+    }
+    
+    return all_generated_plans; //return ret_plans;
 }
 
-std::vector<Plan> DiversePlanner::produce_plans(formula_t phi, size_t k, std::vector<Plan> &planlist, ForbiddingMode mode) {
+std::vector<std::pair<Plan, Behaviour>> DiversePlanner::produce_plans(formula_t phi, size_t k, BehaviourSpace &bs, std::vector<std::pair<Plan, Behaviour>> &planlist, ForbiddingMode mode) {
     
-    std::vector<Plan> ret_plans;
+    std::vector<std::pair<Plan, Behaviour>> ret_plans;
     
     // Clear solver
     solver_ = create_solver_from(phi);
     
     // Forbid plans in planlist.
     z3::expr_vector assumptions(ctx_);
-    for (const auto& plan : planlist) {
-        if (plan.length() == 0) { continue; }
-        assumptions.push_back(!convert_plan_to_expr(plan));
+    for (auto& plan : planlist) {
+        if (plan.first.length() == 0) { continue; }
+//        assumptions.push_back(!convert_plan_to_expr(plan.first));
     }
     
     // TODO: Collect behaviours in planlist, then
     // check if we are in behaviour forbidding or not.
     if (mode == ForbiddingMode::BEHAVIOUR) {
-        // TODO: Infer the extracted plan's behaviour and forbid it.
+        // Infer the extracted plan's behaviour and forbid it.
+        for (auto &plan : planlist) {
+            if (plan.first.length() == 0) { continue; }
+            z3::expr_vector expr_(ctx_);
+            for (auto &e: plan.second.get_values()) {
+                expr_.push_back(e.dim_expr);
+            }
+//            assumptions.push_back(!z3::mk_and(expr_));
+        }
     } else {
         
     }
     
-//    for (size_t i = k; i > 0; i--) {
-//        // Check satisfiability.
-//        z3::check_result result = solver_.check(assumptions);
-//        if (result != z3::sat) { break; }
-//        auto plan = extract_plan(solver_);
-//        assumptions.push_back(!convert_plan_to_expr(plan));
-//        // TODO: Check if we are in behaviour forbidding or not.
-//        if (mode == ForbiddingMode::BEHAVIOUR) {
-//            // TODO: Infer the extracted plan's behaviour and forbid it.
-//        } else {
-//            
-//        }
-//        
-//        ret_plans.push_back(plan);
-//    }
+//    // TODO: Dump
+//    solver_.add(assumptions);
+//    std::ofstream s(std::string("/Users/mustafafaisal/Developer/planmt-planners-cat/sandbox/dump-model/constraints.smt2"));
+//    s << solver_.to_smt2();
+//    
+    
+    for (size_t i = k; i > 0; i--) {
+        // Check satisfiability.
+        z3::check_result result = solver_.check(assumptions);
+        if (result != z3::sat) { break; }
+        auto plan_behaviour_pair = extract_plan(solver_, bs);
+        assumptions.push_back(!convert_plan_to_expr(plan_behaviour_pair.first));
+        // TODO: Check if we are in behaviour forbidding or not.
+        if (mode == ForbiddingMode::BEHAVIOUR) {
+            // TODO: Infer the extracted plan's behaviour and forbid it.
+            std::cout << std::endl;
+        } else {
+            
+        }
+        
+        ret_plans.push_back(plan_behaviour_pair);
+    }
     
     return ret_plans;
 }
@@ -105,18 +130,15 @@ std::vector<Plan> DiversePlanner::produce_plans(formula_t phi, size_t k, std::ve
 Plan DiversePlanner::extract_plan(const z3::solver & solver) {
     std::vector<std::unique_ptr<DiversityDimension>> dims;
     auto bs = BehaviourSpace(problem_, encoder_, dims);
-    return extract_plan(solver, bs);
+    return extract_plan(solver, bs).first;
 }
 
-
-Plan DiversePlanner::extract_plan(const z3::solver & solver, BehaviourSpace & behaviour_space) {
+std::pair<Plan, Behaviour> DiversePlanner::extract_plan(const z3::solver & solver, BehaviourSpace & behaviour_space) {
     // Extract plan from model using encoder
     z3::model model = solver.get_model();
     Plan ret_plan = encoder_.extract_plan(model, model.eval(horizon_, true).get_numeral_int());
-    
     auto behaviour = behaviour_space.extract_behaviour(model);
-    
-    return ret_plan;
+    return std::make_pair(ret_plan, behaviour);
 }
 
 formula_t DiversePlanner::construct_formula(void) {
