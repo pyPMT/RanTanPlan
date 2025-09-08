@@ -1,6 +1,6 @@
 #pragma once
 
-#include "unified_planning.pb.h"
+#include "proto/unified_planning.pb.h"
 
 /**
  * @brief Protobuf type aliases using pb:: namespace for clean separation
