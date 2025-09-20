@@ -7,88 +7,72 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Find staged dependencies (superbuild passes CMAKE_PREFIX_PATH)
 find_package(Protobuf CONFIG REQUIRED)
 find_package(Z3       CONFIG REQUIRED)
-find_package(ng-log   CONFIG REQUIRED)
-find_package(glog     CONFIG REQUIRED)
+find_package(spdlog   CONFIG REQUIRED)
+# find_package(ng-log   CONFIG REQUIRED)
+# find_package(glog     CONFIG REQUIRED)
 
-# argparse is header-only; depending on its install, it might export a target
-# If not, you can still include_directories if needed, but modern packages export targets.
+# Create the protobuf files.
 
-# Your library
-set(PROBLEM_SRCS
-src/problem/visitors/expression_visitor.h
-src/problem/visitors/fluent_collector.h
-src/problem/visitors/fluent_polarity_collector.h
-src/problem/visitors/print_visitor.h
-src/problem/visitors/variable_collector.h
-src/problem/action.h
-src/problem/assignment.h
-src/problem/atom.h
-src/problem/effect_expression.h
-src/problem/effect.h
-src/problem/expression.h
-src/problem/fluent.h
-src/problem/goal.h
-src/problem/object.h
-src/problem/parameter.h
-src/problem/plan.h
-src/problem/problem.h
-src/problem/protobuf_aliases.h
-src/problem/real.h
-src/problem/type.h
-src/problem/visitors/expression_visitor.cpp
-src/problem/action.cpp
-src/problem/assignment.cpp
-src/problem/atom.cpp
-src/problem/effect_expression.cpp
-src/problem/effect.cpp
-src/problem/expression.cpp
-src/problem/fluent.cpp
-src/problem/goal.cpp
-src/problem/object.cpp
-src/problem/parameter.cpp
-src/problem/plan.cpp
-src/problem/problem.cpp
-src/problem/real.cpp
-src/problem/type.cpp
+set(PROTO_FILES
+  ${CMAKE_CURRENT_SOURCE_DIR}/proto/unified_planning.proto
 )
 
+# Generate into the build tree
+set(GEN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/generated_files)
+file(MAKE_DIRECTORY "${GEN_DIR}")
 
-add_library(pmtlib STATIC ${PROBLEM_SRCS})
-
-# Generated protobuf files into binary tree
-set(PROTO ${CMAKE_CURRENT_SOURCE_DIR}/proto/unified_planning.proto)
-
-# If protobuf_generate is not auto-included by the package, uncomment this:
-# include(${Protobuf_DIR}/protobuf-generate.cmake)
-
-file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/generated)
+# Run protoc independently of any target, and collect outputs
 protobuf_generate(
-  TARGET pmtlib
-  PROTOS ${PROTO}
   LANGUAGE cpp
-  PROTOC_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated   # optional
+  PROTOS ${PROTO_FILES}
+  PROTOC_OUT_DIR "${GEN_DIR}"
+  OUT_VAR GEN_SRCS          # -> list of .pb.cc / .pb.h files
 )
+
+# Make codegen part of the default build; it materializes GEN_SRCS
+add_custom_target(proto_codegen ALL
+  DEPENDS ${GEN_SRCS}
+)
+
+set(TASK_SRCS src/task/task.cpp)
+set(TASK_HEADERS src/task/task.hpp src/task/protobuf_aliases.hpp)
+
+set(UTILS_SRCS src/utils/cli_argparsers.cpp)
+set(UTILS_HEADERS src/utils/cli_argparsers.hpp)
+
+add_library(pmtlib STATIC ${TASK_SRCS} ${UTILS_SRCS} ${GEN_SRCS} ${TASK_HEADERS} ${UTILS_HEADERS})
+add_dependencies(pmtlib proto_codegen)
 
 target_link_libraries(pmtlib
   PUBLIC
     protobuf::libprotobuf
-    z3::libz3
+    spdlog::spdlog
+    ${Z3_LIBRARIES}
 )
 
 target_include_directories(pmtlib
   PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
     ${CMAKE_CURRENT_BINARY_DIR}/generated
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_INSTALL_PREFIX}/include
+    ${GEN_DIR}
 )
 
 # Example executable
-add_executable(planmt src/main.cpp)
-target_link_libraries(planmt PRIVATE pmtlib)
+add_executable(planmt-up-cli src/cli/planmt-up-cli.cpp)
+target_link_libraries(planmt-up-cli PRIVATE pmtlib)
+target_link_libraries(planmt-up-cli PUBLIC spdlog::spdlog)
+
+target_include_directories(planmt-up-cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# target_include_directories(planmt-up-cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/proto)
+target_include_directories(planmt-up-cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# target_include_directories(planmt-up-cli PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_include_directories(planmt-up-cli PRIVATE ${CMAKE_INSTALL_PREFIX}/include)
+target_include_directories(planmt-up-cli PRIVATE ${GEN_DIR})
 
 # (Optional) Install your lib/pkg into the same stage
 include(GNUInstallDirs)
-install(TARGETS pmtlib planmt
+install(TARGETS pmtlib planmt-up-cli
   EXPORT pmtlibTargets
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

@@ -31,19 +31,34 @@ ExternalProject_Add(ext_argparse
     -DARGPARSE_BUILD_TESTS=OFF
 )
 
+# # ----------------------------
+# # External: ng-log
+# # ----------------------------
+# ExternalProject_Add(ext_ng_log
+#   GIT_REPOSITORY https://github.com/ng-log/ng-log.git
+#   GIT_TAG        v0.8.2
+#   GIT_SHALLOW    TRUE
+#   UPDATE_DISCONNECTED TRUE
+#   CMAKE_ARGS
+#     ${COMMON_ARGS}
+#     -DBUILD_EXAMPLES=OFF
+#     -DWITH_GTEST=OFF
+#     -DWITH_GFLAGS=OFF
+# )
+
+
 # ----------------------------
-# External: ng-log
+# External: spdlog (header)
 # ----------------------------
-ExternalProject_Add(ext_ng_log
-  GIT_REPOSITORY https://github.com/ng-log/ng-log.git
-  GIT_TAG        v0.8.2
+
+ExternalProject_Add(ext_spdlog
+  GIT_REPOSITORY https://github.com/gabime/spdlog.git
+  GIT_TAG        v1.9.2
   GIT_SHALLOW    TRUE
   UPDATE_DISCONNECTED TRUE
   CMAKE_ARGS
     ${COMMON_ARGS}
-    -DBUILD_EXAMPLES=OFF
-    -DWITH_GTEST=OFF
-    -DWITH_GFLAGS=OFF
+    -DSPDLOG_BUILD_TESTS=OFF
 )
 
 # ----------------------------
@@ -83,7 +98,8 @@ ExternalProject_Add(ext_z3
 ExternalProject_Add(ext_pmt
   SOURCE_DIR  ${CMAKE_SOURCE_DIR}/pmt           # adjust path to your inner project
   BINARY_DIR  ${CMAKE_BINARY_DIR}/pmt-build
-  DEPENDS     ext_protobuf ext_z3 ext_argparse ext_ng_log
+  DEPENDS     ext_protobuf ext_z3 ext_argparse ext_spdlog
+  BUILD_ALWAYS TRUE
   CMAKE_ARGS
     -DCMAKE_PREFIX_PATH=${STAGE_DIR}               # <— critical: lets find_package see staged deps
     -DCMAKE_INSTALL_PREFIX=${STAGE_DIR}            # if you also install pmt into stage
