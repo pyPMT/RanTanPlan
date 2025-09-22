@@ -31,26 +31,9 @@ ExternalProject_Add(ext_argparse
     -DARGPARSE_BUILD_TESTS=OFF
 )
 
-# # ----------------------------
-# # External: ng-log
-# # ----------------------------
-# ExternalProject_Add(ext_ng_log
-#   GIT_REPOSITORY https://github.com/ng-log/ng-log.git
-#   GIT_TAG        v0.8.2
-#   GIT_SHALLOW    TRUE
-#   UPDATE_DISCONNECTED TRUE
-#   CMAKE_ARGS
-#     ${COMMON_ARGS}
-#     -DBUILD_EXAMPLES=OFF
-#     -DWITH_GTEST=OFF
-#     -DWITH_GFLAGS=OFF
-# )
-
-
 # ----------------------------
 # External: spdlog (header)
 # ----------------------------
-
 ExternalProject_Add(ext_spdlog
   GIT_REPOSITORY https://github.com/gabime/spdlog.git
   GIT_TAG        v1.9.2
@@ -92,13 +75,27 @@ ExternalProject_Add(ext_z3
 )
 
 # ----------------------------
+# External: xplugin
+# ----------------------------
+ExternalProject_Add(ext_xplugin
+  GIT_REPOSITORY https://github.com/QuantStack/xplugin.git
+  GIT_TAG        dac01f2
+  UPDATE_DISCONNECTED TRUE
+  CMAKE_ARGS
+    ${COMMON_ARGS}
+    -DXPLUGIN_BUILD_TESTS=OFF
+    -DXPLUGIN_BUILD_EXAMPLES=OFF
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+)
+
+# ----------------------------
 # Inner project: pmt (your lib/app)
 # ----------------------------
 # Ensure deps are installed first, then configure/build pmt with CMAKE_PREFIX_PATH
 ExternalProject_Add(ext_pmt
   SOURCE_DIR  ${CMAKE_SOURCE_DIR}/pmt           # adjust path to your inner project
   BINARY_DIR  ${CMAKE_BINARY_DIR}/pmt-build
-  DEPENDS     ext_protobuf ext_z3 ext_argparse ext_spdlog
+  DEPENDS     ext_protobuf ext_z3 ext_argparse ext_spdlog ext_xplugin
   BUILD_ALWAYS TRUE
   CMAKE_ARGS
     -DCMAKE_PREFIX_PATH=${STAGE_DIR}               # <— critical: lets find_package see staged deps
