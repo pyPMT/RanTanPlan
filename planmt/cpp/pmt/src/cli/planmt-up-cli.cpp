@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <iomanip>
+#include <filesystem>
 
 #include <google/protobuf/io/coded_stream.h>
 #include <google/protobuf/io/zero_copy_stream_impl.h>
@@ -23,6 +24,7 @@
 using factory_planner_base_type    = xp::xfactory_base<PlannerPluginBase>;
 using plugin_registry_planner_type = xp::xplugin_registry<factory_planner_base_type>;
 
+namespace fs = std::filesystem;
 
 int main(int argc, char* argv[]) {
     // Initialize Google's logging library.
@@ -33,8 +35,15 @@ int main(int argc, char* argv[]) {
 
     auto &program = planmt::utils::create_up_cli_argparser();
     std::string input_problem_file;
-    
+
     try {
+
+        // Load plugins.
+        // auto current_path = fs::current_path();
+        // std::cout << "Current path: " << current_path << std::endl;
+        
+        //plugin_registry_planner_type planners_registry(std::string(""));
+
         // Parse the command line arguments.
         program.parse_args(argc, argv);
 
