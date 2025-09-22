@@ -14,6 +14,16 @@
 #include "utils/cli_argparsers.hpp"
 
 
+#include "plugin_bases/encoder_plugin_base.hpp"
+#include "plugin_bases/planner_plugin_base.hpp"
+#include "plugin_bases/propagator_plugin_base.hpp"
+#include <xplugin/xplugin_registry.hpp>
+#include <xplugin/xfactory.hpp>
+
+using factory_planner_base_type    = xp::xfactory_base<PlannerPluginBase>;
+using plugin_registry_planner_type = xp::xplugin_registry<factory_planner_base_type>;
+
+
 int main(int argc, char* argv[]) {
     // Initialize Google's logging library.
     GOOGLE_PROTOBUF_VERIFY_VERSION;
@@ -22,46 +32,32 @@ int main(int argc, char* argv[]) {
     spdlog::info("TODO:");
 
     auto &program = planmt::utils::create_up_cli_argparser();
-
+    std::string input_problem_file;
+    
     try {
         // Parse the command line arguments.
         program.parse_args(argc, argv);
 
         // Read the planning task and create its z3 equivalent version.
-        auto input_problem_file = program.get<std::string>(planmt::utils::FLAG_INPUT_LONG);
+        input_problem_file = program.get<std::string>(planmt::utils::FLAG_INPUT_LONG);
         auto task = planmt::Task(input_problem_file);
+
+        // TODO: Convert the task into an SMT-based task.
+        
+        // TODO: Parse the plugins' arguments (i.e., planner, encoder, propagator).
+
+        // TODO: Start the planning process.
+
+        // TODO: Dump the results (i.e., plans) into the output file.
+
+
 
     }
     catch (const std::exception& err) {
-        // LOG(ERROR) << err.what();
-        // LOG(ERROR) << program;
+        spdlog::error("Reading the planning task from file: {}", input_problem_file);
+        spdlog::error("Error: {}", err.what());
         return 1;
     }
-
-    // LOG(INFO) << "Finished planning.";
-    
-    // try {        
-    //     if (argc < 3) {
-    //         std::cerr << "Usage: " << argv[0] << " <input_problem.pb> <output_solution.pb> [OPTIONS]" << std::endl;
-    //         std::cerr << "Use --help for detailed options" << std::endl;
-    //         return 1;
-    //     }
-    // } catch (const std::exception& e) {
-    //     std::cerr << "Configuration error: " << e.what() << std::endl;
-    //     return 1;
-    // }
-
-    // // Read the problem from the input file
-    // Problem problem_msg;
-    // std::fstream input(argv[1], std::ios::in | std::ios::binary);
-    // if (!input || !problem_msg.ParseFromIstream(&input)) {
-    //     std::cerr << "Error: Could not open or parse problem file: " << argv[1] << std::endl;
-    //     return 1;
-    // }
-
-    // // Create a Problem wrapper from the protobuf message
-    // planmt::Problem planning_problem(problem_msg);
-    // //std::cout << planning_problem.to_string() << std::endl;
 
     google::protobuf::ShutdownProtobufLibrary();
     return 0;

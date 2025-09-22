@@ -42,21 +42,26 @@ set(TASK_HEADERS src/task/task.hpp
                  src/task/elements/type.hpp
                  src/task/elements/object.hpp)
 
-set(ENCODERS_HEADERS src/encoders/sequential.hpp)
+
 set(ENCODERS_SRCS    src/encoders/sequential.cpp)
 
-set(PLANNERS_HEADERS src/planners/single.hpp)
 set(PLANNERS_SRCS    src/planners/single.cpp)
 
-set(PROPAGATORS_HEADERS src/propagators/null_propagator.hpp)
-set(PROPAGATORS_SRCS    src/propagators/null_propagator.cpp)
+set(PROPAGATORS_SRCS src/propagators/null_propagator.cpp)
+
+set(PLUGIN_HEADERS src/plugin_bases/encoder_plugin_base.hpp
+                   src/plugin_bases/planner_plugin_base.hpp
+                   src/plugin_bases/propagator_plugin_base.hpp)
+
+set(PLAN_HEADERS src/plan/plan.hpp)
+set(PLAN_SRCS    src/plan/plan.cpp)
 
 set(UTILS_SRCS src/utils/cli_argparsers.cpp)
 set(UTILS_HEADERS src/utils/cli_argparsers.hpp
                   src/utils/templates.hpp)
 
 add_library(pmtlib STATIC ${TASK_SRCS} ${UTILS_SRCS} ${ENCODERS_SRCS} ${PLANNERS_SRCS} ${PROPAGATORS_SRCS} ${GEN_SRCS} 
-                          ${TASK_HEADERS} ${UTILS_HEADERS} ${ENCODERS_HEADERS} ${PLANNERS_HEADERS} ${PROPAGATORS_HEADERS})
+                          ${TASK_HEADERS} ${UTILS_HEADERS} ${PLUGIN_HEADERS})
 add_dependencies(pmtlib proto_codegen)
 
 target_link_libraries(pmtlib
