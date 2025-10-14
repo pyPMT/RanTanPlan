@@ -14,16 +14,6 @@
 #include "task/task.hpp"
 #include "utils/cli_argparsers.hpp"
 
-
-#include "plugin_bases/encoder_plugin_base.hpp"
-#include "plugin_bases/planner_plugin_base.hpp"
-#include "plugin_bases/propagator_plugin_base.hpp"
-#include <xplugin/xplugin_registry.hpp>
-#include <xplugin/xfactory.hpp>
-
-using factory_planner_base_type    = xp::xfactory_base<PlannerPluginBase>;
-using plugin_registry_planner_type = xp::xplugin_registry<factory_planner_base_type>;
-
 namespace fs = std::filesystem;
 
 int main(int argc, char* argv[]) {

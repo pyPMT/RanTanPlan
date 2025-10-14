@@ -4,13 +4,23 @@ project(pmt CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# RPATH configuration to avoid install_name_tool errors
+set(CMAKE_SKIP_BUILD_RPATH FALSE)
+set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+set(CMAKE_MACOSX_RPATH TRUE)
+
+# Only set install RPATH if we're actually installing
+if(CMAKE_INSTALL_PREFIX)
+    set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
+endif()
+
 # Find staged dependencies (superbuild passes CMAKE_PREFIX_PATH)
 
 # For now but we need to find a way to fix this.
 find_package(Protobuf CONFIG REQUIRED)
 find_package(Z3       CONFIG REQUIRED)
 find_package(spdlog   CONFIG REQUIRED)
-find_package(xplugin         REQUIRED)
 
 # Create the protobuf files.
 set(PROTO_FILES
@@ -49,10 +59,6 @@ set(PLANNERS_SRCS    src/planners/single.cpp)
 
 set(PROPAGATORS_SRCS src/propagators/null_propagator.cpp)
 
-set(PLUGIN_HEADERS src/plugin_bases/encoder_plugin_base.hpp
-                   src/plugin_bases/planner_plugin_base.hpp
-                   src/plugin_bases/propagator_plugin_base.hpp)
-
 set(PLAN_HEADERS src/plan/plan.hpp)
 set(PLAN_SRCS    src/plan/plan.cpp)
 
@@ -61,7 +67,7 @@ set(UTILS_HEADERS src/utils/cli_argparsers.hpp
                   src/utils/templates.hpp)
 
 add_library(pmtlib STATIC ${TASK_SRCS} ${UTILS_SRCS} ${ENCODERS_SRCS} ${PLANNERS_SRCS} ${PROPAGATORS_SRCS} ${GEN_SRCS} 
-                          ${TASK_HEADERS} ${UTILS_HEADERS} ${PLUGIN_HEADERS})
+                          ${TASK_HEADERS} ${UTILS_HEADERS})
 add_dependencies(pmtlib proto_codegen)
 
 target_link_libraries(pmtlib
@@ -69,7 +75,6 @@ target_link_libraries(pmtlib
     protobuf::libprotobuf
     spdlog::spdlog
     ${Z3_LIBRARIES}
-    ${XPLUGIN_XPLUGIN_LIBRARY}
 )
 
 target_include_directories(pmtlib
@@ -90,6 +95,13 @@ target_include_directories(planmt-up-cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc
 target_include_directories(planmt-up-cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_include_directories(planmt-up-cli PRIVATE ${CMAKE_INSTALL_PREFIX}/include)
 target_include_directories(planmt-up-cli PRIVATE ${GEN_DIR})
+
+# Prevent RPATH manipulation errors on macOS
+set_target_properties(planmt-up-cli PROPERTIES
+    SKIP_BUILD_RPATH FALSE
+    BUILD_WITH_INSTALL_RPATH FALSE
+    INSTALL_RPATH_USE_LINK_PATH TRUE
+)
 
 # (Optional) Install your lib/pkg into the same stage
 include(GNUInstallDirs)

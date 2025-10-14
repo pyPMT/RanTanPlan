@@ -75,16 +75,21 @@ ExternalProject_Add(ext_z3
 )
 
 # ----------------------------
-# External: xplugin
+# External: corrade
 # ----------------------------
-ExternalProject_Add(ext_xplugin
-  GIT_REPOSITORY https://github.com/QuantStack/xplugin.git
-  GIT_TAG        dac01f2
+ExternalProject_Add(ext_corrade
+  GIT_REPOSITORY https://github.com/mosra/corrade.git
+  GIT_TAG        5f66f3c
+  GIT_SHALLOW    TRUE
+  GIT_SUBMODULES ""
   UPDATE_DISCONNECTED TRUE
   CMAKE_ARGS
     ${COMMON_ARGS}
-    -DXPLUGIN_BUILD_TESTS=OFF
-    -DXPLUGIN_BUILD_EXAMPLES=OFF
+    # -DWITH_INTERCONNECT=OFF
+    -DCORRADE_WITH_TESTSUITE=OFF
+    # -DBUILD_DEPRECATED=OFF
+    # -DWITH_RC=OFF
+    # -DWITH_MAIN=OFF
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 )
 
@@ -95,12 +100,13 @@ ExternalProject_Add(ext_xplugin
 ExternalProject_Add(ext_pmt
   SOURCE_DIR  ${CMAKE_SOURCE_DIR}/pmt           # adjust path to your inner project
   BINARY_DIR  ${CMAKE_BINARY_DIR}/pmt-build
-  DEPENDS     ext_protobuf ext_z3 ext_argparse ext_spdlog ext_xplugin
+  DEPENDS     ext_protobuf ext_z3 ext_argparse ext_spdlog ext_corrade
   BUILD_ALWAYS TRUE
   CMAKE_ARGS
     -DCMAKE_PREFIX_PATH=${STAGE_DIR}               # <— critical: lets find_package see staged deps
     -DCMAKE_INSTALL_PREFIX=${STAGE_DIR}            # if you also install pmt into stage
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+    -DCMAKE_SKIP_INSTALL_RPATH=ON                  # Skip RPATH manipulation during install
 )
 
 # Convenience target
