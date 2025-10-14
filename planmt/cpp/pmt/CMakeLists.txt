@@ -36,6 +36,9 @@ corrade_add_static_plugin(Sequential
                           ${CMAKE_CURRENT_SOURCE_DIR}/src/encoders/Sequential.cpp
                           )
 
+set(PLUGIN_NAMES "")
+list(APPEND PLUGIN_NAMES "Sequential")
+
 
 
 # Create the protobuf files.
@@ -92,9 +95,7 @@ target_link_libraries(pmtlib
     spdlog::spdlog
     ${Z3_LIBRARIES}
     Corrade::PluginManager
-
-    # Add the plugin dependencies here if any
-    Sequential
+    ${PLUGIN_NAMES}
 )
 
 target_include_directories(pmtlib
