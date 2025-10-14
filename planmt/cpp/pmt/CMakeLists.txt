@@ -21,6 +21,22 @@ endif()
 find_package(Protobuf CONFIG REQUIRED)
 find_package(Z3       CONFIG REQUIRED)
 find_package(spdlog   CONFIG REQUIRED)
+find_package(Corrade REQUIRED PluginManager)
+set_directory_properties(PROPERTIES CORRADE_USE_PEDANTIC_FLAGS ON)
+
+# Add the plugins
+set(PLUGIN_INSTALL_DIR ${CMAKE_INSTALL_PREFIX}/lib/planmt-plugins)
+file(MAKE_DIRECTORY "${PLUGIN_INSTALL_DIR}")
+
+# TODO: Create a macro to simplify adding plugins
+corrade_add_static_plugin(Sequential 
+                          ${PLUGIN_INSTALL_DIR} 
+                          ${CMAKE_CURRENT_SOURCE_DIR}/src/encoders/Sequential.conf 
+                          ${CMAKE_CURRENT_SOURCE_DIR}/src/encoders/encoder_base_plugin.hpp
+                          ${CMAKE_CURRENT_SOURCE_DIR}/src/encoders/Sequential.cpp
+                          )
+
+
 
 # Create the protobuf files.
 set(PROTO_FILES
@@ -75,6 +91,10 @@ target_link_libraries(pmtlib
     protobuf::libprotobuf
     spdlog::spdlog
     ${Z3_LIBRARIES}
+    Corrade::PluginManager
+
+    # Add the plugin dependencies here if any
+    Sequential
 )
 
 target_include_directories(pmtlib

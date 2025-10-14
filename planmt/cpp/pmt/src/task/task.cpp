@@ -77,12 +77,6 @@ void Task::load_objects(const pb::RepeatedObjectDeclaration& pb_objects) {
     }
 }
 
-const Type& Task::find_type(const std::string& name) const {
-    // auto it = type_name_to_ptr_.find(name);
-    // if (it != type_name_to_ptr_.end()) return it->second;
-    // throw std::runtime_error("Type not found: " + name);
-}
-
 
 
 } // namespace planmt

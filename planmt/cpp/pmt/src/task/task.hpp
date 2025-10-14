@@ -42,7 +42,7 @@ private:
     void load_types(const pb::RepeatedTypeDeclaration& pb_types);
 
     // Search for types.
-    const Type& find_type(const std::string& name) const;
+    // const Type& find_type(const std::string& name) const;
     
     // Read problem objects
     void load_objects(const pb::RepeatedObjectDeclaration& pb_objects);
