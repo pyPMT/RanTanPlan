@@ -78,7 +78,7 @@ void SequentialPlanner::add_timestep_constraints(int timestep) {
     propagator_strategy_->register_timestep_variables(timestep + 1);
 }
 
-Plan SequentialPlanner::search() {
+Plan SequentialPlanner::search(float q, int k, const std::vector<std::string> dimensions) {
     auto& config = Config::instance();
     auto& stats = Stats::instance();
 

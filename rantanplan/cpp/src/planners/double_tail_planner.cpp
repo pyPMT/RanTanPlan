@@ -126,7 +126,7 @@ void DoubleTailPlanner::add_timestep_constraints(int t) {
  * - Solver is called with assumption [link_at_i = true]
  * - This allows incremental solving while testing different link positions
  */
-Plan DoubleTailPlanner::search() {
+Plan DoubleTailPlanner::search(float q, int k, const std::vector<std::string> dimensions) {
     auto& config = Config::instance();
     auto& stats = Stats::instance();
 

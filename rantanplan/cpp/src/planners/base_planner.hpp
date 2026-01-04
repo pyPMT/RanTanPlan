@@ -24,7 +24,7 @@ public:
      * @brief Main search method - runs the planning algorithm
      * @return Plan object (may be empty if no solution found)
      */
-    virtual Plan search() = 0;
+    virtual Plan search(float q = 1.0, int k = 1, const std::vector<std::string> dimensions = {}) = 0;
 
     /**
      * @brief Check if the last search found a solution

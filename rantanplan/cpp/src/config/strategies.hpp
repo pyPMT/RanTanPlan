@@ -682,4 +682,32 @@ public:
     std::string get_name() const override { return "exists-lazy-semantic-chain-dt"; }
 };
 
+// =============================================================================
+// DIVERSITY STRATEGIES
+// =============================================================================
+
+class ForbidBehaviourIterativeStrategy : public StrategyConfiguration {
+public:
+    std::unique_ptr<BaseEncoder> create_encoder(const Problem& p, z3::context& ctx) const override {
+        return std::make_unique<GroundedEncoder>(p, ctx);
+    }
+
+    std::unique_ptr<ParallelismStrategy> create_parallelism() const override {
+        return std::make_unique<SequentialSemantics>();
+    }
+
+    std::unique_ptr<PropagatorStrategy> create_propagator(
+        z3::solver& s, const Problem& p, const BaseEncoder& e) const override {
+        return std::make_unique<NullPropagator>();
+    }
+
+    std::unique_ptr<InterferenceAnalysis> create_interference(const Problem& p) const override {
+        return std::make_unique<EagerInterferenceAnalysis>(p);
+    }
+
+    bool needs_parallelism_encoding() const override { return true; }
+    bool supports_formula_export() const override { return true; }
+    std::string get_name() const override { return "fbi"; }
+};
+
 } // namespace rantanplan

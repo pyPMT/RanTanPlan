@@ -21,7 +21,7 @@ public:
                      std::unique_ptr<PropagatorStrategy> propagator);
 
     // BasePlanner interface implementation
-    Plan search() override;
+    Plan search(float q = 1.0, int k = 1, const std::vector<std::string> dimensions = {}) override;
 
     // Check if the last search found a solution (even if empty plan)
     bool solution_found() const override { return solution_found_; }

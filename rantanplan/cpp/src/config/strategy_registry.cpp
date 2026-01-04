@@ -55,6 +55,9 @@ void StrategyRegistry::initialize_builtin_strategies(std::map<std::string, Strat
     registry["exists-lazy-dt"] = []() { return std::make_unique<ExistsLazyDoubleTailStrategy>(); };
     registry["exists-lazy-semantic-dt"] = []() { return std::make_unique<ExistsLazySemanticDoubleTailStrategy>(); };
     registry["exists-lazy-semantic-chain-dt"] = []() { return std::make_unique<ExistsLazySemanticChainDoubleTailStrategy>(); };
+
+    // Diverse planning strategies
+    registry["forbid-behaviour-iterative"] = []() { return std::make_unique<ForbidBehaviourIterativeStrategy>(); };
 }
 
 std::unique_ptr<StrategyConfiguration> StrategyRegistry::create(const std::string& name) {

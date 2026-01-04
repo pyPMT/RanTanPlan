@@ -43,7 +43,7 @@ public:
     DoubleTailPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx);
 
     // BasePlanner interface implementation
-    Plan search() override;
+    Plan search(float q = 1.0, int k = 1, const std::vector<std::string> dimensions = {}) override;
     bool solution_found() const override { return solution_found_; }
     void set_propagator_strategy(std::unique_ptr<PropagatorStrategy> propagator) override;
     std::string get_propagator_strategy_name() const override;

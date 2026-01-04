@@ -5,6 +5,7 @@
 #include "../planners/base_planner.hpp"
 #include "../planners/sequential.hpp"
 #include "../planners/propagators/propagator_strategy.hpp"
+#include "../planners/forbid_behaviour_iterative.hpp"
 #include "../encoders/parallelism/parallelism_strategy.hpp"
 #include "../encoders/parallelism/interference_analysis.hpp"
 #include <z3++.h>
