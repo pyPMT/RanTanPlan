@@ -93,8 +93,7 @@ endif()
 # TARGET DEFINITION
 # ==============================================================================
 # Create main executable
-add_executable(rantanplan
-    src/main.cpp
+add_library(rantanplan_lib
     src/config/config.cpp
     src/config/cli_parser.cpp
     src/config/strategy_registry.cpp
@@ -247,3 +246,11 @@ if(NOT Z3_FOUND AND Z3_LIB_DIR)
         SKIP_INSTALL_RPATH FALSE
     )
 endif()
+
+
+add_executable(rantanplan
+    src/main.cpp
+)
+
+add_dependencies(rantanplan rantanplan_lib)
+target_link_libraries(rantanplan PRIVATE rantanplan_lib)
