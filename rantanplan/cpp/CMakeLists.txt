@@ -177,7 +177,7 @@ add_library(rantanplan_lib
 set(PROTO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/proto/unified_planning.proto)
 message(STATUS "PROTO_FILES: ${PROTO_FILES}")
 # generate protobuf files for the target
-protobuf_generate(TARGET rantanplan
+protobuf_generate(TARGET rantanplan_lib
     PROTOS ${PROTO_FILES}
     LANGUAGE cpp
 )
@@ -186,7 +186,7 @@ protobuf_generate(TARGET rantanplan
 # TARGET CONFIGURATION
 # ==============================================================================
 # Include directories
-target_include_directories(rantanplan PRIVATE
+target_include_directories(rantanplan_lib PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}                      # generated protobuf sources
     ${CMAKE_CURRENT_BINARY_DIR}/proto                # generated protobuf headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src                  # our source headers
@@ -205,7 +205,7 @@ target_include_directories(rantanplan PRIVATE
 )
 
 # Link libraries
-target_link_libraries(rantanplan PRIVATE
+target_link_libraries(rantanplan_lib PUBLIC
     protobuf::libprotobuf
     ${Z3_LINK_LIBRARY} # Ensure this uses the full path from Z3_LIBRARY
 )
@@ -231,11 +231,6 @@ if(APPLE AND NOT Z3_FOUND)
 endif()
 
 # ==============================================================================
-# INSTALLATION
-# ==============================================================================
-install(TARGETS rantanplan DESTINATION ${OUTPUT_DIR})
-
-# ==============================================================================
 # Set RPATH for Z3 if found manually
 # ==============================================================================
 if(NOT Z3_FOUND AND Z3_LIB_DIR)
@@ -252,5 +247,32 @@ add_executable(rantanplan
     src/main.cpp
 )
 
+# Include directories
+target_include_directories(rantanplan PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}                      # generated protobuf sources
+    ${CMAKE_CURRENT_BINARY_DIR}/proto                # generated protobuf headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src                  # our source headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/config           # config headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/util             # utility headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/problem          # problem representation headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/problem/visitors # visitor headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/encoders/        # encoders headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/planners/        # planners headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/symmetries/      # symmetries headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/abstraction/     # abstraction headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/analysis/        # analysis headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/passes/          # pass system headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/grounding/       # grounding headers
+    ${Z3_INCLUDE_DIR}                                # Z3 headers
+)
+
 add_dependencies(rantanplan rantanplan_lib)
 target_link_libraries(rantanplan PRIVATE rantanplan_lib)
+
+
+# ==============================================================================
+# INSTALLATION
+# ==============================================================================
+
+install(TARGETS rantanplan_lib DESTINATION ${OUTPUT_DIR})
+install(TARGETS rantanplan DESTINATION ${OUTPUT_DIR})
