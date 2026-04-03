@@ -201,5 +201,14 @@ Plan SequentialPlanner::search() {
     return Plan();
 }
 
+std::vector<Plan> SequentialPlanner::fbi(size_t k_plans, std::string bspace, std::string search_strategy) {
+    std::vector<Plan> plans;
+
+    // I think we can use here to convert the string into a class containing the SMT variables and then we can pass this
+    // class to BehaviourGenerator and PlanGenerator subrountines.
+
+
+    return plans; 
+}
 
 } // namespace rantanplan

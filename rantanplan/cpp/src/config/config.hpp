@@ -62,6 +62,12 @@ public:
     struct Logging {
         std::string log_file = "";        // Empty = no logging; path = solver decision log
     } logging;
+    
+    struct DiverseityPlanning {
+        size_t k_plans = -1;                       // Number of required plans.
+        std::string bspace_features = "";          // Behaviour space dimensions.
+        std::string fbi_search_strategy = "blind"; // The default FBI search strategy is blind. 
+    } diversity_planning_parameters;
 
     void initialize(int argc, char* argv[]);
     void validate() const;

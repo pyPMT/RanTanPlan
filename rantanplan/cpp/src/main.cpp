@@ -146,46 +146,59 @@ PlanGenerationResult solve_planning_problem(rantanplan::PipelineResult& pipeline
     }
 
     planner->set_propagator_strategy(std::move(propagator));
-
-    // Call planner->search() and get the result
-    rantanplan::Plan plan = planner->search();
-    if (planner->solution_found()) {
-        if (planner->optimality_proven()) {
-            result.set_status(PlanGenerationResult_Status_SOLVED_OPTIMALLY);
-        } else {
-            result.set_status(PlanGenerationResult_Status_SOLVED_SATISFICING);
-        }
-
-        *result.mutable_plan() = rantanplan::plan_to_protobuf(plan);
-
-        if (config.is_info()) {
-            log_message = result.add_log_messages();
-            log_message->set_level(LogMessage_LogLevel_INFO);
-            std::string msg = "Plan found with " + std::to_string(plan.length()) + " actions.";
-            if (rantanplan::uses_branch_and_bound(spec)) {
-                msg += " Cost: " + std::to_string(planner->best_cost()) + ".";
-                if (planner->optimality_proven()) {
-                    msg += " (OPTIMAL)";
-                }
-            }
-            log_message->set_message(msg);
-        }
-    } else if (planner->timed_out()) {
-        result.set_status(PlanGenerationResult_Status_TIMEOUT);
-        if (config.is_info()) {
-            log_message = result.add_log_messages();
-            log_message->set_level(LogMessage_LogLevel_INFO);
-            log_message->set_message("Timeout reached.");
-        }
+    
+    // Check If the planning problem is a diversity planning problem (i.e., number of required plans is greater than 1).
+    std::vector<rantanplan::Plan> plans;
+    if (config.diversity_planning_parameters.k_plans > 1) {
+        // This is for future developments in case other diversity planning approaches appear.
+        auto k = config.diversity_planning_parameters.k_plans;
+        auto bspace = config.diversity_planning_parameters.bspace_features;
+        auto ss = config.diversity_planning_parameters.fbi_search_strategy;
+        plans = planner->fbi(k, bspace, ss);
     } else {
-        // No plan found within search limits (max_steps exhausted)
-        result.set_status(PlanGenerationResult_Status_UNSOLVABLE_INCOMPLETELY);
-        if (config.is_info()) {
-            log_message = result.add_log_messages();
-            log_message->set_level(LogMessage_LogLevel_INFO);
-            log_message->set_message("No plan found within the search limit.");
-        }
+        plans.push_back(planner->search());
     }
+    
+    // TODO: I still need to figure this out.
+//    // Call planner->search() and get the result
+////    rantanplan::Plan plan = planner->search();
+//    if (planner->solution_found()) {
+//        if (planner->optimality_proven()) {
+//            result.set_status(PlanGenerationResult_Status_SOLVED_OPTIMALLY);
+//        } else {
+//            result.set_status(PlanGenerationResult_Status_SOLVED_SATISFICING);
+//        }
+//
+//        *result.mutable_plan() = rantanplan::plan_to_protobuf(plan);
+//
+//        if (config.is_info()) {
+//            log_message = result.add_log_messages();
+//            log_message->set_level(LogMessage_LogLevel_INFO);
+//            std::string msg = "Plan found with " + std::to_string(plan.length()) + " actions.";
+//            if (rantanplan::uses_branch_and_bound(spec)) {
+//                msg += " Cost: " + std::to_string(planner->best_cost()) + ".";
+//                if (planner->optimality_proven()) {
+//                    msg += " (OPTIMAL)";
+//                }
+//            }
+//            log_message->set_message(msg);
+//        }
+//    } else if (planner->timed_out()) {
+//        result.set_status(PlanGenerationResult_Status_TIMEOUT);
+//        if (config.is_info()) {
+//            log_message = result.add_log_messages();
+//            log_message->set_level(LogMessage_LogLevel_INFO);
+//            log_message->set_message("Timeout reached.");
+//        }
+//    } else {
+//        // No plan found within search limits (max_steps exhausted)
+//        result.set_status(PlanGenerationResult_Status_UNSOLVABLE_INCOMPLETELY);
+//        if (config.is_info()) {
+//            log_message = result.add_log_messages();
+//            log_message->set_level(LogMessage_LogLevel_INFO);
+//            log_message->set_message("No plan found within the search limit.");
+//        }
+//    }
 
     if (config.is_verbose()) {
         log_message = result.add_log_messages();

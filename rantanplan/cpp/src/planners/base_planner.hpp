@@ -11,6 +11,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace rantanplan {
 
@@ -85,6 +86,7 @@ public:
      * @return Plan object (may be empty if no solution found)
      */
     virtual Plan search() = 0;
+    virtual std::vector<Plan> fbi(size_t k_plans, std::string bspace, std::string search_strategy) { return {}; }
 
     /**
      * @brief Check if the last search found a solution

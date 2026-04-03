@@ -138,6 +138,21 @@ void CLIParser::parse(Config& config, int argc, char* argv[]) {
                 throw std::invalid_argument("--log-file requires a filename");
             }
         }
+        // Diversity planning options
+        else if (arg == "--behaviour-space") {
+            if (i + 1 < argc) {
+                config.diversity_planning_parameters.bspace_features = argv[++i];
+            } else {
+                throw std::invalid_argument("--behaviour-space requires a string describing the dimensions");
+            }
+        }
+        else if (arg == "--k-plans") {
+            if (i + 1 < argc) {
+                config.diversity_planning_parameters.k_plans = std::stoi(argv[++i]);
+            } else {
+                throw std::invalid_argument("--k-plans requires an integer");
+            }
+        }
     }
 
 }

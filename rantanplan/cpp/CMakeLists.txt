@@ -93,7 +93,7 @@ endif()
 # TARGET DEFINITION
 # ==============================================================================
 # Create main executable
-add_library(rantanplan_lib
+add_library(rantanplanlib
     src/config/config.cpp
     src/config/cli_parser.cpp
     src/config/strategy_registry.cpp
@@ -177,7 +177,7 @@ add_library(rantanplan_lib
 set(PROTO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/proto/unified_planning.proto)
 message(STATUS "PROTO_FILES: ${PROTO_FILES}")
 # generate protobuf files for the target
-protobuf_generate(TARGET rantanplan_lib
+protobuf_generate(TARGET rantanplanlib
     PROTOS ${PROTO_FILES}
     LANGUAGE cpp
 )
@@ -186,7 +186,7 @@ protobuf_generate(TARGET rantanplan_lib
 # TARGET CONFIGURATION
 # ==============================================================================
 # Include directories
-target_include_directories(rantanplan_lib PRIVATE
+target_include_directories(rantanplanlib PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}                      # generated protobuf sources
     ${CMAKE_CURRENT_BINARY_DIR}/proto                # generated protobuf headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src                  # our source headers
@@ -205,7 +205,7 @@ target_include_directories(rantanplan_lib PRIVATE
 )
 
 # Link libraries
-target_link_libraries(rantanplan_lib PUBLIC
+target_link_libraries(rantanplanlib PUBLIC
     protobuf::libprotobuf
     ${Z3_LINK_LIBRARY} # Ensure this uses the full path from Z3_LIBRARY
 )
@@ -266,13 +266,13 @@ target_include_directories(rantanplan PRIVATE
     ${Z3_INCLUDE_DIR}                                # Z3 headers
 )
 
-add_dependencies(rantanplan rantanplan_lib)
-target_link_libraries(rantanplan PRIVATE rantanplan_lib)
+add_dependencies(rantanplan rantanplanlib)
+target_link_libraries(rantanplan PRIVATE rantanplanlib)
 
 
 # ==============================================================================
 # INSTALLATION
 # ==============================================================================
 
-install(TARGETS rantanplan_lib DESTINATION ${OUTPUT_DIR})
+install(TARGETS rantanplanlib DESTINATION ${OUTPUT_DIR})
 install(TARGETS rantanplan DESTINATION ${OUTPUT_DIR})
