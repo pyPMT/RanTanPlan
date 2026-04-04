@@ -147,17 +147,26 @@ PlanGenerationResult solve_planning_problem(rantanplan::PipelineResult& pipeline
 
     planner->set_propagator_strategy(std::move(propagator));
     
-    // Check If the planning problem is a diversity planning problem (i.e., number of required plans is greater than 1).
-    std::vector<rantanplan::Plan> plans;
-    if (config.diversity_planning_parameters.k_plans > 1) {
-        // This is for future developments in case other diversity planning approaches appear.
-        auto k = config.diversity_planning_parameters.k_plans;
-        auto bspace = config.diversity_planning_parameters.bspace_features;
-        auto ss = config.diversity_planning_parameters.fbi_search_strategy;
-        plans = planner->fbi(k, bspace, ss);
-    } else {
-        plans.push_back(planner->search());
+    auto n            = config.formula_export.timestep;
+    auto k            = config.diversity_planning_parameters.k_plans;
+    auto bspace       = config.diversity_planning_parameters.bspace_features;
+    auto diversity_ss = config.diversity_planning_parameters.search_strategy;
+
+    for (auto &plan : planner->search(n, k, bspace, diversity_ss)) {
+        if (!plan.is_empty()) {
+            std::cout << "Break Point." << std::endl;
+        }
     }
+
+
+    std::vector<rantanplan::Plan> plans;
+    // if (config.diversity_planning_parameters.k_plans > 1) {
+    //     // This is for future developments in case other diversity planning approaches appear.
+        
+    //     plans = planner->fbi(k, bspace, ss);
+    // } else {
+    //     plans.push_back(planner->search());
+    // }
     
     // TODO: I still need to figure this out.
 //    // Call planner->search() and get the result

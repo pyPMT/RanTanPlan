@@ -233,14 +233,14 @@ endif()
 # ==============================================================================
 # Set RPATH for Z3 if found manually
 # ==============================================================================
-if(NOT Z3_FOUND AND Z3_LIB_DIR)
-    set_target_properties(rantanplan PROPERTIES
-        BUILD_WITH_INSTALL_RPATH TRUE
-        INSTALL_RPATH "${Z3_LIB_DIR}"
-        SKIP_BUILD_RPATH FALSE
-        SKIP_INSTALL_RPATH FALSE
-    )
-endif()
+# if(NOT Z3_FOUND AND Z3_LIB_DIR)
+#     set_target_properties(rantanplan PROPERTIES
+#         BUILD_WITH_INSTALL_RPATH TRUE
+#         INSTALL_RPATH "${Z3_LIB_DIR}"
+#         SKIP_BUILD_RPATH FALSE
+#         SKIP_INSTALL_RPATH FALSE
+#     )
+# endif()
 
 
 add_executable(rantanplan

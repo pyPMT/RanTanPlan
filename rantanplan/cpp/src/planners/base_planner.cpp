@@ -1,3 +1,9 @@
+
+#include <iostream>
+#include <string>
+#include <vector>
+#include <sstream>
+
 #include "base_planner.hpp"
 #include "../config/config.hpp"
 #include "../util/memory_tracker.hpp"
@@ -179,6 +185,33 @@ void BasePlanner::add_timestep_constraints(z3::solver& solver, BaseEncoder& enco
     }
 
     propagator.register_timestep_variables(timestep + 1);
+}
+
+void BasePlanner::parse_bspace_features(const std::string& bspace_str, BaseEncoder& encoder, size_t formula_length) {
+    
+    // 1. cache find() — currently called 3x
+    auto split = [](const std::string& s) {
+        auto p = s.find('(');
+        return std::make_pair(s.substr(0, p), s.substr(p + 1, s.size() - p - 2));
+    };
+
+    // 2. stringstream can't be a temporary in getline (non-const ref) — declare it
+    std::istringstream ss(bspace_str);
+    for (std::string token; std::getline(ss, token, '/');) {
+        auto [name, args] = split(token);
+        if (name == "cb") {
+            
+            diversity_features_.push_back(CostBoundDiversityFeature(args, encoder));
+            std::cout << "Parsing behaviour space feature: " "\n";
+        }
+        
+        
+    }
+
+        
+
+
+    std::cout << "Break Point." << std::endl;
 }
 
 } // namespace rantanplan

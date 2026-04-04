@@ -201,8 +201,32 @@ Plan SequentialPlanner::search() {
     return Plan();
 }
 
-std::vector<Plan> SequentialPlanner::fbi(size_t k_plans, std::string bspace, std::string search_strategy) {
+std::vector<Plan> SequentialPlanner::search(size_t formula_timestep, size_t k_plans, std::string bspace, std::string search_strategy) {
+    // The process is simple,
+    // first check if the formula_timestep is -1 then we need to find a seed plan and then start search for diverse plans.
+    // Otherwise, create the formula with the given formula_timestep and then start search for diverse plans.
+
+    if (static_cast<int>(formula_timestep) < 0) {
+
+    } else {
+        // Create a base formula with length formula_timestep.
+        for (int t = 0; t < static_cast<int>(formula_timestep); ++t) {
+            add_timestep_constraints(t);
+        }
+        // Parse the behaviour space features. 
+
+        parse_bspace_features(bspace, encoder_, formula_timestep);
+
+
+        std::cout << "Break point." << std::endl;
+    }
+
+    
+    
     std::vector<Plan> plans;
+
+
+
 
     // I think we can use here to convert the string into a class containing the SMT variables and then we can pass this
     // class to BehaviourGenerator and PlanGenerator subrountines.

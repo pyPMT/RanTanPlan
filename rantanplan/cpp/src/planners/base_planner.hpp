@@ -5,6 +5,10 @@
 #include "../problem/plan.hpp"
 #include "../encoders/base_encoder.hpp"
 #include "propagators/propagator_strategy.hpp"
+
+#include "diversity_features/base_diversity_feature.hpp"
+#include "diversity_features/cost_bound_diversity_feature.hpp"
+
 #include <z3++.h>
 #include <algorithm>
 #include <chrono>
@@ -12,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <variant>
 
 namespace rantanplan {
 
@@ -86,7 +91,7 @@ public:
      * @return Plan object (may be empty if no solution found)
      */
     virtual Plan search() = 0;
-    virtual std::vector<Plan> fbi(size_t k_plans, std::string bspace, std::string search_strategy) { return {}; }
+    virtual std::vector<Plan> search(size_t formula_timestep, size_t k_plans, std::string bspace, std::string search_strategy) { return {search()}; }
 
     /**
      * @brief Check if the last search found a solution
@@ -121,6 +126,10 @@ public:
     void set_horizon_schedule(HorizonSchedule s) { schedule_ = s; }
     const HorizonSchedule& get_horizon_schedule() const { return schedule_; }
 
+    /// Parse the behaviour space constraints from the given string
+    /// and return a vector of tuples containing the features expressions and their extract functions.
+    void parse_bspace_features(const std::string& bspace_str, BaseEncoder& encoder, size_t formula_length);
+
 protected:
     /// Construct with shared planner dependencies.
     BasePlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx);
@@ -136,6 +145,10 @@ protected:
     HorizonSchedule schedule_;
 
     ArithmeticProfile arithmetic_profile_ = ArithmeticProfile::LINEAR;
+
+    /// A list containing the diversity features.
+    std::vector<std::variant<BaseDiversityFeature, CostBoundDiversityFeature>> diversity_features_; // TODO: define the variant type when we have more than one diversity feature.
+
 
     bool solution_found_ = false;
     bool timed_out_ = false;

@@ -22,7 +22,7 @@ public:
 
     // BasePlanner interface implementation
     Plan search() override;
-    std::vector<Plan> fbi(size_t k_plans, std::string bspace, std::string search_strategy) override;
+    std::vector<Plan> search(size_t formula_timestep, size_t k_plans, std::string bspace, std::string search_strategy) override;
 
 private:
     // Debug method to output constraints for a given timestep
