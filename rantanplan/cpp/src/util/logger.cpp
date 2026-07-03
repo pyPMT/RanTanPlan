@@ -14,8 +14,8 @@ Logger& Logger::instance() {
     return *instance_;
 }
 
-void Logger::set_config(const Config* config) {
-    config_ = config;
+void Logger::set_verbosity(VerbosityLevel verbosity) {
+    verbosity_ = verbosity;
 }
 
 bool Logger::should_print(VerbosityLevel min_level) const {
@@ -28,13 +28,8 @@ bool Logger::should_print(VerbosityLevel min_level) const {
         return true;
     }
 
-    // If no config yet, default to INFO level
-    if (!config_) {
-        return min_level <= VerbosityLevel::INFO;
-    }
-
-    // Check against configured verbosity
-    return config_->global.verbosity >= min_level;
+    // Check against configured verbosity (defaults to INFO until set)
+    return verbosity_ >= min_level;
 }
 
 void Logger::info(const std::string& msg) {

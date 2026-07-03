@@ -21,10 +21,10 @@ public:
                            std::unique_ptr<ParallelismStrategy> parallelism);
     
     // Override action encoding to implement chained effects
-    std::shared_ptr<z3::expr> encode_actions(int t) override;
+    z3::expr encode_actions(int t) override;
 
-    std::shared_ptr<z3::expr> encode_non_cumulative_effects(const Action& action, int t) override;
-    std::shared_ptr<z3::expr> encode_cumulative_effects(int t) override;
+    std::optional<z3::expr> encode_non_cumulative_effects(const Action& action, int t) override;
+    z3::expr encode_cumulative_effects(int t) override;
 
 private:
     // Map from non-Boolean variable (ExprID) to actions that modify it
@@ -40,7 +40,7 @@ private:
      * @brief Encode chained effects for multi-modified non-Boolean variables
      * Implements equations (7)-(9) from Section 5.2
      */
-    std::shared_ptr<z3::expr> encode_chained_effects(int t);
+    z3::expr encode_chained_effects(int t);
     
     /**
      * @brief Get the effect expression for a specific variable from an action

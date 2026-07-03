@@ -10,7 +10,7 @@
 namespace rantanplan {
 
 class BaseEncoder;
-class InterferenceAnalysis;
+class InterferenceOracle;
 
 /// Encodes an optimistic abstract suffix for branch-and-bound cost-optimal planning.
 ///
@@ -54,7 +54,7 @@ class AbstractSuffixEncoder {
 public:
     AbstractSuffixEncoder(const Problem& problem, z3::context& ctx,
                           BaseEncoder& encoder,
-                          const InterferenceAnalysis* interference,
+                          const InterferenceOracle* interference,
                           SemanticsKind semantics);
 
     /// Set SDAC cost lower bounds (indexed by action position in problem.actions()).
@@ -115,7 +115,7 @@ private:
     const Problem& problem_;
     z3::context& ctx_;
     BaseEncoder& encoder_;
-    const InterferenceAnalysis* interference_;
+    const InterferenceOracle* interference_;
     SemanticsKind semantics_;
 
     /// Maps fluent ExprID -> list of (action, effect) pairs that can modify it.

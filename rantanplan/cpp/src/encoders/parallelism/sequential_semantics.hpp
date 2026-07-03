@@ -14,12 +14,12 @@ class SequentialSemantics : public ParallelismStrategy {
 public:
     SequentialSemantics() = default;
     
-    std::shared_ptr<z3::expr> encode_parallelism(int timestep) override;
+    z3::expr encode_parallelism(int timestep) override;
 
     std::string get_name() const override { return "SequentialSemantics"; }
 
     // Analyzer access (not applicable for sequential semantics)
-    const InterferenceAnalysis* get_interference_analyzer() const override { return nullptr; }
+    const InterferenceOracle* get_interference_analyzer() const override { return nullptr; }
 
     bool allows_concurrent_actions() const override { return false; }
 

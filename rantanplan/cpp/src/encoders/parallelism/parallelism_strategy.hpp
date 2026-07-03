@@ -10,7 +10,8 @@
 namespace rantanplan {
 
 // Forward declarations
-class InterferenceAnalysis;
+class InterferenceOracle;
+class InterferenceGraphAnalysis;
 
 /**
  * @brief Abstract base class for different parallelism encoding strategies
@@ -27,7 +28,7 @@ public:
      * @param timestep The timestep for which to encode parallelism
      * @return A Z3 expression representing the parallelism constraints
      */
-    virtual std::shared_ptr<z3::expr> encode_parallelism(int timestep) = 0;
+    virtual z3::expr encode_parallelism(int timestep) = 0;
     
     /**
      * @brief Initialize the strategy with problem context
@@ -51,7 +52,14 @@ public:
      * @brief Get access to the interference analyzer (if available)
      * @return Pointer to the interference analyzer, or nullptr if not available
      */
-    virtual const InterferenceAnalysis* get_interference_analyzer() const = 0;
+    virtual const InterferenceOracle* get_interference_analyzer() const = 0;
+
+    /**
+     * @brief Get the graph-bearing view of the interference analyzer
+     * @return Pointer to the graph analysis if the injected analyzer is eager
+     *         (graph-bearing), nullptr for lazy analyzers and sequential semantics
+     */
+    virtual const InterferenceGraphAnalysis* get_interference_graph_analysis() const { return nullptr; }
 
     /**
      * @brief Check if this strategy allows concurrent action execution

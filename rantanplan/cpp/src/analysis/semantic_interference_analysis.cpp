@@ -389,25 +389,6 @@ z3::expr SemanticInterferenceAnalysis::convert_effect_to_z3(const EffectExpressi
     throw std::runtime_error("Unknown effect kind");
 }
 
-// Graph-based methods (NOT supported by semantic lazy analysis)
-
-const Graph& SemanticInterferenceAnalysis::get_interference_graph() const {
-    throw std::runtime_error("SemanticInterferenceAnalysis does not support get_interference_graph(). "
-                            "This method is only available with eager analysis. "
-                            "Use has_interference() for individual interference checks instead.");
-}
-
-const std::vector<int>& SemanticInterferenceAnalysis::get_neighbours(int node_id) const {
-    throw std::runtime_error("SemanticInterferenceAnalysis does not support get_neighbours(). "
-                            "This method is only available with eager analysis. "
-                            "Use has_interference() for individual interference checks instead.");
-}
-
-void SemanticInterferenceAnalysis::output_interference_graph_dot(const std::string& filename) const {
-    throw std::runtime_error("SemanticInterferenceAnalysis does not support output_interference_graph_dot(). "
-                            "This method is only available with eager analysis as it requires the full graph.");
-}
-
 bool SemanticInterferenceAnalysis::has_conflicting_conditional_effects(const Action& action) const {
     auto cache_it = conflicting_effects_cache_.find(action.id());
     if (cache_it != conflicting_effects_cache_.end()) return cache_it->second;

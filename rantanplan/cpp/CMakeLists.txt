@@ -131,7 +131,7 @@ add_executable(rantanplan
     src/encoders/parallelism/exists_semantics.cpp
     src/z3core/z3_variable_factory.cpp
     src/planners/base_planner.cpp
-    src/planners/sequential.cpp
+    src/planners/incremental_horizon_planner.cpp
     src/planners/double_tail_planner.cpp
     src/planners/branch_and_bound_planner.cpp
     src/planners/pdla_planner.cpp
@@ -143,12 +143,11 @@ add_executable(rantanplan
     src/planners/propagators/modules/forall_mutex_module.cpp
     src/planners/propagators/modules/frame_axiom_module.cpp
     src/symmetries/smt_symmetry_checker.cpp
-    src/abstraction/achievers_analysis.cpp
+    src/analysis/achievers_analysis.cpp
     src/analysis/relaxed_planning_graph.cpp
     src/analysis/numeric_relaxed_planning_graph.cpp
     src/analysis/graph.cpp
     src/analysis/interference_analysis.cpp
-    src/analysis/interference_analyzer.cpp
     src/analysis/eager_interference_analysis.cpp
     src/analysis/eager_semantic_interference_analysis.cpp
     src/analysis/lazy_interference_analysis.cpp
@@ -200,7 +199,6 @@ target_include_directories(rantanplan PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/encoders/        # encoders headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src/planners/        # planners headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src/symmetries/      # symmetries headers
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/abstraction/     # abstraction headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src/analysis/        # analysis headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src/passes/          # pass system headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src/grounding/       # grounding headers

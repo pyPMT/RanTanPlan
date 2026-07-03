@@ -63,7 +63,7 @@ void PDLAPlanner::build_condition_achiever_cache() {
 
 void PDLAPlanner::compute_init_satisfied_conditions() {
     z3::solver init_solver(ctx_);
-    init_solver.add(*encoder_.encode_initial_state());
+    init_solver.add(encoder_.encode_initial_state());
 
     if (init_solver.check() != z3::sat) return;
     z3::model init_model = init_solver.get_model();
@@ -301,10 +301,10 @@ void PDLAPlanner::encode_action_at(const Action* action, int timestep) {
 
 void PDLAPlanner::add_timestep(int t) {
     grounded_encoder().ensure_action_variables(t);
-    solver_.add(*encoder_.encode_frames(t));
-    solver_.add(*encoder_.encode_symmetries(t));
-    solver_.add(*encoder_.encode_state_constraints(t));
-    solver_.add(*grounded_encoder().encode_cumulative_effects(t));
+    solver_.add(encoder_.encode_frames(t));
+    solver_.add(encoder_.encode_symmetries(t));
+    solver_.add(encoder_.encode_state_constraints(t));
+    solver_.add(grounded_encoder().encode_cumulative_effects(t));
     propagator_strategy_->register_timestep_variables(t + 1);
 
     if (finegrained_) {
@@ -341,7 +341,7 @@ void PDLAPlanner::refresh_goal(int t) {
     int version = next_goal_version_++;
     std::string lit_name = "goal_v" + std::to_string(version);
     goal_assumption_ = ctx_.bool_const(lit_name.c_str());
-    solver_.add(z3::implies(goal_assumption_, *encoder_.encode_goal(t)));
+    solver_.add(z3::implies(goal_assumption_, encoder_.encode_goal(t)));
 }
 
 void PDLAPlanner::extend_horizon() {
@@ -784,7 +784,7 @@ Plan PDLAPlanner::search() {
     }
 
     // 1. Encode initial state
-    solver_.add(*encoder_.encode_initial_state());
+    solver_.add(encoder_.encode_initial_state());
     propagator_strategy_->register_timestep_variables(0);
 
     // 2. Initialize achiever analysis

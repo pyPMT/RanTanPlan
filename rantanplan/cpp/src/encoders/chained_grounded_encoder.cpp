@@ -39,7 +39,7 @@ void ChainedGroundedEncoder::build_variable_modifiers_index() {
 }
 
 
-std::shared_ptr<z3::expr> ChainedGroundedEncoder::encode_actions(int t) {
+z3::expr ChainedGroundedEncoder::encode_actions(int t) {
     z3::expr_vector all_constraints(ctx_);
     auto& stats = Stats::instance();
 
@@ -82,21 +82,18 @@ std::shared_ptr<z3::expr> ChainedGroundedEncoder::encode_actions(int t) {
     }
 
     // Add chained effect constraints for multi-modified non-Boolean variables
-    auto chained_constraints = encode_chained_effects(t);
-    if (chained_constraints) {
-        all_constraints.push_back(*chained_constraints);
-    }
+    all_constraints.push_back(encode_chained_effects(t));
 
     stats.add("encoder.action_constraints", all_constraints.size());
 
     if (all_constraints.empty()) {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true));
+        return ctx_.bool_val(true);
     }
 
-    return std::make_shared<z3::expr>(z3::mk_and(all_constraints));
+    return z3::mk_and(all_constraints);
 }
 
-std::shared_ptr<z3::expr> ChainedGroundedEncoder::encode_chained_effects(int t) {
+z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
     z3::expr_vector constraints(ctx_);
     auto& stats = Stats::instance();
 
@@ -177,10 +174,10 @@ std::shared_ptr<z3::expr> ChainedGroundedEncoder::encode_chained_effects(int t) 
     stats.add("encoder.chained_constraints", constraints.size());
 
     if (constraints.empty()) {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true));
+        return ctx_.bool_val(true);
     }
 
-    return std::make_shared<z3::expr>(z3::mk_and(constraints));
+    return z3::mk_and(constraints);
 }
 
 std::optional<const EffectExpression*> ChainedGroundedEncoder::get_effect_for_variable(
@@ -219,9 +216,9 @@ z3::expr ChainedGroundedEncoder::apply_effect_to_expression(
     return base_expr;
 }
 
-std::shared_ptr<z3::expr> ChainedGroundedEncoder::encode_non_cumulative_effects(
+std::optional<z3::expr> ChainedGroundedEncoder::encode_non_cumulative_effects(
         const Action& action, int t) {
-    if (action.effects().empty()) return nullptr;
+    if (action.effects().empty()) return std::nullopt;
 
     z3::expr action_var = variable_factory_.get_action_variable(action, t);
 
@@ -239,11 +236,11 @@ std::shared_ptr<z3::expr> ChainedGroundedEncoder::encode_non_cumulative_effects(
         }
     }
 
-    if (filtered_effects.empty()) return nullptr;
-    return std::make_shared<z3::expr>(z3::implies(action_var, z3::mk_and(filtered_effects)));
+    if (filtered_effects.empty()) return std::nullopt;
+    return z3::implies(action_var, z3::mk_and(filtered_effects));
 }
 
-std::shared_ptr<z3::expr> ChainedGroundedEncoder::encode_cumulative_effects(int t) {
+z3::expr ChainedGroundedEncoder::encode_cumulative_effects(int t) {
     return encode_chained_effects(t);
 }
 

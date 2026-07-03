@@ -5,7 +5,7 @@
 #include <map>
 #include <utility>
 #include <memory>
-#include "config/config.hpp"
+#include "verbosity.hpp"
 
 namespace rantanplan {
 
@@ -29,8 +29,9 @@ public:
     // Get the global logger instance
     static Logger& instance();
 
-    // Initialize with config (must be called after Config is initialized)
-    void set_config(const Config* config);
+    // Set the verbosity threshold (the driver snapshots it from Config once
+    // at startup; util/ itself has no Config dependency)
+    void set_verbosity(VerbosityLevel verbosity);
 
     // Simple message logging (respects verbosity)
     void info(const std::string& msg);
@@ -87,7 +88,7 @@ private:
         const std::vector<std::pair<std::string, std::string>>& metrics
     ) const;
 
-    const Config* config_ = nullptr;
+    VerbosityLevel verbosity_ = VerbosityLevel::INFO;
     bool enabled_ = true;
 
     static constexpr int COMPONENT_WIDTH = 16;  // Width for component name column

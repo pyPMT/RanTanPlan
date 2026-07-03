@@ -1,5 +1,5 @@
 #include "achievers_analysis.hpp"
-#include "../analysis/numeric_relaxed_planning_graph.hpp"
+#include "numeric_relaxed_planning_graph.hpp"
 #include "../util/memory_tracker.hpp"
 #include "../util/logger.hpp"
 #include <iostream>

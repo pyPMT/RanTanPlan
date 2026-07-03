@@ -3,7 +3,7 @@
 namespace rantanplan {
 
 
-void InterferenceAnalysis::analyze_all_actions() {
+void InterferenceOracle::analyze_all_actions() {
     if (!problem_) {
         return;
     }
@@ -17,7 +17,7 @@ void InterferenceAnalysis::analyze_all_actions() {
     }
 }
 
-InterferenceAnalysis::ActionAnalysis InterferenceAnalysis::analyze_action(const Action& action) const {
+InterferenceOracle::ActionAnalysis InterferenceOracle::analyze_action(const Action& action) const {
     ActionAnalysis analysis;
     // Analyze preconditions and effects
     analyze_preconditions(action, analysis);
@@ -25,7 +25,7 @@ InterferenceAnalysis::ActionAnalysis InterferenceAnalysis::analyze_action(const 
     return analysis;
 }
 
-void InterferenceAnalysis::analyze_preconditions(const Action& action, ActionAnalysis& analysis) const {
+void InterferenceOracle::analyze_preconditions(const Action& action, ActionAnalysis& analysis) const {
     if (!action.has_precondition()) {
         return;
     }
@@ -45,7 +45,7 @@ void InterferenceAnalysis::analyze_preconditions(const Action& action, ActionAna
     }
 }
 
-void InterferenceAnalysis::analyze_effects(const Action& action, ActionAnalysis& analysis) const {
+void InterferenceOracle::analyze_effects(const Action& action, ActionAnalysis& analysis) const {
     for (const Effect& effect : action.effects()) {
         const EffectExpression& eff_expr = effect.effect_expression();
         ExprID fluent_eid = eff_expr.fluent_id();
@@ -84,7 +84,7 @@ void InterferenceAnalysis::analyze_effects(const Action& action, ActionAnalysis&
     }
 }
 
-bool InterferenceAnalysis::actions_interfere(const Action& a1, const Action& a2) const {
+bool InterferenceOracle::actions_interfere(const Action& a1, const Action& a2) const {
     // Get analysis for both actions
     auto it1 = action_analysis_.find(a1);
     auto it2 = action_analysis_.find(a2);

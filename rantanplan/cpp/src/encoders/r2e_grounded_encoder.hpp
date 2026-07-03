@@ -25,9 +25,9 @@ public:
                        ActionOrdering ordering = ActionOrdering::RPG);
     
     // Override encoding methods to implement R2E semantics
-    std::shared_ptr<z3::expr> encode_actions(int t) override;
-    std::shared_ptr<z3::expr> encode_frames(int t) override;
-    std::shared_ptr<z3::expr> encode_parallelism(int t) override;
+    z3::expr encode_actions(int t) override;
+    z3::expr encode_frames(int t) override;
+    z3::expr encode_parallelism(int t) override;
 
     // TODO: R2E uses chain-substituted intermediate variables (ζ) where each
     // action sees a different "state" based on its position in the fixed ordering.
@@ -36,8 +36,8 @@ public:
     // To support state constraints here, we would need to assert them only on
     // the first chain variable (= x_t) and the last (= x_{t+1}), not on
     // intermediate ζ values. For now, disabled.
-    std::shared_ptr<z3::expr> encode_state_constraints(int t) override {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true));
+    z3::expr encode_state_constraints(int t) override {
+        return ctx_.bool_val(true);
     }
 
     /// Evaluate cost at the chain-substituted state σ^t_{prev(i)} that action i
@@ -73,9 +73,9 @@ private:
     std::vector<const Action*> extract_rpg_ordering();
     
     // Constraint generation methods
-    std::shared_ptr<z3::expr> encode_precondition_constraints(int t);
-    std::shared_ptr<z3::expr> encode_effect_constraints(int t);
-    std::shared_ptr<z3::expr> encode_linking_constraints(int t);
+    z3::expr encode_precondition_constraints(int t);
+    z3::expr encode_effect_constraints(int t);
+    z3::expr encode_linking_constraints(int t);
     
     // Helper methods
     std::unordered_map<ExprID, z3::expr> create_prev_substitution(int action_index, int timestep);

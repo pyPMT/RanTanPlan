@@ -26,7 +26,7 @@ struct PropagatorSharedState {
     const Problem* problem = nullptr;
     const Z3VariableFactory* variable_factory = nullptr;
     const ParallelismStrategy* parallelism = nullptr;
-    const InterferenceAnalysis* interference = nullptr;
+    const InterferenceOracle* interference = nullptr;
     BaseEncoder* encoder = nullptr;
     z3::solver* solver = nullptr;
 

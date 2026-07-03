@@ -13,9 +13,14 @@ namespace rantanplan {
  * actions: a_i → ¬a_j ∧ ¬a_k ∧ ...
  *
  * Uses a precomputed reverse interference lookup for O(1) neighbor queries.
+ * Requires whole-graph access, so it takes the graph-bearing interference
+ * analysis at construction — lazy analyzers cannot be passed by type.
  */
 class ForallMutexModule : public PropagatorModule {
 public:
+    explicit ForallMutexModule(const InterferenceGraphAnalysis& graph)
+        : graph_(&graph) {}
+
     void initialize(PropagatorSharedState& shared,
                     PropagatorStrategy& host) override;
 
@@ -26,6 +31,8 @@ public:
     void cleanup() override;
 
 private:
+    const InterferenceGraphAnalysis* graph_;
+
     // Precomputed: action_id → set of action_ids that must be negated
     std::unordered_map<int, std::set<int>> actions_interfering_with_;
     int propagation_count_ = 0;

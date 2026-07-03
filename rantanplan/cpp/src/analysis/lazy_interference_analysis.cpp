@@ -128,23 +128,4 @@ std::vector<const Action*> LazyInterferenceAnalysis::topological_sort_actions(co
     return result;
 }
 
-// Graph-based methods (NOT supported by lazy analysis)
-
-const Graph& LazyInterferenceAnalysis::get_interference_graph() const {
-    throw std::runtime_error("LazyInterferenceAnalysis does not support get_interference_graph(). "
-                            "This method is only available with eager analysis. "
-                            "Use has_interference() for individual interference checks instead.");
-}
-
-const std::vector<int>& LazyInterferenceAnalysis::get_neighbours(int node_id) const {
-    throw std::runtime_error("LazyInterferenceAnalysis does not support get_neighbours(). "
-                            "This method is only available with eager analysis. "
-                            "Use has_interference() for individual interference checks instead.");
-}
-
-void LazyInterferenceAnalysis::output_interference_graph_dot(const std::string& filename) const {
-    throw std::runtime_error("LazyInterferenceAnalysis does not support output_interference_graph_dot(). "
-                            "This method is only available with eager analysis as it requires the full graph.");
-}
-
 } // namespace rantanplan

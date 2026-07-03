@@ -13,7 +13,7 @@
 #include "../analysis/lazy_interference_analysis.hpp"
 #include "../analysis/semantic_interference_analysis.hpp"
 
-#include "../planners/sequential.hpp"
+#include "../planners/incremental_horizon_planner.hpp"
 #include "../planners/double_tail_planner.hpp"
 #include "../planners/branch_and_bound_planner.hpp"
 #include "../planners/pdla_planner.hpp"
@@ -42,17 +42,13 @@ void StrategyFactory::validate(const StrategySpec& spec,
                                const std::string& strategy_name,
                                const std::string& horizon_schedule) {
     // Lazy interference requires a propagator that uses has_interference()
-    // rather than graph methods. ForallEager needs get_neighbours().
+    // rather than graph methods (encode_parallelism needs the graph).
+    // Lazy + ForallEager needs no check here: ForallMutexModule takes an
+    // InterferenceGraphAnalysis at construction, which lazy analyzers are not.
     if (is_lazy(spec.interference) && spec.propagator.empty()) {
         throw std::invalid_argument(
             "Lazy interference requires a propagator (empty propagator needs "
             "graph methods that lazy analysis does not provide)");
-    }
-    if (is_lazy(spec.interference) &&
-        spec.propagator.count(PropagatorModuleKind::ForallEager)) {
-        throw std::invalid_argument(
-            "Lazy interference is incompatible with ForallEager "
-            "(use ForallLazy instead)");
     }
 
     if (is_none(spec.interference) && spec.semantics != SemanticsKind::Sequential) {
@@ -97,19 +93,37 @@ void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
     }
 }
 
-std::unique_ptr<InterferenceAnalysis> StrategyFactory::create_interference(
+/// The interference analyzer plus, for eager kinds, its graph-bearing view
+/// (same object; the typed pointer lets graph consumers avoid downcasts).
+struct CreatedInterference {
+    std::unique_ptr<InterferenceOracle> oracle;
+    const InterferenceGraphAnalysis* graph = nullptr;
+};
+
+static CreatedInterference create_interference(
     const StrategySpec& spec, const Problem& problem) {
+    CreatedInterference result;
     switch (spec.interference) {
         case InterferenceKind::None:
-            return nullptr;
-        case InterferenceKind::EagerSyntactic:
-            return std::make_unique<EagerInterferenceAnalysis>(problem);
-        case InterferenceKind::EagerSemantic:
-            return std::make_unique<EagerSemanticInterferenceAnalysis>(problem);
+            return result;
+        case InterferenceKind::EagerSyntactic: {
+            auto eager = std::make_unique<EagerInterferenceAnalysis>(problem);
+            result.graph = eager.get();
+            result.oracle = std::move(eager);
+            return result;
+        }
+        case InterferenceKind::EagerSemantic: {
+            auto eager = std::make_unique<EagerSemanticInterferenceAnalysis>(problem);
+            result.graph = eager.get();
+            result.oracle = std::move(eager);
+            return result;
+        }
         case InterferenceKind::LazySyntactic:
-            return std::make_unique<LazyInterferenceAnalysis>(problem);
+            result.oracle = std::make_unique<LazyInterferenceAnalysis>(problem);
+            return result;
         case InterferenceKind::LazySemantic:
-            return std::make_unique<SemanticInterferenceAnalysis>(problem);
+            result.oracle = std::make_unique<SemanticInterferenceAnalysis>(problem);
+            return result;
     }
     throw std::invalid_argument("Unknown interference kind");
 }
@@ -118,14 +132,16 @@ std::unique_ptr<InterferenceAnalysis> StrategyFactory::create_interference(
 /// The analyzer is null exactly for InterferenceKind::None, which validate()
 /// restricts to Sequential semantics (the only strategy that ignores it).
 static std::unique_ptr<ParallelismStrategy> create_parallelism(
-    const StrategySpec& spec, std::unique_ptr<InterferenceAnalysis> interference) {
+    const StrategySpec& spec, CreatedInterference interference) {
     switch (spec.semantics) {
         case SemanticsKind::Sequential:
             return std::make_unique<SequentialSemantics>();
         case SemanticsKind::Forall:
-            return std::make_unique<ForallSemantics>(std::move(interference));
+            return std::make_unique<ForallSemantics>(std::move(interference.oracle),
+                                                     interference.graph);
         case SemanticsKind::Exists:
-            return std::make_unique<ExistsSemantics>(std::move(interference));
+            return std::make_unique<ExistsSemantics>(std::move(interference.oracle),
+                                                     interference.graph);
     }
     throw std::invalid_argument("Unknown semantics kind");
 }
@@ -134,7 +150,7 @@ std::unique_ptr<BaseEncoder> StrategyFactory::create_encoder(
     const StrategySpec& spec, const Problem& problem, z3::context& ctx) {
     // Eager interference variants pay their analysis cost here (backend
     // setup), tracked separately from the pipeline as backend.interference_ms.
-    std::unique_ptr<InterferenceAnalysis> interference;
+    CreatedInterference interference;
     {
         ScopedTimer timer("backend.interference_ms");
         interference = create_interference(spec, problem);
@@ -174,8 +190,16 @@ std::unique_ptr<PropagatorStrategy> StrategyFactory::create_propagator(
     auto composite = std::make_unique<PropagatorStrategy>(solver, problem, encoder);
 
     // Parallelism modules (order: first, cheapest conflict source).
-    if (mods.count(PropagatorModuleKind::ForallEager))
-        composite->add_module(std::make_unique<ForallMutexModule>());
+    if (mods.count(PropagatorModuleKind::ForallEager)) {
+        const InterferenceGraphAnalysis* graph =
+            encoder.get_parallelism_strategy()->get_interference_graph_analysis();
+        if (!graph) {
+            throw std::invalid_argument(
+                "ForallEager propagator module requires an eager "
+                "(graph-bearing) interference analyzer");
+        }
+        composite->add_module(std::make_unique<ForallMutexModule>(*graph));
+    }
     if (mods.count(PropagatorModuleKind::ForallLazy))
         composite->add_module(std::make_unique<LazyForallMutexModule>());
     if (mods.count(PropagatorModuleKind::ExistsCycle))
@@ -192,13 +216,13 @@ std::unique_ptr<BasePlanner> StrategyFactory::create_planner(
     const StrategySpec& spec, PreprocessedProblem& pre,
     BaseEncoder& encoder, z3::context& ctx) {
     const Problem& problem = pre.problem;
-    const InterferenceAnalysis* interference =
+    const InterferenceOracle* interference =
         encoder.get_parallelism_strategy()->get_interference_analyzer();
 
     std::unique_ptr<BasePlanner> planner;
     switch (spec.planner) {
         case PlannerKind::Sequential:
-            planner = std::make_unique<SequentialPlanner>(problem, encoder, ctx);
+            planner = std::make_unique<IncrementalHorizonPlanner>(problem, encoder, ctx);
             break;
         case PlannerKind::DoubleTail:
             planner = std::make_unique<DoubleTailPlanner>(problem, encoder, ctx);

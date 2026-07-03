@@ -1,4 +1,4 @@
-#include "sequential.hpp"
+#include "incremental_horizon_planner.hpp"
 #include "../config/config.hpp"
 #include "../analysis/graph.hpp"
 #include "../analysis/interference_analysis.hpp"
@@ -12,17 +12,17 @@
 
 namespace rantanplan {
 
-    SequentialPlanner::SequentialPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx)
+    IncrementalHorizonPlanner::IncrementalHorizonPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx)
         : BasePlanner(problem, encoder, ctx) {
     }
 
-    SequentialPlanner::SequentialPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx,
+    IncrementalHorizonPlanner::IncrementalHorizonPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx,
                                        std::unique_ptr<PropagatorStrategy> propagator)
         : BasePlanner(problem, encoder, ctx) {
         propagator_strategy_ = std::move(propagator);
     }
 
-void SequentialPlanner::debug_output_constraints() {
+void IncrementalHorizonPlanner::debug_output_constraints() {
     // Output current constraints from the solver to SMT2 file
     std::ofstream smt2_file("output.smt2");
     if (smt2_file.is_open()) {
@@ -34,11 +34,11 @@ void SequentialPlanner::debug_output_constraints() {
     }
 }
 
-void SequentialPlanner::add_timestep_constraints(int timestep) {
+void IncrementalHorizonPlanner::add_timestep_constraints(int timestep) {
     BasePlanner::add_timestep_constraints(solver_, encoder_, *propagator_strategy_, timestep);
 }
 
-Plan SequentialPlanner::search() {
+Plan IncrementalHorizonPlanner::search() {
     auto& config = Config::instance();
     auto& stats = Stats::instance();
 
@@ -62,7 +62,7 @@ Plan SequentialPlanner::search() {
     init_deadline();
 
     // Add initial state constraints (invariant across all horizons).
-    solver_.add(*encoder_.encode_initial_state());
+    solver_.add(encoder_.encode_initial_state());
     propagator_strategy_->register_timestep_variables(0);
 
     // Pre-fill all transitions for [0, start_timestep - 1] so the first SAT call
@@ -118,7 +118,7 @@ Plan SequentialPlanner::search() {
         //    prefix-monotone + frame-axiom argument above covers them.
         std::string goal_var_name = "goal_at_" + std::to_string(h);
         z3::expr goal_literal = ctx_.bool_const(goal_var_name.c_str());
-        solver_.add(z3::implies(goal_literal, *encoder_.encode_goal(h)));
+        solver_.add(z3::implies(goal_literal, encoder_.encode_goal(h)));
 
         z3::expr_vector assumptions(ctx_);
         assumptions.push_back(goal_literal);

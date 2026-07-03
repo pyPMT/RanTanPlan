@@ -54,7 +54,7 @@ private:
      * @param backward_t Timestep at start of backward stack
      * @return Conjunction of fluent equivalences: ∧fluents. fluent@forward_t ⟺ fluent@backward_t
      */
-    std::shared_ptr<z3::expr> create_link_constraints(int forward_t, int backward_t);
+    z3::expr create_link_constraints(int forward_t, int backward_t);
 
     /**
      * @brief Add constraints for timestep t (actions + frames + parallelism)

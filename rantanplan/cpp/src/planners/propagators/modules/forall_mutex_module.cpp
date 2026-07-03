@@ -48,7 +48,7 @@ void ForallMutexModule::build_reverse_interference_lookup() {
     for (const Action& action : shared_->problem->actions()) {
         int node_id = action.id();
         const auto& neighbours =
-            shared_->interference->get_interference_graph().get_neighbours(node_id);
+            graph_->get_interference_graph().get_neighbours(node_id);
         for (int target : neighbours) {
             actions_interfering_with_[node_id].insert(target);
             actions_interfering_with_[target].insert(node_id);

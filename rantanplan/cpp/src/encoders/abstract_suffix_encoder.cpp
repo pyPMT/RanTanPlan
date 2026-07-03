@@ -15,7 +15,7 @@ namespace rantanplan {
 AbstractSuffixEncoder::AbstractSuffixEncoder(
     const Problem& problem, z3::context& ctx,
     BaseEncoder& encoder,
-    const InterferenceAnalysis* interference,
+    const InterferenceOracle* interference,
     SemanticsKind semantics)
     : problem_(problem), ctx_(ctx), encoder_(encoder),
       interference_(interference), semantics_(semantics),

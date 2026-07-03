@@ -9,9 +9,8 @@ namespace rantanplan {
  * 
  * Pre-computes all action interferences and builds a complete interference graph.
  * Provides fast O(1) lookup for interference queries but uses more memory.
- * This is a refactored version of the original InterferenceAnalyzer.
  */
-class EagerInterferenceAnalysis : public InterferenceAnalysis {
+class EagerInterferenceAnalysis : public InterferenceGraphAnalysis {
 public:
     /**
      * @brief Construct and initialize the analyzer with a planning problem
@@ -35,12 +34,9 @@ public:
     bool has_interference(int node_id1, int node_id2) const override;
     std::vector<const Action*> topological_sort_actions(const std::vector<const Action*>& actions) const override;
     
-    // Graph-based methods (fully supported by eager analysis)
+    // Graph-based methods
     const Graph& get_interference_graph() const override;
     const std::vector<int>& get_neighbours(int node_id) const override;
-    
-    // Utility methods
-    bool is_lazy() const override { return false; }
     void output_interference_graph_dot(const std::string& filename = "interference.dot") const override;
 
 private:

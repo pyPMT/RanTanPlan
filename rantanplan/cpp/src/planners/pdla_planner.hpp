@@ -3,7 +3,7 @@
 #include "../problem/problem.hpp"
 #include "../problem/plan.hpp"
 #include "../encoders/base_encoder.hpp"
-#include "../abstraction/achievers_analysis.hpp"
+#include "../analysis/achievers_analysis.hpp"
 #include "base_planner.hpp"
 #include <z3++.h>
 #include <memory>

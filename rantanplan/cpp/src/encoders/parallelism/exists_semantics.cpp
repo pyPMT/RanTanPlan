@@ -1,12 +1,20 @@
 #include "exists_semantics.hpp"
 #include "../../problem/action.hpp"
 #include "../../util/stats.hpp"
+#include <stdexcept>
 
 namespace rantanplan {
 
-std::shared_ptr<z3::expr> ExistsSemantics::encode_parallelism(int timestep) {
-    // Get the interference graph from the analyzer
-    const Graph& interference_graph = interference_analyzer_->get_interference_graph();
+z3::expr ExistsSemantics::encode_parallelism(int timestep) {
+    // Get the interference graph from the graph-bearing analyzer view.
+    // graph_ is non-null whenever encode_parallelism is reachable: lazy
+    // analyzers require a propagator module that manages parallelism.
+    if (!graph_) {
+        throw std::logic_error(
+            "ExistsSemantics::encode_parallelism requires an eager "
+            "(graph-bearing) interference analyzer");
+    }
+    const Graph& interference_graph = graph_->get_interference_graph();
     
     // Get SCC mapping for optimization: only add mutex within same SCC
     std::vector<int> scc_mapping = interference_graph.get_scc_mapping();
@@ -46,17 +54,17 @@ std::shared_ptr<z3::expr> ExistsSemantics::encode_parallelism(int timestep) {
     
     // Combine all mutex constraints with logical AND
     if (mutex_constraints.empty()) {
-        return std::make_shared<z3::expr>(ctx_->bool_val(true));
+        return ctx_->bool_val(true);
     }
 
     auto& stats = Stats::instance();
     stats.add("encoder.mutex_constraints", mutex_constraints.size());
     
     z3::expr mutex_formula = z3::mk_and(mutex_constraints);
-    return std::make_shared<z3::expr>(mutex_formula);
+    return mutex_formula;
 }
 
-const InterferenceAnalysis* ExistsSemantics::get_interference_analyzer() const {
+const InterferenceOracle* ExistsSemantics::get_interference_analyzer() const {
     return interference_analyzer_.get();
 }
 

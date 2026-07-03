@@ -11,7 +11,7 @@
 #include "problem/protobuf_io.hpp"
 #include "strategy_factory.hpp"
 #include "config/strategy_spec.hpp"
-#include "planners/sequential.hpp"
+#include "planners/incremental_horizon_planner.hpp"
 #include "planners/pdla_planner.hpp"
 #include "planners/formula_exporter.hpp"
 #include "util/memory_tracker.hpp"

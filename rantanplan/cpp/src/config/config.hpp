@@ -1,17 +1,11 @@
 #pragma once
 
+#include "../util/verbosity.hpp"
 #include <string>
 #include <mutex>
 #include <memory>
 
 namespace rantanplan {
-
-enum class VerbosityLevel {
-    SILENT = 0,
-    INFO = 1, 
-    VERBOSE = 2,
-    DEBUG = 3
-};
 
 class Config {
 public:

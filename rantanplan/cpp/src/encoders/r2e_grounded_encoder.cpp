@@ -136,38 +136,33 @@ void R2EGroundedEncoder::build_prev_mappings() {
     }
 }
 
-std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_actions(int t) {
+z3::expr R2EGroundedEncoder::encode_actions(int t) {
     z3::expr_vector all_constraints(ctx_);
 
     // Add main R2E constraints (equations 1-4 from paper)
-    std::shared_ptr<z3::expr> precond = encode_precondition_constraints(t);
-    if (precond) all_constraints.push_back(*precond);
-
-    std::shared_ptr<z3::expr> effects = encode_effect_constraints(t);
-    if (effects) all_constraints.push_back(*effects);
-
-    std::shared_ptr<z3::expr> linking = encode_linking_constraints(t);
-    if (linking) all_constraints.push_back(*linking);
+    all_constraints.push_back(encode_precondition_constraints(t));
+    all_constraints.push_back(encode_effect_constraints(t));
+    all_constraints.push_back(encode_linking_constraints(t));
 
     Stats::instance().add("encoder.r2e.action_constraints", all_constraints.size());
 
     return all_constraints.empty() ?
-        std::make_shared<z3::expr>(ctx_.bool_val(true)) :
-        std::make_shared<z3::expr>(z3::mk_and(all_constraints));
+        ctx_.bool_val(true) :
+        z3::mk_and(all_constraints);
 }
 
-std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_frames(int t) {
+z3::expr R2EGroundedEncoder::encode_frames(int t) {
     // R2E has built-in frame semantics through chain variables and linking constraints
     // No additional frame axioms are needed
-    return std::make_shared<z3::expr>(ctx_.bool_val(true));
+    return ctx_.bool_val(true);
 }
 
-std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_parallelism(int t) {
+z3::expr R2EGroundedEncoder::encode_parallelism(int t) {
     // R2E has built-in parallelism semantics, so we return true (no additional constraints)
-    return std::make_shared<z3::expr>(ctx_.bool_val(true));
+    return ctx_.bool_val(true);
 }
 
-std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_precondition_constraints(int t) {
+z3::expr R2EGroundedEncoder::encode_precondition_constraints(int t) {
     z3::expr_vector constraints(ctx_);
 
     // Equation (1): a^t_i → Pre^t_ai σ^t_prev(i)
@@ -193,11 +188,11 @@ std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_precondition_constraints(in
         constraints.push_back(constraint);
     }
 
-    if (constraints.empty()) return std::make_shared<z3::expr>(ctx_.bool_val(true));
-    return std::make_shared<z3::expr>(z3::mk_and(constraints));
+    if (constraints.empty()) return ctx_.bool_val(true);
+    return z3::mk_and(constraints);
 }
 
-std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_effect_constraints(int t) {
+z3::expr R2EGroundedEncoder::encode_effect_constraints(int t) {
     z3::expr_vector constraints(ctx_);
 
     // Equation (2): a^t_i → Eff^t_ai σ^t_modi σ^t_prev(i)
@@ -290,11 +285,11 @@ std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_effect_constraints(int t) {
     }
 
     return constraints.empty() ?
-        std::make_shared<z3::expr>(ctx_.bool_val(true)) :
-        std::make_shared<z3::expr>(z3::mk_and(constraints));
+        ctx_.bool_val(true) :
+        z3::mk_and(constraints);
 }
 
-std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_linking_constraints(int t) {
+z3::expr R2EGroundedEncoder::encode_linking_constraints(int t) {
     z3::expr_vector constraints(ctx_);
 
     // Equation (4): x^{t+1} = x^t_ρx(|Ax|)
@@ -322,9 +317,9 @@ std::shared_ptr<z3::expr> R2EGroundedEncoder::encode_linking_constraints(int t) 
     }
 
     if (constraints.empty()) {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true));
+        return ctx_.bool_val(true);
     }
-    return std::make_shared<z3::expr>(z3::mk_and(constraints));
+    return z3::mk_and(constraints);
 }
 
 std::unordered_map<ExprID, z3::expr> R2EGroundedEncoder::create_prev_substitution(int action_index, int timestep) {

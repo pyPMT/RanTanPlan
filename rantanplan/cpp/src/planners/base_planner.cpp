@@ -167,16 +167,16 @@ void BasePlanner::collect_statistics() {
 void BasePlanner::add_timestep_constraints(z3::solver& solver, BaseEncoder& encoder,
                                            PropagatorStrategy& propagator, int timestep,
                                            bool prefix_monotone) {
-    solver.add(*encoder.encode_actions(timestep));
-    solver.add(*encoder.encode_frames(timestep));
+    solver.add(encoder.encode_actions(timestep));
+    solver.add(encoder.encode_frames(timestep));
     if (prefix_monotone) {
-        solver.add(*encoder.encode_prefix_monotone(timestep));
+        solver.add(encoder.encode_prefix_monotone(timestep));
     }
-    solver.add(*encoder.encode_symmetries(timestep));
-    solver.add(*encoder.encode_state_constraints(timestep));
+    solver.add(encoder.encode_symmetries(timestep));
+    solver.add(encoder.encode_state_constraints(timestep));
 
     if (!propagator.manages_parallelism_constraints()) {
-        solver.add(*encoder.encode_parallelism(timestep));
+        solver.add(encoder.encode_parallelism(timestep));
     }
 
     propagator.register_timestep_variables(timestep + 1);

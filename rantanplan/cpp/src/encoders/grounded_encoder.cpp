@@ -55,7 +55,7 @@ z3::expr GroundedEncoder::convert_effect_to_z3(const EffectExpression& effect, i
  * Note: The Python side takes responsibility for initializing all fluents 
  * with default values, so here we can just iterate over the initial state.
  */
-std::shared_ptr<z3::expr> GroundedEncoder::encode_initial_state() {
+z3::expr GroundedEncoder::encode_initial_state() {
    z3::expr_vector initial_state(ctx_);
     auto& stats = Stats::instance();
     
@@ -71,13 +71,13 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_initial_state() {
     
     // Combine all initial state constraints with logical AND
     if (initial_state.empty()) {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true));
+        return ctx_.bool_val(true);
     }
     z3::expr initial_state_formula = z3::mk_and(initial_state);
-    return std::make_shared<z3::expr>(initial_state_formula);
+    return initial_state_formula;
 }
 
-std::shared_ptr<z3::expr> GroundedEncoder::encode_actions(int t) {
+z3::expr GroundedEncoder::encode_actions(int t) {
     z3::expr_vector action_constraints(ctx_);
     auto& stats = Stats::instance();
 
@@ -91,13 +91,13 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_actions(int t) {
     stats.add("encoder.action_constraints", action_constraints.size());
 
     if (action_constraints.empty()) {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true));
+        return ctx_.bool_val(true);
     }
-    return std::make_shared<z3::expr>(z3::mk_and(action_constraints));
+    return z3::mk_and(action_constraints);
 }
 
-std::shared_ptr<z3::expr> GroundedEncoder::encode_single_action(const Action& action, int t) {
-    if (action.effects().empty()) return nullptr;
+std::optional<z3::expr> GroundedEncoder::encode_single_action(const Action& action, int t) {
+    if (action.effects().empty()) return std::nullopt;
 
     z3::expr_vector constraints(ctx_);
     z3::expr action_var = variable_factory_.get_action_variable(action, t);
@@ -113,11 +113,11 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_single_action(const Action& ac
     }
     constraints.push_back(z3::implies(action_var, z3::mk_and(effect_exprs)));
 
-    return std::make_shared<z3::expr>(z3::mk_and(constraints));
+    return z3::mk_and(constraints);
 }
 
-std::shared_ptr<z3::expr> GroundedEncoder::encode_non_cumulative_effects(const Action& action, int t) {
-    if (action.effects().empty()) return nullptr;
+std::optional<z3::expr> GroundedEncoder::encode_non_cumulative_effects(const Action& action, int t) {
+    if (action.effects().empty()) return std::nullopt;
 
     z3::expr action_var = variable_factory_.get_action_variable(action, t);
 
@@ -126,11 +126,11 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_non_cumulative_effects(const A
         effect_exprs.push_back(convert_effect_to_z3(effect.effect_expression(), t));
     }
 
-    return std::make_shared<z3::expr>(z3::implies(action_var, z3::mk_and(effect_exprs)));
+    return z3::implies(action_var, z3::mk_and(effect_exprs));
 }
 
-std::shared_ptr<z3::expr> GroundedEncoder::encode_cumulative_effects(int t) {
-    return std::make_shared<z3::expr>(ctx_.bool_val(true));
+z3::expr GroundedEncoder::encode_cumulative_effects(int t) {
+    return ctx_.bool_val(true);
 }
 
 void GroundedEncoder::ensure_action_variables(int t) {
@@ -154,10 +154,10 @@ void GroundedEncoder::ensure_action_variables(int t) {
  * axioms for the transition from time t to t+1. Returns true if no fluents
  * exist in the EPC index.
  */
-std::shared_ptr<z3::expr> GroundedEncoder::encode_frames(int t) {
+z3::expr GroundedEncoder::encode_frames(int t) {
     // When the frame propagator is active, it handles ALL frame axioms lazily
     if (lazy_frames_enabled_) {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true));
+        return ctx_.bool_val(true);
     }
 
     std::vector<z3::expr> frame_axioms;
@@ -229,7 +229,7 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_frames(int t) {
     
     // Combine all frame axioms with logical AND
     if (frame_axioms.empty()) {
-        auto expr = std::make_shared<z3::expr>(ctx_.bool_val(true));
+        auto expr = ctx_.bool_val(true);
         return expr;
     }
     
@@ -239,16 +239,16 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_frames(int t) {
         frame_vector.push_back(axiom);
     }
     z3::expr big_and = z3::mk_and(frame_vector);
-    return std::make_shared<z3::expr>(big_and);
+    return big_and;
 }
 
-std::shared_ptr<z3::expr> GroundedEncoder::encode_goal(int t) {
+z3::expr GroundedEncoder::encode_goal(int t) {
     // Retrieve goals from the problem
     const auto& goals = problem_.goals();
     auto& stats = Stats::instance();
     
     if (goals.empty()) {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true)); // If no goals, vacuously satisfied
+        return ctx_.bool_val(true); // If no goals, vacuously satisfied
     }
     
     // Convert each goal expression to Z3 formula and collect them
@@ -264,7 +264,7 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_goal(int t) {
     
     // Combine all goal formulas with logical AND
     if (goal_formulas.empty()) {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true));
+        return ctx_.bool_val(true);
     }
     
     // Create a flat conjunction using Z3's mk_and function
@@ -273,13 +273,13 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_goal(int t) {
         goal_vector.push_back(goal);
     }
     z3::expr goal_conjunction = z3::mk_and(goal_vector);
-    return std::make_shared<z3::expr>(goal_conjunction);
+    return goal_conjunction;
 }
 
-std::shared_ptr<z3::expr> GroundedEncoder::encode_parallelism(int t) {
+z3::expr GroundedEncoder::encode_parallelism(int t) {
     return parallelism_strategy_->encode_parallelism(t);
 }
-std::shared_ptr<z3::expr> GroundedEncoder::encode_prefix_monotone(int t) {
+z3::expr GroundedEncoder::encode_prefix_monotone(int t) {
     // Build: (∀a. ¬a@t)  →  (∀a. ¬a@(t+1))
     // i.e., if no action fires at t, then no action may fire at t+1.
     // Chained across all t during search, this front-loads all active steps
@@ -293,18 +293,18 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_prefix_monotone(int t) {
         no_action_t1.push_back(!variable_factory_.get_action_variable(a, t + 1));
     }
     if (no_action_t.empty()) {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true));
+        return ctx_.bool_val(true);
     }
-    return std::make_shared<z3::expr>(
+    return 
         z3::implies(z3::mk_and(no_action_t), z3::mk_and(no_action_t1))
-    );
+    ;
 }
 
-std::shared_ptr<z3::expr> GroundedEncoder::encode_symmetries(int t) {
+z3::expr GroundedEncoder::encode_symmetries(int t) {
     auto& stats = Stats::instance();
 
     if (symmetry_data_.empty()) {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true));
+        return ctx_.bool_val(true);
     }
 
     z3::expr_vector symmetry_constraints(ctx_);
@@ -345,14 +345,14 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_symmetries(int t) {
     stats.add("encoder.symmetry_ordering_constraints", ordering_constraints_count);
 
     if (symmetry_constraints.empty()) {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true));
+        return ctx_.bool_val(true);
     }
-    return std::make_shared<z3::expr>(z3::mk_and(symmetry_constraints));
+    return z3::mk_and(symmetry_constraints);
 }
 
-std::shared_ptr<z3::expr> GroundedEncoder::encode_state_constraints(int t) {
+z3::expr GroundedEncoder::encode_state_constraints(int t) {
     if (state_constraints_.empty()) {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true));
+        return ctx_.bool_val(true);
     }
 
     z3::expr_vector conjuncts(ctx_);
@@ -408,9 +408,9 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_state_constraints(int t) {
     }
 
     if (conjuncts.empty()) {
-        return std::make_shared<z3::expr>(ctx_.bool_val(true));
+        return ctx_.bool_val(true);
     }
-    return std::make_shared<z3::expr>(z3::mk_and(conjuncts));
+    return z3::mk_and(conjuncts);
 }
 
 std::string GroundedEncoder::get_parallelism_strategy_name() const {
@@ -532,7 +532,7 @@ std::vector<const Action*> GroundedEncoder::topologically_sort_actions(
     }
 
     const ParallelismStrategy* strategy = get_parallelism_strategy();
-    const InterferenceAnalysis* analyzer = strategy->get_interference_analyzer();
+    const InterferenceOracle* analyzer = strategy->get_interference_analyzer();
 
     return analyzer->topological_sort_actions(actions);
 }

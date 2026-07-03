@@ -40,7 +40,7 @@ void BranchAndBoundPlanner::consume_artifacts(PreprocessedProblem& artifacts) {
 
 BranchAndBoundPlanner::BranchAndBoundPlanner(
     const Problem& problem, BaseEncoder& encoder, z3::context& ctx,
-    const InterferenceAnalysis* interference, SemanticsKind semantics)
+    const InterferenceOracle* interference, SemanticsKind semantics)
     : BasePlanner(problem, encoder, ctx),
       abstract_(problem, ctx, encoder, interference, semantics) {
 }
@@ -121,7 +121,7 @@ Plan BranchAndBoundPlanner::search() {
     init_deadline();
 
     // Initialize
-    solver_.add(*encoder_.encode_initial_state());
+    solver_.add(encoder_.encode_initial_state());
     propagator_strategy_->register_timestep_variables(0);
     abstract_.initialize();
 
@@ -136,7 +136,7 @@ Plan BranchAndBoundPlanner::search() {
     auto start_time = std::chrono::high_resolution_clock::now();
     double total_time = 0.0;
 
-    // h = horizon = goal state index (same convention as SequentialPlanner).
+    // h = horizon = goal state index (same convention as IncrementalHorizonPlanner).
     // At horizon h we encode transitions [0, h-1], producing states 0..h,
     // and check the goal at state h with the abstract suffix starting from h.
     int filled_up_to = 0;
@@ -182,7 +182,7 @@ Plan BranchAndBoundPlanner::search() {
 
         std::string goal_name = "goal_at_" + std::to_string(h);
         z3::expr goal_lit = ctx_.bool_const(goal_name.c_str());
-        solver_.add(z3::implies(goal_lit, *encoder_.encode_goal(h)));
+        solver_.add(z3::implies(goal_lit, encoder_.encode_goal(h)));
 
         // 5. Inner B&B loop at this horizon
         bool advance_horizon = false;

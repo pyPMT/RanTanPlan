@@ -8,16 +8,17 @@
 #include <z3++.h>
 #include <memory>
 
-// This class is able to search for a plan in a sequential manner by using an encoder.
+// Incremental-horizon search: grow the horizon step by step, re-checking
+// satisfiability until a plan is found (any parallelism semantics).
 namespace rantanplan {
 
-class SequentialPlanner : public BasePlanner {
+class IncrementalHorizonPlanner : public BasePlanner {
 public:
     // Constructor
-    SequentialPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx);
+    IncrementalHorizonPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx);
 
     // Constructor with propagator support
-    SequentialPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx,
+    IncrementalHorizonPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx,
                      std::unique_ptr<PropagatorStrategy> propagator);
 
     // BasePlanner interface implementation

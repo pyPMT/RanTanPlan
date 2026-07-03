@@ -36,8 +36,8 @@ int main(int argc, char* argv[]) {
         rantanplan::Config::instance().initialize(argc, argv);
         auto& config = rantanplan::Config::instance();
 
-        // Initialize logger with config
-        rantanplan::Logger::instance().set_config(&config);
+        // Initialize logger verbosity from config
+        rantanplan::Logger::instance().set_verbosity(config.global.verbosity);
 
         // Set Z3 verbosity to match our verbosity level (SILENT=0, INFO=0, VERBOSE=1, DEBUG=5)
         constexpr int z3_verbosity[] = {0, 0, 1, 5};

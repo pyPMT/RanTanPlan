@@ -8,7 +8,7 @@
 namespace rantanplan {
 
 class BaseEncoder;
-class InterferenceAnalysis;
+class InterferenceOracle;
 
 /// Cost-optimal planner using branch-and-bound with an abstract suffix lower bound.
 ///
@@ -95,7 +95,7 @@ class BranchAndBoundPlanner : public BasePlanner {
 public:
     BranchAndBoundPlanner(const Problem& problem, BaseEncoder& encoder,
                           z3::context& ctx,
-                          const InterferenceAnalysis* interference,
+                          const InterferenceOracle* interference,
                           SemanticsKind semantics);
 
     Plan search() override;

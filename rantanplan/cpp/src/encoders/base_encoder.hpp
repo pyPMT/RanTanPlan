@@ -24,12 +24,12 @@ public:
     virtual void set_symmetry_data(std::vector<SymmetryInfo> data) { symmetry_data_ = std::move(data); }
 
     // Encoding steps
-    virtual std::shared_ptr<z3::expr> encode_initial_state() = 0;
-    virtual std::shared_ptr<z3::expr> encode_actions(int t) = 0;
-    virtual std::shared_ptr<z3::expr> encode_frames(int t) = 0;
-    virtual std::shared_ptr<z3::expr> encode_goal(int t) = 0;
-    virtual std::shared_ptr<z3::expr> encode_parallelism(int t) = 0;
-    virtual std::shared_ptr<z3::expr> encode_symmetries(int t) = 0;
+    virtual z3::expr encode_initial_state() = 0;
+    virtual z3::expr encode_actions(int t) = 0;
+    virtual z3::expr encode_frames(int t) = 0;
+    virtual z3::expr encode_goal(int t) = 0;
+    virtual z3::expr encode_parallelism(int t) = 0;
+    virtual z3::expr encode_symmetries(int t) = 0;
 
     /**
      * @brief Encode the prefix-monotone (front-loading) symmetry-breaking constraint.
@@ -43,10 +43,10 @@ public:
      * at k..h-1. Frame axioms then propagate the goal state to timestep h, so a
      * single goal literal at h witnesses any plan length in the batch [prev_h+1..h].
      *
-     * Only called by SequentialPlanner; DoubleTailPlanner has structurally disjoint
+     * Only called by IncrementalHorizonPlanner; DoubleTailPlanner has structurally disjoint
      * forward/backward stacks that cannot use a single uniform front-loading chain.
      */
-    virtual std::shared_ptr<z3::expr> encode_prefix_monotone(int t) = 0;
+    virtual z3::expr encode_prefix_monotone(int t) = 0;
     
     // Parallelism management (the strategy is constructor-injected in
     // concrete encoders — an encoder without one cannot exist)
@@ -75,7 +75,7 @@ public:
     virtual void set_lazy_frames(bool enabled) { (void)enabled; }
 
     // State constraints (mutexes, bounds) from InvariantOraclePass
-    virtual std::shared_ptr<z3::expr> encode_state_constraints(int t) = 0;
+    virtual z3::expr encode_state_constraints(int t) = 0;
 
     /// Receive state constraints from the pipeline result.
     void set_state_constraints(StateConstraints sc) { state_constraints_ = std::move(sc); }

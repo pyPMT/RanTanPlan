@@ -4,7 +4,7 @@
 
 namespace rantanplan {
 
-std::shared_ptr<z3::expr> SequentialSemantics::encode_parallelism(int timestep) {
+z3::expr SequentialSemantics::encode_parallelism(int timestep) {
     // Create a vector of all action variables at timestep
     z3::expr_vector action_vars(*ctx_);
     for (const Action& action : problem_->actions()) {
@@ -14,7 +14,7 @@ std::shared_ptr<z3::expr> SequentialSemantics::encode_parallelism(int timestep) 
     
     if (action_vars.empty()) {
         // If no actions exist, return true (vacuously satisfied)
-        return std::make_shared<z3::expr>(ctx_->bool_val(true));
+        return ctx_->bool_val(true);
     }
     
     // Create pseudo-boolean constraint: AT MOST 1 action is true (pble = pseudo-boolean <=).
@@ -29,7 +29,7 @@ std::shared_ptr<z3::expr> SequentialSemantics::encode_parallelism(int timestep) 
     auto& stats = Stats::instance();
     stats.add("encoder.parallelism_sequential_constraints", 1);
     
-    return std::make_shared<z3::expr>(exactly_one);
+    return exactly_one;
 }
 
 } // namespace rantanplan

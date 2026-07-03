@@ -1,6 +1,6 @@
 #include "preprocessed_problem.hpp"
 
-#include "../abstraction/achievers_analysis.hpp"
+#include "../analysis/achievers_analysis.hpp"
 #include "../analysis/numeric_relaxed_planning_graph.hpp"
 
 namespace rantanplan {

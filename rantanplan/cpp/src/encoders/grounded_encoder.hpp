@@ -7,6 +7,7 @@
 #include "parallelism/parallelism_strategy.hpp"
 #include <z3++.h>
 
+#include <optional>
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -22,14 +23,14 @@ public:
                     std::unique_ptr<ParallelismStrategy> parallelism);
 
     // Encoding steps
-    std::shared_ptr<z3::expr> encode_initial_state() override;
-    std::shared_ptr<z3::expr> encode_actions(int t) override; // Encodes actions layer_idx 
-    std::shared_ptr<z3::expr> encode_frames(int t) override; // Encodes frame axioms for layer_idx to layer_idx+1
-    std::shared_ptr<z3::expr> encode_goal(int t) override;    // Encodes goal conditions at layer_idx
-    std::shared_ptr<z3::expr> encode_parallelism(int t) override; // Encodes parallelism semantics
-    std::shared_ptr<z3::expr> encode_symmetries(int t) override;
-    std::shared_ptr<z3::expr> encode_state_constraints(int t) override;
-    std::shared_ptr<z3::expr> encode_prefix_monotone(int t) override; // Front-loading symmetry breaking
+    z3::expr encode_initial_state() override;
+    z3::expr encode_actions(int t) override; // Encodes actions layer_idx 
+    z3::expr encode_frames(int t) override; // Encodes frame axioms for layer_idx to layer_idx+1
+    z3::expr encode_goal(int t) override;    // Encodes goal conditions at layer_idx
+    z3::expr encode_parallelism(int t) override; // Encodes parallelism semantics
+    z3::expr encode_symmetries(int t) override;
+    z3::expr encode_state_constraints(int t) override;
+    z3::expr encode_prefix_monotone(int t) override; // Front-loading symmetry breaking
     
     // Strategy management
     std::string get_parallelism_strategy_name() const override;
@@ -42,21 +43,21 @@ public:
     const ParallelismStrategy* get_parallelism_strategy() const override { return parallelism_strategy_.get(); }
     
     // Encode precondition + effect constraints for a single action at timestep t.
-    // Returns nullptr if the action has no effects (nothing to encode).
-    std::shared_ptr<z3::expr> encode_single_action(const Action& action, int t);
+    // Returns nullopt if the action has no effects (nothing to encode).
+    std::optional<z3::expr> encode_single_action(const Action& action, int t);
 
     // Per-action effect constraints (action → effects), without preconditions.
     // ChainedGroundedEncoder overrides to exclude cumulative effects (those
     // require joint encoding across actions via encode_cumulative_effects).
     // Together with encode_cumulative_effects, these compose encode_actions.
-    virtual std::shared_ptr<z3::expr> encode_non_cumulative_effects(const Action& action, int t);
+    virtual std::optional<z3::expr> encode_non_cumulative_effects(const Action& action, int t);
 
     // Per-timestep joint effect constraints across multiple actions.
     // Base: no-op.  ChainedGroundedEncoder: chain variables (ζ) that link
     // actions modifying the same numeric variable for correct cumulative
     // semantics under exists-step.
     // Together with encode_non_cumulative_effects, these compose encode_actions.
-    virtual std::shared_ptr<z3::expr> encode_cumulative_effects(int t);
+    virtual z3::expr encode_cumulative_effects(int t);
 
     // Create action variables for all actions at timestep t without encoding constraints.
     void ensure_action_variables(int t);

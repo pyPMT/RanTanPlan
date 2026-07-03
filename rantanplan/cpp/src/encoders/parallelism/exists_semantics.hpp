@@ -20,19 +20,25 @@ class ExistsSemantics : public ParallelismStrategy {
 public:
     /// The interference analyzer is mandatory for exists semantics —
     /// injected at construction so a half-wired strategy cannot exist.
-    explicit ExistsSemantics(std::unique_ptr<InterferenceAnalysis> analyzer)
-        : interference_analyzer_(std::move(analyzer)) {}
-    
-    std::shared_ptr<z3::expr> encode_parallelism(int timestep) override;
+    /// `graph` is the graph-bearing view of the same analyzer: non-null for
+    /// eager analyzers, null for lazy ones (where encode_parallelism is never
+    /// called because a propagator module manages parallelism instead).
+    explicit ExistsSemantics(std::unique_ptr<InterferenceOracle> analyzer,
+                             const InterferenceGraphAnalysis* graph = nullptr)
+        : interference_analyzer_(std::move(analyzer)), graph_(graph) {}
+
+    z3::expr encode_parallelism(int timestep) override;
 
     std::string get_name() const override { return "ExistsSemantics"; }
 
-    const InterferenceAnalysis* get_interference_analyzer() const override;
+    const InterferenceOracle* get_interference_analyzer() const override;
+    const InterferenceGraphAnalysis* get_interference_graph_analysis() const override { return graph_; }
 
     bool allows_concurrent_actions() const override { return true; }
 
 private:
-    std::unique_ptr<InterferenceAnalysis> interference_analyzer_;
+    std::unique_ptr<InterferenceOracle> interference_analyzer_;
+    const InterferenceGraphAnalysis* graph_ = nullptr;
 };
 
 } // namespace rantanplan

@@ -6,7 +6,6 @@
 #include "../planners/base_planner.hpp"
 #include "../planners/propagators/propagator_strategy.hpp"
 #include "../encoders/parallelism/parallelism_strategy.hpp"
-#include "../analysis/interference_analysis.hpp"
 #include "../preprocessing/preprocessed_problem.hpp"
 #include <z3++.h>
 #include <memory>
@@ -47,9 +46,6 @@ public:
     /// consumes: symmetry data (copied) and state constraints (moved).
     static std::unique_ptr<BaseEncoder> create_encoder(
         const StrategySpec& spec, PreprocessedProblem& pre, z3::context& ctx);
-
-    static std::unique_ptr<InterferenceAnalysis> create_interference(
-        const StrategySpec& spec, const Problem& problem);
 
     static std::unique_ptr<PropagatorStrategy> create_propagator(
         const StrategySpec& spec, z3::solver& solver,

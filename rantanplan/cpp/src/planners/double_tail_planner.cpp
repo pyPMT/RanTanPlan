@@ -17,7 +17,7 @@ DoubleTailPlanner::DoubleTailPlanner(const Problem& problem, BaseEncoder& encode
     max_horizon_ = config.planner.max_steps;
 }
 
-std::shared_ptr<z3::expr> DoubleTailPlanner::create_link_constraints(int forward_t, int backward_t) {
+z3::expr DoubleTailPlanner::create_link_constraints(int forward_t, int backward_t) {
     // Create equivalence constraints for all fluents: fluent@forward_t ⟺ fluent@backward_t
     z3::expr_vector links(ctx_);
 
@@ -27,7 +27,7 @@ std::shared_ptr<z3::expr> DoubleTailPlanner::create_link_constraints(int forward
         links.push_back(forward_var == backward_var);
     }
 
-    return std::make_shared<z3::expr>(z3::mk_and(links));
+    return z3::mk_and(links);
 }
 
 void DoubleTailPlanner::add_timestep_constraints(int t) {
@@ -92,10 +92,10 @@ Plan DoubleTailPlanner::search() {
     init_deadline();
 
     // Add invariant constraints: initial state at t=0, goal state at t=max_horizon_
-    solver_.add(*encoder_.encode_initial_state());
+    solver_.add(encoder_.encode_initial_state());
     propagator_strategy_->register_timestep_variables(0);
 
-    solver_.add(*encoder_.encode_goal(max_horizon_));
+    solver_.add(encoder_.encode_goal(max_horizon_));
     propagator_strategy_->register_timestep_variables(max_horizon_);
 
     double total_time = 0.0;
@@ -138,7 +138,7 @@ Plan DoubleTailPlanner::search() {
         // Create link with activation literal: link_literal → L(forward_end, backward_start)
         std::string link_var_name = "link_at_" + std::to_string(iteration);
         z3::expr link_literal = ctx_.bool_const(link_var_name.c_str());
-        solver_.add(z3::implies(link_literal, *create_link_constraints(forward_end, backward_start)));
+        solver_.add(z3::implies(link_literal, create_link_constraints(forward_end, backward_start)));
 
         auto formula_end = std::chrono::high_resolution_clock::now();
         double formula_time = std::chrono::duration<double>(formula_end - formula_start).count();
@@ -299,7 +299,7 @@ std::vector<const Action*> DoubleTailPlanner::topologically_sort_actions(
     }
 
     const ParallelismStrategy* strategy = encoder_.get_parallelism_strategy();
-    const InterferenceAnalysis* analyzer = strategy->get_interference_analyzer();
+    const InterferenceOracle* analyzer = strategy->get_interference_analyzer();
 
     return analyzer->topological_sort_actions(actions);
 }

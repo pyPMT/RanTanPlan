@@ -13,13 +13,17 @@ namespace rantanplan {
 
 /**
  * @brief Abstract base class for action interference analysis
- * 
- * Provides a common interface for analyzing action interferences in planning problems.
- * Supports both eager (pre-computed) and lazy (on-demand) analysis strategies.
+ *
+ * Provides the universal query surface for analyzing action interferences in
+ * planning problems: pairwise interference checks and execution-order sorting.
+ * Supported by both eager (pre-computed) and lazy (on-demand) implementations.
+ *
+ * Consumers that need whole-graph access (neighbour lists, SCCs) take an
+ * InterferenceGraphAnalysis instead — only eager implementations provide one.
  */
-class InterferenceAnalysis {
+class InterferenceOracle {
 public:
-    virtual ~InterferenceAnalysis() = default;
+    virtual ~InterferenceOracle() = default;
     
     /**
      * @brief Initialize the analyzer with a planning problem
@@ -75,32 +79,7 @@ public:
      * @return Actions sorted in safe execution order (reverse topological order)
      */
     virtual std::vector<const Action*> topological_sort_actions(const std::vector<const Action*>& actions) const = 0;
-    
-    // Graph-based methods (only supported by eager analysis)
-    
-    /**
-     * @brief Get the complete interference graph
-     * 
-     * WARNING: This method is only supported by eager analysis implementations.
-     * Lazy implementations will throw an exception.
-     * 
-     * @return Reference to the interference graph
-     * @throws std::runtime_error if called on a lazy implementation
-     */
-    virtual const Graph& get_interference_graph() const = 0;
-    
-    /**
-     * @brief Get all neighbors (interfering actions) for a given action node
-     * 
-     * WARNING: This method is only supported by eager analysis implementations.
-     * Lazy implementations will throw an exception.
-     * 
-     * @param node_id The node ID to get neighbors for
-     * @return Vector of neighbor node IDs
-     * @throws std::runtime_error if called on a lazy implementation
-     */
-    virtual const std::vector<int>& get_neighbours(int node_id) const = 0;
-    
+
     /**
      * @brief Check if two actions interfere syntactically (sound overapproximation)
      *
@@ -111,20 +90,6 @@ public:
     bool has_syntactic_interference(const Action& a1, const Action& a2) const {
         return actions_interfere(a1, a2);
     }
-
-    // Utility methods
-
-    /**
-     * @brief Check if this is a lazy implementation
-     * @return True if lazy, false if eager
-     */
-    virtual bool is_lazy() const = 0;
-    
-    /**
-     * @brief Output the interference graph to a DOT format file (if supported)
-     * @param filename The name of the output file (default: "interference.dot")
-     */
-    virtual void output_interference_graph_dot(const std::string& filename = "interference.dot") const = 0;
 
 protected:
     // Common data structures for action analysis results
@@ -191,6 +156,37 @@ protected:
      * @return True if actions interfere, false otherwise
      */
     bool actions_interfere(const Action& a1, const Action& a2) const;
+};
+
+/**
+ * @brief Interference analysis with whole-graph access
+ *
+ * Extends the oracle with the pre-computed interference graph. Only eager
+ * implementations derive from this; consumers that need neighbour lists or
+ * SCC information (forall/exists parallelism encoding, the eager forall
+ * mutex propagator module) take this type in their signatures, so passing
+ * a lazy analyzer where a graph is required is a compile error.
+ */
+class InterferenceGraphAnalysis : public InterferenceOracle {
+public:
+    /**
+     * @brief Get the complete interference graph
+     * @return Reference to the interference graph
+     */
+    virtual const Graph& get_interference_graph() const = 0;
+
+    /**
+     * @brief Get all neighbors (interfering actions) for a given action node
+     * @param node_id The node ID to get neighbors for
+     * @return Vector of neighbor node IDs
+     */
+    virtual const std::vector<int>& get_neighbours(int node_id) const = 0;
+
+    /**
+     * @brief Output the interference graph to a DOT format file
+     * @param filename The name of the output file (default: "interference.dot")
+     */
+    virtual void output_interference_graph_dot(const std::string& filename = "interference.dot") const = 0;
 };
 
 } // namespace rantanplan
