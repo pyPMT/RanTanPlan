@@ -95,6 +95,7 @@ endif()
 # Create main executable
 add_executable(rantanplan
     src/main.cpp
+    src/api/solver_api.cpp
     src/config/config.cpp
     src/config/cli_parser.cpp
     src/config/strategy_registry.cpp
