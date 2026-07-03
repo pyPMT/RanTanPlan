@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../../problem/problem.hpp"
-#include "../z3_variable_factory.hpp"
+#include "../../z3core/z3_variable_factory.hpp"
 #include "../../analysis/graph.hpp"
 #include <z3++.h>
 #include <memory>

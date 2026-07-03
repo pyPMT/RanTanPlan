@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../../problem/problem.hpp"
-#include "../../encoders/z3_variable_factory.hpp"
+#include "../../z3core/z3_variable_factory.hpp"
 #include "../../encoders/base_encoder.hpp"
 #include "../../encoders/grounded_encoder.hpp"
 #include "../../analysis/interference_analysis.hpp"

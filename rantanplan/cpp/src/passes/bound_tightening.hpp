@@ -2,7 +2,7 @@
 
 #include "../problem/problem.hpp"
 #include "../grounding/interval.hpp"
-#include "local_invariants.hpp"
+#include "../preprocessing/local_invariants.hpp"
 #include <unordered_map>
 #include <vector>
 

@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -14,48 +15,45 @@
 #include "planners/pdla_planner.hpp"
 #include "planners/formula_exporter.hpp"
 #include "util/memory_tracker.hpp"
+#include "util/scoped_timer.hpp"
 #include "util/stats.hpp"
 #include "util/logger.hpp"
 #include "planners/propagators/modules/logging_module.hpp"
 #include "passes/pipeline.hpp"
 #include "passes/action_pruning_pass.hpp"
+#include "passes/arithmetic_profile_pass.hpp"
 #include "passes/symmetry_analysis_pass.hpp"
 #include "passes/grounding_pass.hpp"
 #include "passes/cwa_initial_state_pass.hpp"
-#include "passes/strategy_resolution_pass.hpp"
-#include "passes/interference_pass.hpp"
 #include "passes/static_fluent_pass.hpp"
 #include "passes/invariant_oracle_pass.hpp"
-#include "analysis/numeric_relaxed_planning_graph.hpp"
-#include "analysis/numeric_constraint_analyzer.hpp"
+#include "analysis/interference_analysis.hpp"
 
 #include "z3++.h"
 
 namespace rantanplan::api {
 
-PipelineResult preprocess(Problem problem) {
+PreprocessedProblem preprocess(Problem problem) {
     auto& config = rantanplan::Config::instance();
 
     // === PREPROCESSING PIPELINE ===
     //
-    // Five phases, each with clear responsibilities and data dependencies:
+    // Four phases, each with clear responsibilities and data dependencies:
     //
-    //   SETUP       → resolve strategy config (needed by all downstream passes)
     //   CANONICALIZE → lifted problem → clean ground problem
     //   PRUNE       → remove unreachable/irrelevant actions via RPG + achievers
     //   DISCOVER    → find state invariants (mutex groups, bounds, conservation laws)
-    //   PREPARE     → build analysis objects the solver consumes directly
+    //   PROFILE     → symmetry data + numeric constraint classification
     //
     // Data flow between phases:
     //
-    //   SETUP    produces: resolved_spec
     //   CANON    produces: grounded problem with complete initial state, simplified expressions
     //   PRUNE    produces: pruned problem, fixpoint_rpg, tightened_bounds,
     //                      conservation_laws, achievers, sdac_cost_lower_bounds
     //   DISCOVER consumes tightened_bounds + conservation_laws from PRUNE (no re-derivation),
     //            reads object domains from fixpoint_rpg, produces state_constraints
-    //   PREPARE  produces: symmetry_data (using original_problem for detection),
-    //                      interference analyzer
+    //   PROFILE  produces: symmetry_data (using the pre-grounding snapshot for
+    //                      detection), arithmetic_profile + all_integer flag
     //
     // Ordering constraints:
     //   - Grounding before CWA (CWA needs all grounded fluents visible)
@@ -63,21 +61,28 @@ PipelineResult preprocess(Problem problem) {
     //   - StaticFluent before ActionPruning (simpler expressions → tighter RPG bounds)
     //   - ActionPruning before InvariantOracle (produces bounds + conservation laws it consumes)
     //   - SymmetryAnalysis after all pruning (runs on smallest action set)
-    //   - Interference last (needs final problem + resolved spec)
+    //   - ArithmeticProfile last (reads final expressions, sets all_integer for
+    //     every downstream Z3 translation)
 
-    rantanplan::StrategyResolutionPass strategy_resolution_pass;
+    // Snapshot the original (pre-grounding) problem for symmetry detection.
+    // Detection checks initial-state + goals equivalence under object swap;
+    // this is cheaper on the lifted problem (smaller Z3 formula) and must
+    // happen before StaticFluent removes distinguishing static assignments.
+    std::optional<rantanplan::Problem> original_problem;
+    if (config.symmetry.enable_symmetries) {
+        original_problem = problem;  // cheap copy (shared ExprPool)
+    }
+
     rantanplan::GroundingPass grounding_pass;
     rantanplan::CWAInitialStatePass cwa_pass;
     rantanplan::StaticFluentPass static_fluent_pass;
     rantanplan::ActionPruningPass action_pruning_pass;
     rantanplan::InvariantOraclePass invariant_oracle_pass;
-    rantanplan::SymmetryAnalysisPass symmetry_analysis_pass;
-    rantanplan::InterferencePass interference_pass;
+    rantanplan::SymmetryAnalysisPass symmetry_analysis_pass(
+        original_problem ? &*original_problem : nullptr);
+    rantanplan::ArithmeticProfilePass arithmetic_profile_pass;
 
     std::vector<const rantanplan::Pass*> passes;
-
-    // --- SETUP ---
-    passes.push_back(&strategy_resolution_pass);
 
     // --- CANONICALIZE ---
     if (config.global.reachability_grounding) {
@@ -92,38 +97,16 @@ PipelineResult preprocess(Problem problem) {
     // --- DISCOVER ---
     passes.push_back(&invariant_oracle_pass);
 
-    // --- PREPARE ---
+    // --- PROFILE ---
     if (config.symmetry.enable_symmetries) {
         passes.push_back(&symmetry_analysis_pass);
     }
-    passes.push_back(&interference_pass);
+    passes.push_back(&arithmetic_profile_pass);
 
-    // Snapshot the original (pre-grounding) problem for symmetry detection.
-    // Detection checks initial-state + goals equivalence under object swap;
-    // this is cheaper on the lifted problem (smaller Z3 formula) and must
-    // happen before StaticFluent removes distinguishing static assignments.
-    rantanplan::PipelineResult initial_result;
-    if (config.symmetry.enable_symmetries) {
-        initial_result.original_problem = problem;  // cheap copy (shared ExprPool)
-    }
+    rantanplan::PreprocessedProblem initial_result;
     initial_result.problem = std::move(problem);
 
     auto pipeline_result = rantanplan::run_pipeline(std::move(initial_result), passes);
-    config.planner.start_timestep = pipeline_result.lower_bound;
-
-    // Analyze numeric constraint structure for Z3 solver tuning
-    auto constraint_analysis = rantanplan::NumericConstraintAnalyzer::analyze(pipeline_result.problem);
-    pipeline_result.arithmetic_profile = constraint_analysis.profile;
-    pipeline_result.problem.set_all_integer(constraint_analysis.all_integer);
-
-    const char* logic_hint = rantanplan::recommended_logic(constraint_analysis.profile, constraint_analysis.all_integer);
-    rantanplan::Logger::instance().component(rantanplan::VerbosityLevel::INFO, "ArithProfile", {
-        {"class", rantanplan::arithmetic_profile_to_string(constraint_analysis.profile)},
-        {"numeric fluents", std::to_string(constraint_analysis.num_numeric_fluents)},
-        {"integer", constraint_analysis.num_numeric_fluents > 0
-            ? (constraint_analysis.all_integer ? "yes" : "no") : "n/a"},
-        {"logic", logic_hint ? logic_hint : "default"}
-    });
 
     // Record final action count after all pipeline passes (used for grounding analysis).
     rantanplan::Stats::instance().set("pipeline.final_actions",
@@ -142,10 +125,19 @@ PipelineResult preprocess(Problem problem) {
     return pipeline_result;
 }
 
-PlanGenerationResult solve(PipelineResult& pipeline_result) {
+PlanGenerationResult solve(PreprocessedProblem& pipeline_result) {
     auto& config = rantanplan::Config::instance();
     const auto& problem = pipeline_result.problem;
-    const auto& spec = pipeline_result.resolved_spec;
+
+    // Resolve the strategy spec: registry lookup, planner kind for the search
+    // mode, problem-specific adjustments (e.g. SDAC + exists-step downgrade),
+    // then validation of the adjusted spec.
+    rantanplan::StrategySpec spec = rantanplan::StrategyRegistry::get(config.planner.strategy);
+    rantanplan::SearchMode mode = rantanplan::parse_search_mode(config.planner.mode);
+    spec.planner = rantanplan::resolve_planner_kind(mode, spec);
+    rantanplan::StrategyFactory::adjust_spec(spec, problem);
+    rantanplan::StrategyFactory::validate(spec, config.planner.strategy,
+                                          config.planner.horizon_schedule);
 
     PlanGenerationResult result;
     auto* log_message = result.add_log_messages();
@@ -158,10 +150,17 @@ PlanGenerationResult solve(PipelineResult& pipeline_result) {
     auto encoder = rantanplan::StrategyFactory::create_encoder(spec, problem, ctx);
     auto parallelism = rantanplan::StrategyFactory::create_parallelism(spec);
 
-    // Take interference from pipeline result (pre-built by InterferencePass)
-    const rantanplan::InterferenceAnalysis* interference_ptr = pipeline_result.interference.get();
+    // Build the interference analyzer for the resolved semantics. Eager
+    // variants pay their analysis cost here (backend setup), no longer in
+    // the pipeline stats — tracked separately as backend.interference_ms.
+    std::unique_ptr<rantanplan::InterferenceAnalysis> interference;
+    {
+        rantanplan::ScopedTimer timer("backend.interference_ms");
+        interference = rantanplan::StrategyFactory::create_interference(spec, problem);
+    }
+    const rantanplan::InterferenceAnalysis* interference_ptr = interference.get();
 
-    parallelism->set_interference_analyzer(std::move(pipeline_result.interference));
+    parallelism->set_interference_analyzer(std::move(interference));
     encoder->set_parallelism_strategy(std::move(parallelism));
     encoder->set_symmetry_data(pipeline_result.symmetry_data);
     encoder->set_state_constraints(std::move(pipeline_result.state_constraints));

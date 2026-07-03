@@ -97,7 +97,7 @@ void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
 }
 
 void StrategyFactory::configure_planner(BasePlanner& planner, const StrategySpec& spec,
-                                         const PipelineResult& pipeline_result) {
+                                         const PreprocessedProblem& pipeline_result) {
     if (!uses_branch_and_bound(spec) || pipeline_result.sdac_cost_lower_bounds.empty()) {
         return;
     }

@@ -244,7 +244,7 @@ static ExprID simplify_expr(ExprPool& pool, ExprID expr,
 // Pass implementation
 // ============================================================================
 
-void StaticFluentPass::apply(PipelineResult& result) const {
+void StaticFluentPass::apply(PreprocessedProblem& result) const {
     ScopedTimer timer("static_fluent.time_ms");
     const auto& problem = result.problem;
     ExprPool& pool = *problem.pool_ptr();

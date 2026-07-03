@@ -121,15 +121,15 @@ add_executable(rantanplan
     src/problem/type.cpp
     src/problem/visitors/fluent_collector.cpp
     src/problem/visitors/fluent_polarity_collector.cpp
-    src/encoders/lifted_encoding_visitor.cpp
-    src/encoders/grounded_encoding_visitor.cpp
+    src/z3core/lifted_encoding_visitor.cpp
+    src/z3core/grounded_encoding_visitor.cpp
     src/encoders/grounded_encoder.cpp
     src/encoders/chained_grounded_encoder.cpp
     src/encoders/r2e_grounded_encoder.cpp
     src/encoders/parallelism/sequential_semantics.cpp
     src/encoders/parallelism/forall_semantics.cpp
     src/encoders/parallelism/exists_semantics.cpp
-    src/encoders/z3_variable_factory.cpp
+    src/z3core/z3_variable_factory.cpp
     src/planners/base_planner.cpp
     src/planners/sequential.cpp
     src/planners/double_tail_planner.cpp
@@ -154,7 +154,9 @@ add_executable(rantanplan
     src/analysis/lazy_interference_analysis.cpp
     src/analysis/semantic_interference_analysis.cpp
     src/analysis/numeric_constraint_analyzer.cpp
+    src/preprocessing/preprocessed_problem.cpp
     src/passes/pipeline.cpp
+    src/passes/arithmetic_profile_pass.cpp
     src/passes/action_pruning_pass.cpp
     src/passes/invariant_oracle_pass.cpp
     src/passes/bound_tightening.cpp
@@ -162,8 +164,6 @@ add_executable(rantanplan
     src/passes/symmetry_analysis_pass.cpp
     src/passes/grounding_pass.cpp
     src/passes/cwa_initial_state_pass.cpp
-    src/passes/strategy_resolution_pass.cpp
-    src/passes/interference_pass.cpp
     src/passes/static_fluent_pass.cpp
     src/problem/substitution.cpp
     src/grounding/fact_index.cpp
@@ -203,6 +203,8 @@ target_include_directories(rantanplan PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/analysis/        # analysis headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src/passes/          # pass system headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src/grounding/       # grounding headers
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/z3core/          # ExprID->Z3 translation layer
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/preprocessing/   # preprocessor contract headers
     ${Z3_INCLUDE_DIR}                                # Z3 headers
 )
 

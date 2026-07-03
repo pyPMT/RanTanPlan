@@ -3,8 +3,8 @@
 #include "../problem/problem.hpp"
 #include "../problem/action.hpp"
 #include "../problem/effect_expression.hpp"
-#include "../encoders/z3_variable_factory.hpp"
-#include "../encoders/grounded_encoding_visitor.hpp"
+#include "../z3core/z3_variable_factory.hpp"
+#include "../z3core/grounded_encoding_visitor.hpp"
 #include "../config/config.hpp"
 #include <z3++.h>
 

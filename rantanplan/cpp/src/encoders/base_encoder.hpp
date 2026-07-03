@@ -3,9 +3,9 @@
 #include "../problem/problem.hpp"
 #include "../problem/plan.hpp"
 #include "../problem/effect_expression.hpp"
-#include "../passes/local_invariants.hpp"
-#include "../symmetries/smt_symmetry_checker.hpp"
-#include "z3_variable_factory.hpp"
+#include "../preprocessing/local_invariants.hpp"
+#include "../preprocessing/symmetry_info.hpp"
+#include "../z3core/z3_variable_factory.hpp"
 #include "parallelism/parallelism_strategy.hpp"
 #include <z3++.h>
 

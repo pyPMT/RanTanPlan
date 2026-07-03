@@ -17,8 +17,16 @@ namespace rantanplan {
  */
 class SymmetryAnalysisPass : public Pass {
 public:
-    void apply(PipelineResult& result) const override;
+    /// @param original_problem  Optional pre-grounding snapshot for detection
+    ///                          (cheaper Z3 equivalence check); may be null.
+    explicit SymmetryAnalysisPass(const Problem* original_problem = nullptr)
+        : original_problem_(original_problem) {}
+
+    void apply(PreprocessedProblem& result) const override;
     std::string name() const override { return "symmetry-analysis"; }
+
+private:
+    const Problem* original_problem_;
 };
 
 } // namespace rantanplan

@@ -2,8 +2,8 @@
 
 #include "interference_analysis.hpp"
 #include "../util/hash_utils.hpp"
-#include "../encoders/grounded_encoding_visitor.hpp"
-#include "../encoders/z3_variable_factory.hpp"
+#include "../z3core/grounded_encoding_visitor.hpp"
+#include "../z3core/z3_variable_factory.hpp"
 #include <z3++.h>
 #include <utility>
 

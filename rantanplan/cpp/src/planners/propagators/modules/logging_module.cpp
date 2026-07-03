@@ -1,5 +1,5 @@
 #include "logging_module.hpp"
-#include "../../../encoders/z3_variable_factory.hpp"
+#include "../../../z3core/z3_variable_factory.hpp"
 
 namespace rantanplan {
 

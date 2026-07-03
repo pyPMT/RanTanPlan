@@ -5,7 +5,7 @@
 
 namespace rantanplan {
 
-void CWAInitialStatePass::apply(PipelineResult& result) const {
+void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
     ScopedTimer timer("cwa.time_ms");
 
     auto& problem = result.problem;

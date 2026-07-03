@@ -6,13 +6,13 @@
 
 namespace rantanplan {
 
-void SymmetryAnalysisPass::apply(PipelineResult& result) const {
+void SymmetryAnalysisPass::apply(PreprocessedProblem& result) const {
     // Step 1: Detect symmetric object pairs using SMT.
     // Use the original (pre-grounding) problem if available — it has a smaller
     // initial state, making the Z3 equivalence check cheaper. Falls back to
     // the current problem when grounding is disabled (problem is still lifted).
-    const Problem& detection_problem = result.original_problem
-        ? *result.original_problem : result.problem;
+    const Problem& detection_problem = original_problem_
+        ? *original_problem_ : result.problem;
 
     z3::context detect_ctx;
     SMTSymmetryChecker detector(&detection_problem, detect_ctx);

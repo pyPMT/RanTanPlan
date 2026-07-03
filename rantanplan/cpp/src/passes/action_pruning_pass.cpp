@@ -3,6 +3,7 @@
 #include "../abstraction/achievers_analysis.hpp"
 #include "../analysis/numeric_relaxed_planning_graph.hpp"
 #include "../config/config.hpp"
+#include "../config/strategy_spec.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
 #include "../util/stats.hpp"
@@ -15,7 +16,7 @@
 
 namespace rantanplan {
 
-void ActionPruningPass::apply(PipelineResult& result) const {
+void ActionPruningPass::apply(PreprocessedProblem& result) const {
     auto& config = Config::instance();
 
     bool need_rpg = config.rpg.enabled;

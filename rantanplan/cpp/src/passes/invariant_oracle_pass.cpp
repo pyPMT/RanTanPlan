@@ -8,7 +8,7 @@
 
 namespace rantanplan {
 
-void InvariantOraclePass::apply(PipelineResult& result) const {
+void InvariantOraclePass::apply(PreprocessedProblem& result) const {
     auto& config = Config::instance();
     if (!config.local_reasoning.enabled) return;
 

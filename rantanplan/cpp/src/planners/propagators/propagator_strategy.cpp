@@ -1,6 +1,6 @@
 #include "propagator_strategy.hpp"
 #include "../../config/config.hpp"
-#include "../../encoders/z3_variable_factory.hpp"
+#include "../../z3core/z3_variable_factory.hpp"
 
 namespace rantanplan {
 

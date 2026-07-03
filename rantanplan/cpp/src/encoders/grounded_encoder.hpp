@@ -2,8 +2,8 @@
 
 #include "../problem/problem.hpp"
 #include "base_encoder.hpp"
-#include "grounded_encoding_visitor.hpp"
-#include "z3_variable_factory.hpp"
+#include "../z3core/grounded_encoding_visitor.hpp"
+#include "../z3core/z3_variable_factory.hpp"
 #include "parallelism/parallelism_strategy.hpp"
 #include <z3++.h>
 

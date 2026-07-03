@@ -21,7 +21,7 @@ namespace rantanplan {
  */
 class GroundingPass : public Pass {
 public:
-    void apply(PipelineResult& result) const override;
+    void apply(PreprocessedProblem& result) const override;
     std::string name() const override { return "grounding"; }
 };
 

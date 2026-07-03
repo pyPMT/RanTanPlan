@@ -79,12 +79,12 @@ namespace rantanplan {
  *   - Injects RPG fixpoint bounds as permanent constraints.
  *   - Discovers mutex groups via Tier 1 syntactic check (delete-add pattern).
  *
- * Results are stored on PipelineResult::state_constraints for the encoder
+ * Results are stored on PreprocessedProblem::state_constraints for the encoder
  * to inject at every timestep.
  */
 class InvariantOraclePass : public Pass {
 public:
-    void apply(PipelineResult& result) const override;
+    void apply(PreprocessedProblem& result) const override;
     std::string name() const override { return "InvariantOracle"; }
 
 private:

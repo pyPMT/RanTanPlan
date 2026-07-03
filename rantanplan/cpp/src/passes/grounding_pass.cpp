@@ -6,7 +6,7 @@
 
 namespace rantanplan {
 
-void GroundingPass::apply(PipelineResult& result) const {
+void GroundingPass::apply(PreprocessedProblem& result) const {
     ScopedTimer timer("grounding.time_ms");
 
     Logger::instance().component(VerbosityLevel::INFO, "Grounding", {{"status", "starting"}});

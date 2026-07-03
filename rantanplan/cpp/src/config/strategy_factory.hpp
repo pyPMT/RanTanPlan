@@ -7,7 +7,7 @@
 #include "../planners/propagators/propagator_strategy.hpp"
 #include "../encoders/parallelism/parallelism_strategy.hpp"
 #include "../analysis/interference_analysis.hpp"
-#include "../passes/pass.hpp"
+#include "../preprocessing/preprocessed_problem.hpp"
 #include <z3++.h>
 #include <memory>
 #include <string>
@@ -18,9 +18,9 @@ namespace rantanplan {
 /// Strategy component factory — handles validation, problem-specific
 /// adjustments, and component creation.
 ///
-/// Some methods are called from the Pass pipeline (adjust_spec from
-/// StrategyResolutionPass, create_interference from InterferencePass).
-/// The remaining Z3-dependent creation methods are called at solve time.
+/// All methods are called at solve time (backend assembly): spec
+/// adjustment and validation first, then interference and the
+/// Z3-dependent component creation.
 class StrategyFactory {
 public:
     /// Validate that a spec is internally consistent and compatible with
@@ -37,7 +37,7 @@ public:
     /// Configure a planner after creation with pipeline results (e.g. SDAC
     /// cost lower bounds for B&B). Handles dynamic dispatch internally.
     static void configure_planner(BasePlanner& planner, const StrategySpec& spec,
-                                  const PipelineResult& pipeline_result);
+                                  const PreprocessedProblem& pipeline_result);
 
     static std::unique_ptr<BaseEncoder> create_encoder(
         const StrategySpec& spec, const Problem& problem, z3::context& ctx);
