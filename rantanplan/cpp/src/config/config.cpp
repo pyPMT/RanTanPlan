@@ -1,7 +1,6 @@
 #include "config.hpp"
 #include "cli_parser.hpp"
 #include "strategy_registry.hpp"
-#include "strategy_factory.hpp"
 #include "strategy_spec.hpp"
 #include <stdexcept>
 
@@ -38,16 +37,12 @@ void Config::validate() const {
             "'. Valid values: linear, arithmetic, geometric, doubling");
     }
 
-    // Validate search mode and resolve planner kind (may throw if mode
-    // is incompatible with the strategy, e.g. optimal + double-tail).
-    auto spec = StrategyRegistry::get(planner.strategy);
-    SearchMode mode = parse_search_mode(planner.mode);
-    spec.planner = resolve_planner_kind(mode, spec);
-
-    // Strategy compatibility validation (single point of responsibility
-    // in StrategyFactory::validate — covers both spec-internal and
-    // spec-vs-config constraints).
-    StrategyFactory::validate(spec, planner.strategy, planner.horizon_schedule);
+    // Validate search mode against the strategy (throws on bad mode strings
+    // and on incompatible combos, e.g. optimal + double-tail). Deeper spec
+    // validation (StrategyFactory::validate) runs in the driver — the
+    // factory lives in the api layer, which config/ must not depend on.
+    const auto& spec = StrategyRegistry::get(planner.strategy);
+    resolve_planner_kind(parse_search_mode(planner.mode), spec);
 
     // Validate global settings (0 = no timeout, any positive value is valid)
     if (global.timeout < 0) {

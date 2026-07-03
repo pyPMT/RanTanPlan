@@ -18,16 +18,14 @@ namespace rantanplan {
  */
 class ForallSemantics : public ParallelismStrategy {
 public:
-    ForallSemantics() = default;
+    /// The interference analyzer is mandatory for forall semantics —
+    /// injected at construction so a half-wired strategy cannot exist.
+    explicit ForallSemantics(std::unique_ptr<InterferenceAnalysis> analyzer)
+        : interference_analyzer_(std::move(analyzer)) {}
     
     std::shared_ptr<z3::expr> encode_parallelism(int timestep) override;
 
     std::string get_name() const override { return "ForallSemantics"; }
-
-    // Analyzer access methods
-    void set_interference_analyzer(std::unique_ptr<InterferenceAnalysis> analyzer) override {
-        interference_analyzer_ = std::move(analyzer);
-    }
 
     const InterferenceAnalysis* get_interference_analyzer() const override;
 

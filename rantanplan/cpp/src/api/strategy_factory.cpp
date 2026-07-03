@@ -22,6 +22,7 @@
 #include "../planners/propagators/modules/forall_mutex_module.hpp"
 #include "../planners/propagators/modules/frame_axiom_module.hpp"
 #include "../util/logger.hpp"
+#include "../util/scoped_timer.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -96,59 +97,6 @@ void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
     }
 }
 
-void StrategyFactory::configure_planner(BasePlanner& planner, const StrategySpec& spec,
-                                         const PreprocessedProblem& pipeline_result) {
-    if (!uses_branch_and_bound(spec) || pipeline_result.sdac_cost_lower_bounds.empty()) {
-        return;
-    }
-
-    const auto& cost_bounds = pipeline_result.sdac_cost_lower_bounds;
-    bool all_positive = std::all_of(cost_bounds.begin(), cost_bounds.end(),
-                                     [](double lb) { return lb > 0.0; });
-    if (!all_positive) {
-        Logger::instance().info(
-            "WARNING: Some SDAC action cost expressions have a lower bound "
-            "of 0 (or could not be bounded). The abstract suffix will use 0 "
-            "for these actions, reducing branch-and-bound pruning power.");
-    } else {
-        Logger::instance().info(
-            "SDAC cost lower bounds computed via numeric RPG fixpoint — "
-            "all action costs have positive lower bounds.");
-    }
-
-    auto* bb_planner = dynamic_cast<BranchAndBoundPlanner*>(&planner);
-    if (bb_planner) {
-        bb_planner->set_cost_lower_bounds(
-            std::vector<double>(cost_bounds.begin(), cost_bounds.end()));
-    }
-}
-
-std::unique_ptr<BaseEncoder> StrategyFactory::create_encoder(
-    const StrategySpec& spec, const Problem& problem, z3::context& ctx) {
-    switch (spec.encoder) {
-        case EncoderFamily::Grounded:
-            return std::make_unique<GroundedEncoder>(problem, ctx);
-        case EncoderFamily::Chained:
-            return std::make_unique<ChainedGroundedEncoder>(problem, ctx);
-        case EncoderFamily::R2E:
-            return std::make_unique<R2EGroundedEncoder>(problem, ctx);
-    }
-    throw std::invalid_argument("Unknown encoder family");
-}
-
-std::unique_ptr<ParallelismStrategy> StrategyFactory::create_parallelism(
-    const StrategySpec& spec) {
-    switch (spec.semantics) {
-        case SemanticsKind::Sequential:
-            return std::make_unique<SequentialSemantics>();
-        case SemanticsKind::Forall:
-            return std::make_unique<ForallSemantics>();
-        case SemanticsKind::Exists:
-            return std::make_unique<ExistsSemantics>();
-    }
-    throw std::invalid_argument("Unknown semantics kind");
-}
-
 std::unique_ptr<InterferenceAnalysis> StrategyFactory::create_interference(
     const StrategySpec& spec, const Problem& problem) {
     switch (spec.interference) {
@@ -166,6 +114,52 @@ std::unique_ptr<InterferenceAnalysis> StrategyFactory::create_interference(
     throw std::invalid_argument("Unknown interference kind");
 }
 
+/// Build the parallelism strategy with its interference analyzer injected.
+/// The analyzer is null exactly for InterferenceKind::None, which validate()
+/// restricts to Sequential semantics (the only strategy that ignores it).
+static std::unique_ptr<ParallelismStrategy> create_parallelism(
+    const StrategySpec& spec, std::unique_ptr<InterferenceAnalysis> interference) {
+    switch (spec.semantics) {
+        case SemanticsKind::Sequential:
+            return std::make_unique<SequentialSemantics>();
+        case SemanticsKind::Forall:
+            return std::make_unique<ForallSemantics>(std::move(interference));
+        case SemanticsKind::Exists:
+            return std::make_unique<ExistsSemantics>(std::move(interference));
+    }
+    throw std::invalid_argument("Unknown semantics kind");
+}
+
+std::unique_ptr<BaseEncoder> StrategyFactory::create_encoder(
+    const StrategySpec& spec, const Problem& problem, z3::context& ctx) {
+    // Eager interference variants pay their analysis cost here (backend
+    // setup), tracked separately from the pipeline as backend.interference_ms.
+    std::unique_ptr<InterferenceAnalysis> interference;
+    {
+        ScopedTimer timer("backend.interference_ms");
+        interference = create_interference(spec, problem);
+    }
+    auto parallelism = create_parallelism(spec, std::move(interference));
+
+    switch (spec.encoder) {
+        case EncoderFamily::Grounded:
+            return std::make_unique<GroundedEncoder>(problem, ctx, std::move(parallelism));
+        case EncoderFamily::Chained:
+            return std::make_unique<ChainedGroundedEncoder>(problem, ctx, std::move(parallelism));
+        case EncoderFamily::R2E:
+            return std::make_unique<R2EGroundedEncoder>(problem, ctx, std::move(parallelism));
+    }
+    throw std::invalid_argument("Unknown encoder family");
+}
+
+std::unique_ptr<BaseEncoder> StrategyFactory::create_encoder(
+    const StrategySpec& spec, PreprocessedProblem& pre, z3::context& ctx) {
+    auto encoder = create_encoder(spec, pre.problem, ctx);
+    encoder->set_symmetry_data(pre.symmetry_data);
+    encoder->set_state_constraints(std::move(pre.state_constraints));
+    return encoder;
+}
+
 std::unique_ptr<PropagatorStrategy> StrategyFactory::create_propagator(
     const StrategySpec& spec, z3::solver& solver,
     const Problem& problem, BaseEncoder& encoder) {
@@ -174,8 +168,7 @@ std::unique_ptr<PropagatorStrategy> StrategyFactory::create_propagator(
 
     // Enable lazy frame mode in the encoder if frame axioms are active
     if (mods.count(PropagatorModuleKind::FrameAxiom)) {
-        auto* grounded = dynamic_cast<GroundedEncoder*>(&encoder);
-        if (grounded) grounded->set_lazy_frames(true);
+        encoder.set_lazy_frames(true);
     }
 
     auto composite = std::make_unique<PropagatorStrategy>(solver, problem, encoder);
@@ -196,31 +189,49 @@ std::unique_ptr<PropagatorStrategy> StrategyFactory::create_propagator(
 }
 
 std::unique_ptr<BasePlanner> StrategyFactory::create_planner(
-    const StrategySpec& spec, const Problem& problem,
-    BaseEncoder& encoder, z3::context& ctx,
-    const InterferenceAnalysis* interference) {
+    const StrategySpec& spec, PreprocessedProblem& pre,
+    BaseEncoder& encoder, z3::context& ctx) {
+    const Problem& problem = pre.problem;
+    const InterferenceAnalysis* interference =
+        encoder.get_parallelism_strategy()->get_interference_analyzer();
+
+    std::unique_ptr<BasePlanner> planner;
     switch (spec.planner) {
         case PlannerKind::Sequential:
-            return std::make_unique<SequentialPlanner>(problem, encoder, ctx);
+            planner = std::make_unique<SequentialPlanner>(problem, encoder, ctx);
+            break;
         case PlannerKind::DoubleTail:
-            return std::make_unique<DoubleTailPlanner>(problem, encoder, ctx);
+            planner = std::make_unique<DoubleTailPlanner>(problem, encoder, ctx);
+            break;
         case PlannerKind::BranchAndBound:
-            return std::make_unique<BranchAndBoundPlanner>(
+            planner = std::make_unique<BranchAndBoundPlanner>(
                 problem, encoder, ctx, interference, spec.semantics);
+            break;
         case PlannerKind::PDLA:
-            return std::make_unique<PDLAPlanner>(problem, encoder, ctx);
+            planner = std::make_unique<PDLAPlanner>(problem, encoder, ctx);
+            break;
         case PlannerKind::PDLASelective: {
             auto p = std::make_unique<PDLAPlanner>(problem, encoder, ctx);
             p->set_always_activate_core(false);
-            return p;
+            planner = std::move(p);
+            break;
         }
         case PlannerKind::PDLAFinegrained: {
             auto p = std::make_unique<PDLAPlanner>(problem, encoder, ctx);
             p->set_finegrained(true);
-            return p;
+            planner = std::move(p);
+            break;
         }
     }
-    throw std::invalid_argument("Unknown planner kind");
+    if (!planner) {
+        throw std::invalid_argument("Unknown planner kind");
+    }
+
+    // Route preprocessing artifacts: profile for all planners, then
+    // planner-declared consumption (achievers for PDLA, SDAC bounds for B&B).
+    planner->set_arithmetic_profile(pre.arithmetic_profile);
+    planner->consume_artifacts(pre);
+    return planner;
 }
 
 } // namespace rantanplan

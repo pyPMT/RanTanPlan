@@ -17,7 +17,8 @@ namespace rantanplan {
  */
 class ChainedGroundedEncoder : public GroundedEncoder {
 public:
-    ChainedGroundedEncoder(const Problem& problem, z3::context& ctx);
+    ChainedGroundedEncoder(const Problem& problem, z3::context& ctx,
+                           std::unique_ptr<ParallelismStrategy> parallelism);
     
     // Override action encoding to implement chained effects
     std::shared_ptr<z3::expr> encode_actions(int t) override;

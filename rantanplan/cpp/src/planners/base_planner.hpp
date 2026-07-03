@@ -14,6 +14,8 @@
 
 namespace rantanplan {
 
+struct PreprocessedProblem;
+
 // ---------------------------------------------------------------------------
 // HorizonSchedule
 // ---------------------------------------------------------------------------
@@ -103,6 +105,11 @@ public:
 
     /// Set the arithmetic profile for Z3 solver tuning.
     void set_arithmetic_profile(ArithmeticProfile profile) { arithmetic_profile_ = profile; }
+
+    /// Take ownership of the preprocessing artifacts this planner consumes.
+    /// Default: consume nothing. Overrides move artifacts out of the bundle
+    /// (single-consumer — the bundle must not be reused for a second solve).
+    virtual void consume_artifacts(PreprocessedProblem& artifacts) { (void)artifacts; }
 
     /// Set the propagator strategy for this planner.
     void set_propagator_strategy(std::unique_ptr<PropagatorStrategy> propagator);

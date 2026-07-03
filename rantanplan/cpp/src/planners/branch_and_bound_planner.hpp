@@ -105,6 +105,9 @@ public:
     /// Set SDAC cost lower bounds (forwarded to AbstractSuffixEncoder).
     void set_cost_lower_bounds(std::vector<double> bounds) { abstract_.set_cost_lower_bounds(std::move(bounds)); }
 
+    /// Consumes the SDAC cost lower bounds computed by ActionPruningPass.
+    void consume_artifacts(PreprocessedProblem& artifacts) override;
+
 private:
     bool optimality_proven_ = false;
     double best_cost_ = 0.0;

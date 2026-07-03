@@ -6,8 +6,9 @@
 
 namespace rantanplan {
 
-ChainedGroundedEncoder::ChainedGroundedEncoder(const Problem& problem, z3::context& ctx)
-    : GroundedEncoder(problem, ctx) {
+ChainedGroundedEncoder::ChainedGroundedEncoder(const Problem& problem, z3::context& ctx,
+                                               std::unique_ptr<ParallelismStrategy> parallelism)
+    : GroundedEncoder(problem, ctx, std::move(parallelism)) {
     build_variable_modifiers_index();
 }
 

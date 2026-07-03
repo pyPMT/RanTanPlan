@@ -52,6 +52,9 @@ public:
 
     void set_achievers(std::unique_ptr<AchieversAnalysis> achievers);
 
+    /// Consumes (moves) the achievers analysis built by ActionPruningPass.
+    void consume_artifacts(PreprocessedProblem& artifacts) override;
+
     /// When true, blocking literals from cores are always activated
     /// (the solver's direct demand is trusted unconditionally).
     /// When false, blocking literals are only activated as a fallback

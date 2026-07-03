@@ -17,8 +17,9 @@ namespace rantanplan {
 
 class GroundedEncoder : public BaseEncoder {
 public:
-    // Constructor
-    GroundedEncoder(const Problem& problem, z3::context& ctx);
+    // Constructor — the parallelism strategy is mandatory and injected here.
+    GroundedEncoder(const Problem& problem, z3::context& ctx,
+                    std::unique_ptr<ParallelismStrategy> parallelism);
 
     // Encoding steps
     std::shared_ptr<z3::expr> encode_initial_state() override;
@@ -31,7 +32,6 @@ public:
     std::shared_ptr<z3::expr> encode_prefix_monotone(int t) override; // Front-loading symmetry breaking
     
     // Strategy management
-    void set_parallelism_strategy(std::unique_ptr<ParallelismStrategy> strategy) override;
     std::string get_parallelism_strategy_name() const override;
     
     // Access to variable factory for plan extraction
@@ -93,7 +93,7 @@ protected:
 
 public:
     const auto& get_epc_index() const { return epc_index_; }
-    void set_lazy_frames(bool enabled) { lazy_frames_enabled_ = enabled; }
+    void set_lazy_frames(bool enabled) override { lazy_frames_enabled_ = enabled; }
 
     /// Extract true action variables at a timestep from a Z3 model.
     std::vector<const Action*> extract_parallel_actions_at_timestep(const z3::model& model, int timestep) const;

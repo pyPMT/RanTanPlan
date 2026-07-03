@@ -1,9 +1,11 @@
 #include "branch_and_bound_planner.hpp"
 #include "../config/config.hpp"
 #include "../encoders/base_encoder.hpp"
+#include "../preprocessing/preprocessed_problem.hpp"
 #include "../util/memory_tracker.hpp"
 #include "../util/stats.hpp"
 #include "../util/logger.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -13,6 +15,28 @@ namespace rantanplan {
 // ============================================================================
 // Construction and utilities
 // ============================================================================
+
+void BranchAndBoundPlanner::consume_artifacts(PreprocessedProblem& artifacts) {
+    if (artifacts.sdac_cost_lower_bounds.empty()) {
+        return;
+    }
+
+    const auto& cost_bounds = artifacts.sdac_cost_lower_bounds;
+    bool all_positive = std::all_of(cost_bounds.begin(), cost_bounds.end(),
+                                     [](double lb) { return lb > 0.0; });
+    if (!all_positive) {
+        Logger::instance().info(
+            "WARNING: Some SDAC action cost expressions have a lower bound "
+            "of 0 (or could not be bounded). The abstract suffix will use 0 "
+            "for these actions, reducing branch-and-bound pruning power.");
+    } else {
+        Logger::instance().info(
+            "SDAC cost lower bounds computed via numeric RPG fixpoint — "
+            "all action costs have positive lower bounds.");
+    }
+
+    set_cost_lower_bounds(std::vector<double>(cost_bounds.begin(), cost_bounds.end()));
+}
 
 BranchAndBoundPlanner::BranchAndBoundPlanner(
     const Problem& problem, BaseEncoder& encoder, z3::context& ctx,

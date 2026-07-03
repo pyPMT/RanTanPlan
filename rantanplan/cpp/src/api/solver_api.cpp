@@ -9,7 +9,7 @@
 #include "config/config.hpp"
 #include "config/strategy_registry.hpp"
 #include "problem/protobuf_io.hpp"
-#include "config/strategy_factory.hpp"
+#include "strategy_factory.hpp"
 #include "config/strategy_spec.hpp"
 #include "planners/sequential.hpp"
 #include "planners/pdla_planner.hpp"
@@ -145,38 +145,15 @@ PlanGenerationResult solve(PreprocessedProblem& pipeline_result) {
 
     rantanplan::Logger::instance().info("Using strategy: " + config.planner.strategy + " (mode: " + config.planner.mode + ")");
 
-    auto encoder = rantanplan::StrategyFactory::create_encoder(spec, problem, ctx);
-    auto parallelism = rantanplan::StrategyFactory::create_parallelism(spec);
-
-    // Build the interference analyzer for the resolved semantics. Eager
-    // variants pay their analysis cost here (backend setup), no longer in
-    // the pipeline stats — tracked separately as backend.interference_ms.
-    std::unique_ptr<rantanplan::InterferenceAnalysis> interference;
-    {
-        rantanplan::ScopedTimer timer("backend.interference_ms");
-        interference = rantanplan::StrategyFactory::create_interference(spec, problem);
-    }
-    const rantanplan::InterferenceAnalysis* interference_ptr = interference.get();
-
-    parallelism->set_interference_analyzer(std::move(interference));
-    encoder->set_parallelism_strategy(std::move(parallelism));
-    encoder->set_symmetry_data(pipeline_result.symmetry_data);
-    encoder->set_state_constraints(std::move(pipeline_result.state_constraints));
-
-    auto planner = rantanplan::StrategyFactory::create_planner(
-        spec, problem, *encoder, ctx, interference_ptr);
-    planner->set_arithmetic_profile(pipeline_result.arithmetic_profile);
-    rantanplan::StrategyFactory::configure_planner(*planner, spec, pipeline_result);
-
-    // Pass pre-built achiever analysis to PDLA planners (from ActionPruningPass)
-    if (pipeline_result.achievers && rantanplan::uses_pdla(spec)) {
-        auto* pdla_planner = dynamic_cast<rantanplan::PDLAPlanner*>(planner.get());
-        if (pdla_planner) {
-            pdla_planner->set_achievers(std::move(pipeline_result.achievers));
-        }
-    }
+    // The factory returns fully wired components: interference is
+    // constructor-injected into the parallelism strategy, which is
+    // constructor-injected into the encoder; planners consume their
+    // artifacts via BasePlanner::consume_artifacts.
+    auto encoder = rantanplan::StrategyFactory::create_encoder(spec, pipeline_result, ctx);
+    auto planner = rantanplan::StrategyFactory::create_planner(spec, pipeline_result, *encoder, ctx);
 
     // Get solver reference and create propagator using factory
+    // (must come after the planner: the propagator attaches to its solver)
     auto propagator = rantanplan::StrategyFactory::create_propagator(spec, planner->get_solver(), problem, *encoder);
 
     // Add logging module if requested
@@ -269,16 +246,8 @@ int export_formula(const rantanplan::Problem& problem) {
         // Create Z3 context
         z3::context ctx;
 
-        // Create encoder, parallelism, and interference analyzer using factory
+        // Create the fully wired encoder (interference -> parallelism -> encoder)
         auto encoder = rantanplan::StrategyFactory::create_encoder(spec, problem, ctx);
-        auto parallelism = rantanplan::StrategyFactory::create_parallelism(spec);
-        auto interference = rantanplan::StrategyFactory::create_interference(spec, problem);
-
-        // Inject interference analyzer into parallelism strategy
-        parallelism->set_interference_analyzer(std::move(interference));
-
-        // Set parallelism strategy on encoder
-        encoder->set_parallelism_strategy(std::move(parallelism));
 
         rantanplan::Logger::instance().info("Exporting formula for timestep " + std::to_string(config.formula_export.timestep)
                                        + " using strategy: " + encoder->get_parallelism_strategy_name());

@@ -1,4 +1,5 @@
 #include "pdla_planner.hpp"
+#include "../preprocessing/preprocessed_problem.hpp"
 #include "../encoders/grounded_encoder.hpp"
 #include "../config/config.hpp"
 #include "../util/logger.hpp"
@@ -24,6 +25,12 @@ GroundedEncoder& PDLAPlanner::grounded_encoder() {
         grounded_encoder_ = &dynamic_cast<GroundedEncoder&>(encoder_);
     }
     return *grounded_encoder_;
+}
+
+void PDLAPlanner::consume_artifacts(PreprocessedProblem& artifacts) {
+    if (artifacts.achievers) {
+        set_achievers(std::move(artifacts.achievers));
+    }
 }
 
 void PDLAPlanner::set_achievers(std::unique_ptr<AchieversAnalysis> achievers) {

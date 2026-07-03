@@ -8,11 +8,14 @@
 namespace rantanplan {
 
 // Constructor
-GroundedEncoder::GroundedEncoder(const Problem& problem, z3::context& ctx)
+GroundedEncoder::GroundedEncoder(const Problem& problem, z3::context& ctx,
+                                 std::unique_ptr<ParallelismStrategy> parallelism)
     : problem_(problem), ctx_(ctx), variable_factory_(ctx), grounded_visitor_(ctx_, &problem_, &variable_factory_) {
     layers_encoded_ = -1;
     variable_factory_.set_problem(&problem_);
     build_epc_index();
+    parallelism_strategy_ = std::move(parallelism);
+    parallelism_strategy_->initialize(problem_, ctx_, variable_factory_);
 }
 
 z3::expr GroundedEncoder::convert_expr_id_to_z3(ExprID id, int timestep) {
@@ -408,12 +411,6 @@ std::shared_ptr<z3::expr> GroundedEncoder::encode_state_constraints(int t) {
         return std::make_shared<z3::expr>(ctx_.bool_val(true));
     }
     return std::make_shared<z3::expr>(z3::mk_and(conjuncts));
-}
-
-void GroundedEncoder::set_parallelism_strategy(std::unique_ptr<ParallelismStrategy> strategy) {
-    parallelism_strategy_ = std::move(strategy);
-    // Initialize the strategy with problem context
-    parallelism_strategy_->initialize(problem_, ctx_, variable_factory_);
 }
 
 std::string GroundedEncoder::get_parallelism_strategy_name() const {

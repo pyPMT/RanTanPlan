@@ -48,8 +48,8 @@ public:
      */
     virtual std::shared_ptr<z3::expr> encode_prefix_monotone(int t) = 0;
     
-    // Parallelism management
-    virtual void set_parallelism_strategy(std::unique_ptr<ParallelismStrategy> strategy) = 0;
+    // Parallelism management (the strategy is constructor-injected in
+    // concrete encoders — an encoder without one cannot exist)
     virtual std::string get_parallelism_strategy_name() const = 0;
     virtual const ParallelismStrategy* get_parallelism_strategy() const = 0; // for plan extraction
     
@@ -70,6 +70,10 @@ public:
         return convert_expr_id_to_z3(action.cost_id(), timestep);
     }
     
+    /// Enable lazy frame mode (frame axioms supplied by a propagator module
+    /// instead of the encoding). No-op for encoders without frame axioms.
+    virtual void set_lazy_frames(bool enabled) { (void)enabled; }
+
     // State constraints (mutexes, bounds) from InvariantOraclePass
     virtual std::shared_ptr<z3::expr> encode_state_constraints(int t) = 0;
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "strategy_spec.hpp"
+#include "../config/strategy_spec.hpp"
 #include "../problem/problem.hpp"
 #include "../encoders/base_encoder.hpp"
 #include "../planners/base_planner.hpp"
@@ -16,11 +16,15 @@
 namespace rantanplan {
 
 /// Strategy component factory — handles validation, problem-specific
-/// adjustments, and component creation.
+/// adjustments, and fully wired component assembly at solve time.
 ///
-/// All methods are called at solve time (backend assembly): spec
-/// adjustment and validation first, then interference and the
-/// Z3-dependent component creation.
+/// Wiring discipline: mandatory dependencies are constructor-injected
+/// (interference → parallelism → encoder), optional artifacts (symmetry
+/// data, state constraints) are applied via setters here, and planners
+/// declare what they consume via BasePlanner::consume_artifacts. The one
+/// ordering Z3 imposes — the propagator must attach to the planner's
+/// solver, so create_propagator runs after create_planner — lives with
+/// the caller (api::solve).
 class StrategyFactory {
 public:
     /// Validate that a spec is internally consistent and compatible with
@@ -34,16 +38,15 @@ public:
     /// exists-step downgrade). Mutates spec in place and logs adjustments.
     static void adjust_spec(StrategySpec& spec, const Problem& problem);
 
-    /// Configure a planner after creation with pipeline results (e.g. SDAC
-    /// cost lower bounds for B&B). Handles dynamic dispatch internally.
-    static void configure_planner(BasePlanner& planner, const StrategySpec& spec,
-                                  const PreprocessedProblem& pipeline_result);
-
+    /// Build a fully wired encoder: interference analyzer (timed as
+    /// backend.interference_ms) into parallelism strategy into encoder.
     static std::unique_ptr<BaseEncoder> create_encoder(
         const StrategySpec& spec, const Problem& problem, z3::context& ctx);
 
-    static std::unique_ptr<ParallelismStrategy> create_parallelism(
-        const StrategySpec& spec);
+    /// As above, plus routes the preprocessing artifacts the encoder
+    /// consumes: symmetry data (copied) and state constraints (moved).
+    static std::unique_ptr<BaseEncoder> create_encoder(
+        const StrategySpec& spec, PreprocessedProblem& pre, z3::context& ctx);
 
     static std::unique_ptr<InterferenceAnalysis> create_interference(
         const StrategySpec& spec, const Problem& problem);
@@ -52,10 +55,12 @@ public:
         const StrategySpec& spec, z3::solver& solver,
         const Problem& problem, BaseEncoder& encoder);
 
+    /// Create the planner and route its artifacts: arithmetic profile,
+    /// then BasePlanner::consume_artifacts (PDLA takes achievers, B&B
+    /// takes SDAC cost bounds).
     static std::unique_ptr<BasePlanner> create_planner(
-        const StrategySpec& spec, const Problem& problem,
-        BaseEncoder& encoder, z3::context& ctx,
-        const InterferenceAnalysis* interference = nullptr);
+        const StrategySpec& spec, PreprocessedProblem& pre,
+        BaseEncoder& encoder, z3::context& ctx);
 };
 
 } // namespace rantanplan

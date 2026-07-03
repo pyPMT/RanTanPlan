@@ -10,8 +10,10 @@
 
 namespace rantanplan {
 
-R2EGroundedEncoder::R2EGroundedEncoder(const Problem& problem, z3::context& ctx, ActionOrdering ordering)
-    : GroundedEncoder(problem, ctx), action_ordering_(ordering) {
+R2EGroundedEncoder::R2EGroundedEncoder(const Problem& problem, z3::context& ctx,
+                                       std::unique_ptr<ParallelismStrategy> parallelism,
+                                       ActionOrdering ordering)
+    : GroundedEncoder(problem, ctx, std::move(parallelism)), action_ordering_(ordering) {
     build_action_ordering();
     collect_all_state_variables();
     build_variable_modifiers();

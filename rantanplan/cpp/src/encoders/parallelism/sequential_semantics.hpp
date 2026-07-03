@@ -18,12 +18,7 @@ public:
 
     std::string get_name() const override { return "SequentialSemantics"; }
 
-    // Analyzer access methods (not applicable for sequential semantics)
-    void set_interference_analyzer(std::unique_ptr<InterferenceAnalysis> analyzer) override {
-        // Sequential semantics doesn't use interference analysis
-        (void)analyzer;  // Suppress unused parameter warning
-    }
-
+    // Analyzer access (not applicable for sequential semantics)
     const InterferenceAnalysis* get_interference_analyzer() const override { return nullptr; }
 
     bool allows_concurrent_actions() const override { return false; }

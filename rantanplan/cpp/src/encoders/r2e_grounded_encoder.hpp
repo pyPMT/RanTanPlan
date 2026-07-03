@@ -20,7 +20,8 @@ public:
         RPG   // NumericRPG layer-based ordering
     };
     
-    R2EGroundedEncoder(const Problem& problem, z3::context& ctx, 
+    R2EGroundedEncoder(const Problem& problem, z3::context& ctx,
+                       std::unique_ptr<ParallelismStrategy> parallelism,
                        ActionOrdering ordering = ActionOrdering::RPG);
     
     // Override encoding methods to implement R2E semantics
