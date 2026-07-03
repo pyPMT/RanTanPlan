@@ -74,11 +74,12 @@ public:
     // Enable/disable all output (for testing)
     void set_enabled(bool enabled);
 
+    // Check if we should print at this level (public so callers can guard
+    // expensive message construction without reading Config themselves)
+    bool should_print(VerbosityLevel min_level) const;
+
 private:
     Logger() = default;
-
-    // Check if we should print at this level
-    bool should_print(VerbosityLevel min_level) const;
 
     // Formatting helpers
     std::string format_component_line(

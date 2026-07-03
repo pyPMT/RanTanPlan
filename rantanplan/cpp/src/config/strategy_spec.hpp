@@ -4,6 +4,8 @@
 #include <string>
 #include <stdexcept>
 
+#include "search_mode.hpp"
+
 namespace rantanplan {
 
 enum class EncoderFamily { Grounded, Chained, R2E };
@@ -16,12 +18,6 @@ enum class PropagatorModuleKind { ForallEager, ForallLazy, ExistsCycle, FrameAxi
 
 using PropagatorFlags = std::set<PropagatorModuleKind>;
 
-/// Search mode — orthogonal to strategy (encoding/semantics/interference/propagator).
-///   Satisficing: find first valid plan, return immediately.
-///   Optimal:     find cost-optimal plan with proof (BranchAndBound).
-///   Anytime:     keep finding improving plans via B&B, return best at end.
-enum class SearchMode { Satisficing, Optimal, Anytime };
-
 struct StrategySpec {
     EncoderFamily encoder;
     SemanticsKind semantics;
@@ -31,16 +27,8 @@ struct StrategySpec {
 };
 
 // ---------------------------------------------------------------------------
-// SearchMode helpers
+// SearchMode helpers (SearchMode + parse_search_mode live in search_mode.hpp)
 // ---------------------------------------------------------------------------
-
-inline SearchMode parse_search_mode(const std::string& mode) {
-    if (mode.empty() || mode == "satisficing") return SearchMode::Satisficing;
-    if (mode == "optimal")  return SearchMode::Optimal;
-    if (mode == "anytime")  return SearchMode::Anytime;
-    throw std::invalid_argument(
-        "Unknown mode: '" + mode + "'. Valid values: satisficing, optimal, anytime");
-}
 
 /// Resolve the final PlannerKind from the SearchMode and the StrategySpec.
 ///   satisficing → use the strategy's default planner (Sequential or DoubleTail).

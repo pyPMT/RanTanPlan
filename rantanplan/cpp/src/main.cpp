@@ -72,7 +72,9 @@ int main(int argc, char* argv[]) {
         return rantanplan::api::export_formula(planning_problem);
     }
 
-    auto pipeline_result = rantanplan::api::preprocess(std::move(planning_problem));
+    const auto preprocessor_options = rantanplan::PreprocessorOptions::from_config(config);
+    auto pipeline_result = rantanplan::api::preprocess(std::move(planning_problem),
+                                                       preprocessor_options);
 
     if (pipeline_result.proven_unsolvable) {
         PlanGenerationResult result;

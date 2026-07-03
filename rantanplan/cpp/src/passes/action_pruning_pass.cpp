@@ -2,8 +2,6 @@
 #include "bound_tightening.hpp"
 #include "../abstraction/achievers_analysis.hpp"
 #include "../analysis/numeric_relaxed_planning_graph.hpp"
-#include "../config/config.hpp"
-#include "../config/strategy_spec.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
 #include "../util/stats.hpp"
@@ -17,12 +15,9 @@
 namespace rantanplan {
 
 void ActionPruningPass::apply(PreprocessedProblem& result) const {
-    auto& config = Config::instance();
-
-    bool need_rpg = config.rpg.enabled;
-    bool need_goal_relevance = config.rpg.goal_relevance;
-    bool need_bounds = config.local_reasoning.enabled &&
-                       config.local_reasoning.rpg_bounds;
+    bool need_rpg = opts_->rpg_enabled;
+    bool need_goal_relevance = opts_->goal_relevance;
+    bool need_bounds = opts_->local_reasoning_enabled && opts_->rpg_bounds;
 
     if (!need_rpg && !need_goal_relevance && !need_bounds) {
         return;
@@ -31,12 +26,11 @@ void ActionPruningPass::apply(PreprocessedProblem& result) const {
     ScopedTimer pass_timer("pass.action-pruning.time_ms");
     auto& stats = Stats::instance();
 
-    SearchMode mode = parse_search_mode(config.planner.mode);
-    bool include_cost_fluents = (mode == SearchMode::Optimal ||
-                                 mode == SearchMode::Anytime);
+    bool include_cost_fluents = (opts_->mode == SearchMode::Optimal ||
+                                 opts_->mode == SearchMode::Anytime);
 
     int max_iter = need_goal_relevance
-        ? config.rpg.goal_relevance_max_iterations : 1;
+        ? opts_->goal_relevance_max_iterations : 1;
 
     size_t initial_actions = result.problem.actions().size();
     std::unique_ptr<AchieversAnalysis> final_achievers;
@@ -83,7 +77,7 @@ void ActionPruningPass::apply(PreprocessedProblem& result) const {
         }
 
         // 4. Forward prune: remove RPG-unreachable actions
-        if (config.rpg.action_removal) {
+        if (opts_->rpg_action_removal) {
             auto rpg_removable = rpg->get_removable_action_indices();
             if (!rpg_removable.empty()) {
                 result.problem = result.problem.without_actions(rpg_removable);
@@ -123,7 +117,7 @@ void ActionPruningPass::apply(PreprocessedProblem& result) const {
                 {"removing", std::to_string(removed_indices.size())}
             });
 
-            if (Config::instance().is_verbose()) {
+            if (Logger::instance().should_print(VerbosityLevel::VERBOSE)) {
                 for (size_t idx : removed_indices) {
                     Logger::instance().info("  ActionPruning removed: " +
                         result.problem.actions()[idx].label());
@@ -206,7 +200,8 @@ void ActionPruningPass::apply(PreprocessedProblem& result) const {
     result.conservation_laws = std::move(final_conservations);
 
     // Log per-fluent bounds at verbose level
-    if (config.is_verbose() && !result.tightened_bounds.empty()) {
+    if (Logger::instance().should_print(VerbosityLevel::VERBOSE) &&
+        !result.tightened_bounds.empty()) {
         const auto& pool = result.problem.pool();
         for (const auto& [eid, interval] : result.tightened_bounds) {
             if (!result.problem.is_numeric_type(eid)) continue;

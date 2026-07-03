@@ -33,9 +33,7 @@
 
 namespace rantanplan::api {
 
-PreprocessedProblem preprocess(Problem problem) {
-    auto& config = rantanplan::Config::instance();
-
+PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& options) {
     // === PREPROCESSING PIPELINE ===
     //
     // Four phases, each with clear responsibilities and data dependencies:
@@ -69,15 +67,15 @@ PreprocessedProblem preprocess(Problem problem) {
     // this is cheaper on the lifted problem (smaller Z3 formula) and must
     // happen before StaticFluent removes distinguishing static assignments.
     std::optional<rantanplan::Problem> original_problem;
-    if (config.symmetry.enable_symmetries) {
+    if (options.enable_symmetries) {
         original_problem = problem;  // cheap copy (shared ExprPool)
     }
 
     rantanplan::GroundingPass grounding_pass;
     rantanplan::CWAInitialStatePass cwa_pass;
     rantanplan::StaticFluentPass static_fluent_pass;
-    rantanplan::ActionPruningPass action_pruning_pass;
-    rantanplan::InvariantOraclePass invariant_oracle_pass;
+    rantanplan::ActionPruningPass action_pruning_pass(options);
+    rantanplan::InvariantOraclePass invariant_oracle_pass(options);
     rantanplan::SymmetryAnalysisPass symmetry_analysis_pass(
         original_problem ? &*original_problem : nullptr);
     rantanplan::ArithmeticProfilePass arithmetic_profile_pass;
@@ -85,7 +83,7 @@ PreprocessedProblem preprocess(Problem problem) {
     std::vector<const rantanplan::Pass*> passes;
 
     // --- CANONICALIZE ---
-    if (config.global.reachability_grounding) {
+    if (options.enable_grounding) {
         passes.push_back(&grounding_pass);
     }
     passes.push_back(&cwa_pass);
@@ -98,7 +96,7 @@ PreprocessedProblem preprocess(Problem problem) {
     passes.push_back(&invariant_oracle_pass);
 
     // --- PROFILE ---
-    if (config.symmetry.enable_symmetries) {
+    if (options.enable_symmetries) {
         passes.push_back(&symmetry_analysis_pass);
     }
     passes.push_back(&arithmetic_profile_pass);
@@ -113,7 +111,7 @@ PreprocessedProblem preprocess(Problem problem) {
                                       static_cast<double>(pipeline_result.problem.actions().size()));
 
     // Debug: dump problem info after pipeline
-    if (config.is_debug()) {
+    if (rantanplan::Logger::instance().should_print(rantanplan::VerbosityLevel::DEBUG)) {
         const auto& prob = pipeline_result.problem;
         rantanplan::Logger::instance().info("After pipeline: " +
                     std::to_string(prob.actions().size()) + " actions, " +

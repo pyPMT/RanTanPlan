@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pass.hpp"
+#include "../preprocessing/preprocessor_options.hpp"
 
 namespace rantanplan {
 
@@ -18,13 +19,18 @@ namespace rantanplan {
  *   - achievers: goal-relevant achiever analysis (for PDLA planners)
  *   - sdac_cost_lower_bounds: cost bounds on the FINAL action set
  *
- * Runs when any of rpg.enabled, rpg.goal_relevance, or
- * (local_reasoning.enabled && local_reasoning.rpg_bounds) is set.
+ * Runs when any of rpg_enabled, goal_relevance, or
+ * (local_reasoning_enabled && rpg_bounds) is set in the options.
  */
 class ActionPruningPass : public Pass {
 public:
+    explicit ActionPruningPass(const PreprocessorOptions& opts) : opts_(&opts) {}
+
     void apply(PreprocessedProblem& result) const override;
     std::string name() const override { return "action-pruning"; }
+
+private:
+    const PreprocessorOptions* opts_;
 };
 
 } // namespace rantanplan
