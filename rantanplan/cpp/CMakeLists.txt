@@ -155,6 +155,7 @@ add_executable(rantanplan
     src/analysis/semantic_interference_analysis.cpp
     src/analysis/numeric_constraint_analyzer.cpp
     src/preprocessing/preprocessed_problem.cpp
+    src/preprocessing/preprocessor_options.cpp
     src/passes/pipeline.cpp
     src/passes/arithmetic_profile_pass.cpp
     src/passes/action_pruning_pass.cpp
