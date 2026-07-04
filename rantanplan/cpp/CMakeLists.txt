@@ -90,11 +90,20 @@ endif()
 
 
 # ==============================================================================
+# PYTHON / NANOBIND SETUP
+# ==============================================================================
+# Both located via the active venv: build.py passes Python_EXECUTABLE (pins
+# the interpreter whose ABI the module targets) and nanobind_DIR (from the
+# nanobind pip package, like Z3).
+find_package(Python 3.8 COMPONENTS Interpreter Development.Module REQUIRED)
+find_package(nanobind CONFIG REQUIRED)
+
+# ==============================================================================
 # TARGET DEFINITION
 # ==============================================================================
-# Core static library: everything except the CLI driver. The executable (and,
-# later, the nanobind module) link this target and inherit its usage
-# requirements (includes, protobuf, Z3) via PUBLIC.
+# Core static library: everything except the CLI driver. The executable and
+# the nanobind module link this target and inherit its usage requirements
+# (includes, protobuf, Z3) via PUBLIC.
 add_library(rantanplan_core STATIC
     src/api/solver_api.cpp
     src/config/config.cpp
@@ -225,6 +234,12 @@ target_link_libraries(rantanplan PRIVATE rantanplan_core)
 add_executable(double_solve_check tools/double_solve_check.cpp)
 target_link_libraries(double_solve_check PRIVATE rantanplan_core)
 
+# Python extension module. The static core links into a shared module, so it
+# must be position-independent.
+set_target_properties(rantanplan_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+nanobind_add_module(_rantanplan src/api/bindings.cpp)
+target_link_libraries(_rantanplan PRIVATE rantanplan_core)
+
 # ==============================================================================
 # PLATFORM-SPECIFIC FIXES
 # ==============================================================================
@@ -248,18 +263,25 @@ if(APPLE AND NOT Z3_FOUND)
         COMMENT "Fixing Z3 dylib reference in double_solve_check to absolute path"
         VERBATIM
     )
+    add_custom_command(TARGET _rantanplan POST_BUILD
+        COMMAND ${CMAKE_INSTALL_NAME_TOOL} -change libz3.dylib ${Z3_LIBRARY} $<TARGET_FILE:_rantanplan>
+        COMMENT "Fixing Z3 dylib reference in _rantanplan module to absolute path"
+        VERBATIM
+    )
 endif()
 
 # ==============================================================================
 # INSTALLATION
 # ==============================================================================
 install(TARGETS rantanplan DESTINATION ${OUTPUT_DIR})
+# The Python module installs into the package directory (rantanplan/)
+install(TARGETS _rantanplan LIBRARY DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 # ==============================================================================
 # Set RPATH for Z3 if found manually
 # ==============================================================================
 if(NOT Z3_FOUND AND Z3_LIB_DIR)
-    set_target_properties(rantanplan double_solve_check PROPERTIES
+    set_target_properties(rantanplan double_solve_check _rantanplan PROPERTIES
         BUILD_WITH_INSTALL_RPATH TRUE
         INSTALL_RPATH "${Z3_LIB_DIR}"
         SKIP_BUILD_RPATH FALSE

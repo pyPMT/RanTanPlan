@@ -18,7 +18,8 @@ classifiers = [
 dependencies = [
     "unified-planning>=1.2.0",
     "protobuf",
-    "z3-solver"
+    "z3-solver",
+    "nanobind"
 ]
 
 [project.scripts]
@@ -36,4 +37,4 @@ packages = ["rantanplan"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-rantanplan = ["bin/*", "cpp/**/*"]
+rantanplan = ["bin/*", "cpp/**/*", "_rantanplan*.so"]

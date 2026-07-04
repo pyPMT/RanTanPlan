@@ -1,8 +1,10 @@
 import os
 import subprocess
 import argparse
+import sys
 
 import z3
+import nanobind
 
 
 build_parameters = {
@@ -11,6 +13,10 @@ build_parameters = {
     # the include and lib dirs for Z3. Note we are using the Z3 installed via the python packaging
     "Z3_INCLUDE_DIR": os.path.join(os.path.dirname(z3.__file__), "include"),
     "Z3_LIB_DIR": os.path.join(os.path.dirname(z3.__file__), "lib"),
+    # nanobind is located via its pip package, like Z3; pin Python to the
+    # active interpreter so the module builds against the venv's ABI
+    "nanobind_DIR": nanobind.cmake_dir(),
+    "Python_EXECUTABLE": sys.executable,
 }
 
 def build_ext(make_clean=False):
