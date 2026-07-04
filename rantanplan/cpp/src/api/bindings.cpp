@@ -63,6 +63,28 @@ void initialize_config(const std::vector<std::string>& args) {
     z3::set_param("verbose", z3_verbosity[static_cast<int>(config.global.verbosity)]);
 }
 
+/// Log sink callback: (level: int, text: str), level = VerbosityLevel
+/// (0 = error/always, 1 = info, 2 = verbose, 3 = debug).
+using LogCallback = std::function<void(int, const std::string&)>;
+
+/// Install (or clear, with None) a Python callable as the Logger sink.
+/// Called with the GIL held, so dropping the previous sink (a Python object)
+/// is safe. Not synchronized against concurrent emission: install/clear it
+/// from the thread that runs preprocess()/solve() (the wrapper does).
+void set_log_sink(const std::optional<LogCallback>& sink) {
+    if (sink) {
+        // nanobind's std::function wrapper re-acquires the GIL when the
+        // callable is invoked, so logging from the solver thread is safe.
+        LogCallback cb = *sink;
+        Logger::instance().set_sink(
+            [cb](VerbosityLevel level, const std::string& text) {
+                cb(static_cast<int>(level), text);
+            });
+    } else {
+        Logger::instance().set_sink({});
+    }
+}
+
 /// Opaque handle owning the preprocessed problem between preprocess() and
 /// solve(). Single-solve: artifacts are single-consumer (solve() moves
 /// achievers/SDAC bounds out of the bundle), so a second solve() on the
@@ -291,6 +313,16 @@ NB_MODULE(_rantanplan, m) {
           "optimal mode). The callback runs on the solver thread with the GIL "
           "re-acquired: keep it cheap and do not re-enter this module from it. "
           "args has the same reuse-by-default semantics as solve().");
+
+    m.def("set_log_sink", &set_log_sink, nb::arg("sink").none(),
+          "Redirect the planner's log output. sink(level: int, text: str) "
+          "receives each formatted line (no trailing newline, already "
+          "verbosity-filtered; level: 0=error, 1=info, 2=verbose, 3=debug); "
+          "None restores the default (stdout; errors to stderr). The sink is "
+          "process-global and NOT synchronized against a running solve: set "
+          "and clear it from the thread that calls preprocess()/solve(). It "
+          "runs on the solver thread with the GIL re-acquired -- keep it "
+          "cheap and do not re-enter this module from it.");
 
     m.def("export_formula", &export_formula_ir, nb::arg("problem"), nb::arg("args"),
           "Export the SMT formula for a fixed timestep instead of solving "

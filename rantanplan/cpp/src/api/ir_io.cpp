@@ -3,6 +3,7 @@
 #include "../problem/problem.hpp"
 #include "../problem/plan.hpp"
 #include "../problem/expr_enums.hpp"
+#include "../util/logger.hpp"
 
 #include <iostream>
 #include <stdexcept>
@@ -190,8 +191,8 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
         }
         const Type* value_type = ctx.find_type(ir_fluent.value_type);
         if (!value_type) {
-            std::cerr << "ERROR: Could not find type '" << ir_fluent.value_type
-                << "' for fluent '" << ir_fluent.name << "'" << std::endl;
+            Logger::instance().error("Could not find type '" + ir_fluent.value_type +
+                                     "' for fluent '" + ir_fluent.name + "'");
         }
         problem.fluents_.emplace_back(ir_fluent.name, value_type, params);
     }

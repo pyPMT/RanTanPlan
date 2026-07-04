@@ -1,5 +1,6 @@
 #include "formula_exporter.hpp"
 #include "../util/stats.hpp"
+#include "../util/logger.hpp"
 #include <iostream>
 
 namespace rantanplan {
@@ -13,7 +14,7 @@ std::string FormulaExporter::export_formula(int max_timestep) {
     auto& stats = Stats::instance();
 
     if (max_timestep < 0) {
-        std::cerr << "Error: max_timestep must be non-negative" << std::endl;
+        Logger::instance().error("max_timestep must be non-negative");
         return "";
     }
 

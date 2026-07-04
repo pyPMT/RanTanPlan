@@ -1,6 +1,7 @@
 #include "z3_variable_factory.hpp"
 #include "../problem/action.hpp"
 #include "../problem/problem.hpp"
+#include "../util/logger.hpp"
 #include <iostream>
 
 namespace rantanplan {
@@ -150,7 +151,7 @@ z3::expr Z3VariableFactory::create_new_fluent_variable(const Fluent& fluent, con
         return create_object_variable(var_name);
     } else {
         // For unknown types, default to real (safer than integer for mixed arithmetic)
-        std::cerr << "Warning: Unknown fluent type for " << var_name << ", defaulting to real" << std::endl;
+        Logger::instance().error("Unknown fluent type for " + var_name + ", defaulting to real");
         return create_real_variable(var_name);
     }
 }

@@ -18,6 +18,21 @@ void Logger::set_verbosity(VerbosityLevel verbosity) {
     verbosity_ = verbosity;
 }
 
+void Logger::set_sink(Sink sink) {
+    sink_ = std::move(sink);
+}
+
+void Logger::emit(VerbosityLevel level, const std::string& text) {
+    if (sink_) {
+        sink_(level, text);
+    } else if (level == VerbosityLevel::SILENT) {
+        // Only errors are emitted at SILENT (always-print) level
+        std::cerr << text << std::endl;
+    } else {
+        std::cout << text << std::endl;
+    }
+}
+
 bool Logger::should_print(VerbosityLevel min_level) const {
     if (!enabled_) {
         return false;
@@ -34,25 +49,25 @@ bool Logger::should_print(VerbosityLevel min_level) const {
 
 void Logger::info(const std::string& msg) {
     if (should_print(VerbosityLevel::INFO)) {
-        std::cout << msg << std::endl;
+        emit(VerbosityLevel::INFO, msg);
     }
 }
 
 void Logger::verbose(const std::string& msg) {
     if (should_print(VerbosityLevel::VERBOSE)) {
-        std::cout << msg << std::endl;
+        emit(VerbosityLevel::VERBOSE, msg);
     }
 }
 
 void Logger::debug(const std::string& msg) {
     if (should_print(VerbosityLevel::DEBUG)) {
-        std::cout << msg << std::endl;
+        emit(VerbosityLevel::DEBUG, msg);
     }
 }
 
 void Logger::error(const std::string& msg) {
-    // Errors always print to stderr
-    std::cerr << "Error: " << msg << std::endl;
+    // Errors always print, bypassing the verbosity filter
+    emit(VerbosityLevel::SILENT, "Error: " + msg);
 }
 
 std::string Logger::format_component_line(
@@ -85,7 +100,7 @@ void Logger::component(
     const std::vector<std::pair<std::string, std::string>>& metrics
 ) {
     if (should_print(min_level)) {
-        std::cout << format_component_line(component_name, metrics) << std::endl;
+        emit(min_level, format_component_line(component_name, metrics));
     }
 }
 
@@ -97,7 +112,7 @@ void Logger::timestep_encoding(
     if (should_print(min_level)) {
         std::ostringstream component_name;
         component_name << "Encoding T" << timestep;
-        std::cout << format_component_line(component_name.str(), metrics) << std::endl;
+        emit(min_level, format_component_line(component_name.str(), metrics));
     }
 }
 
@@ -110,7 +125,7 @@ void Logger::timestep_solving(
     if (should_print(min_level)) {
         std::ostringstream component_name;
         component_name << "Solving " << prefix << timestep;
-        std::cout << format_component_line(component_name.str(), metrics) << std::endl;
+        emit(min_level, format_component_line(component_name.str(), metrics));
     }
 }
 
@@ -119,7 +134,8 @@ void Logger::summary(const std::map<std::string, std::string>& data) {
         return;
     }
 
-    std::cout << "\n=== Planning Summary ===" << std::endl;
+    std::ostringstream oss;
+    oss << "\n=== Planning Summary ===\n";
 
     // Find the longest key for alignment
     size_t max_key_length = 0;
@@ -129,11 +145,12 @@ void Logger::summary(const std::map<std::string, std::string>& data) {
 
     // Print each key-value pair, aligned
     for (const auto& pair : data) {
-        std::cout << std::left << std::setw(max_key_length + 1) << (pair.first + ":")
-                  << " " << pair.second << std::endl;
+        oss << std::left << std::setw(max_key_length + 1) << (pair.first + ":")
+            << " " << pair.second << "\n";
     }
 
-    std::cout << "========================" << std::endl;
+    oss << "========================";
+    emit(VerbosityLevel::INFO, oss.str());
 }
 
 void Logger::set_enabled(bool enabled) {

@@ -1,4 +1,5 @@
 #include "stats.hpp"
+#include "logger.hpp"
 #include <iostream>
 #include <fstream>
 #include <iomanip>
@@ -71,7 +72,7 @@ void Stats::write_to_file(const std::string& filename) const {
 
     std::ofstream file(filename);
     if (!file) {
-        std::cerr << "Error: Could not open stats file for writing: " << filename << std::endl;
+        Logger::instance().error("Could not open stats file for writing: " + filename);
         return;
     }
 
@@ -80,7 +81,7 @@ void Stats::write_to_file(const std::string& filename) const {
     }
 
     file.close();
-    std::cout << "Statistics written to: " << filename << std::endl;
+    Logger::instance().info("Statistics written to: " + filename);
 }
 
 size_t Stats::size() const {

@@ -53,6 +53,9 @@ class _RantanPlanBase(Engine):
         self._mode = options.get('mode')
         self._output_plan = options.get('output_plan')
         self._no_local_reasoning = options.get('no_local_reasoning', False)
+        # Set per solve call when the caller passes output_stream (UP's
+        # official log channel); None means stdout as usual.
+        self._output_stream: Optional[IO[str]] = None
 
     # ── Verbosity helpers ────────────────────────────────────────────────
 
@@ -66,15 +69,15 @@ class _RantanPlanBase(Engine):
 
     def _log(self, msg: str) -> None:
         if not self._is_silent:
-            print(msg)
+            print(msg, file=self._output_stream or sys.stdout)
 
     def _log_verbose(self, msg: str) -> None:
         if self._is_verbose:
-            print(msg)
+            print(msg, file=self._output_stream or sys.stdout)
 
     def _log_warning(self, msg: str) -> None:
         if not self._is_silent:
-            print(msg)
+            print(msg, file=self._output_stream or sys.stdout)
 
     @staticmethod
     def _log_error(msg: str) -> None:
@@ -454,31 +457,47 @@ class _RantanPlanBase(Engine):
     # ── In-process solving ───────────────────────────────────────────────
 
     def _solve_in_process(self, problem: Problem,
-                          timeout: Optional[float] = None) -> PlanGenerationResult:
+                          timeout: Optional[float] = None,
+                          output_stream: Optional[IO[str]] = None,
+                          ) -> PlanGenerationResult:
         """Solve via the _rantanplan extension module. Timeouts are enforced
-        by the C++ side (--timeout)."""
+        by the C++ side (--timeout). When output_stream is given, the C++ log
+        and the wrapper's own prints go there instead of stdout."""
         if _rantanplan is None:
             raise UPException(
                 "The _rantanplan extension module is not built. Run "
                 "'pip install -e . --no-build-isolation' first.")
 
-        compiled_problem, compilation_result, problem_ir = \
-            self._prepare_problem(problem)
-
-        args = self._build_args(timeout)
-        self._log_verbose(f"Solving in-process: {' '.join(args)}")
-
+        # The C++ log sink is installed for the duration of the call, on this
+        # thread (the one that runs preprocess/solve -- the module requires
+        # sink changes to happen on the solving thread).
+        self._output_stream = output_stream
+        if output_stream is not None:
+            def _sink(level: int, text: str) -> None:
+                output_stream.write(text + "\n")
+            _rantanplan.set_log_sink(_sink)
         try:
-            preprocessed = _rantanplan.preprocess(problem_ir, args)
-            result_ir = _rantanplan.solve(preprocessed)
-            return self._convert_result(
-                result_ir, compiled_problem, compilation_result, problem)
-        except Exception as e:
-            self._log_error(f"An error occurred: {e}")
-            return PlanGenerationResult(
-                PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                log_messages=[LogMessage(level=LogLevel.ERROR, message=str(e))]
-            )
+            compiled_problem, compilation_result, problem_ir = \
+                self._prepare_problem(problem)
+
+            args = self._build_args(timeout)
+            self._log_verbose(f"Solving in-process: {' '.join(args)}")
+
+            try:
+                preprocessed = _rantanplan.preprocess(problem_ir, args)
+                result_ir = _rantanplan.solve(preprocessed)
+                return self._convert_result(
+                    result_ir, compiled_problem, compilation_result, problem)
+            except Exception as e:
+                self._log_error(f"An error occurred: {e}")
+                return PlanGenerationResult(
+                    PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
+                    log_messages=[LogMessage(level=LogLevel.ERROR, message=str(e))]
+                )
+        finally:
+            if output_stream is not None:
+                _rantanplan.set_log_sink(None)
+            self._output_stream = None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -495,7 +514,7 @@ class RantanPlanPlanner(_RantanPlanBase, OneshotPlannerMixin):
               heuristic: Optional[Callable] = None,
               timeout: Optional[float] = None,
               output_stream: Optional[IO[str]] = None) -> PlanGenerationResult:
-        return self._solve_in_process(problem, timeout)
+        return self._solve_in_process(problem, timeout, output_stream)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -517,7 +536,7 @@ class RantanPlanOptimalPlanner(_RantanPlanBase, OneshotPlannerMixin):
               heuristic: Optional[Callable] = None,
               timeout: Optional[float] = None,
               output_stream: Optional[IO[str]] = None) -> PlanGenerationResult:
-        return self._solve_in_process(problem, timeout)
+        return self._solve_in_process(problem, timeout, output_stream)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -546,58 +565,75 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
         Abandoning the generator early does not stop the solve: there is no
         external kill in-process, so the (daemon) worker runs until the C++
         timeout or search limit is reached.
+
+        When output_stream is given, the C++ log and the wrapper's own prints
+        go there instead of stdout.
         """
         if _rantanplan is None:
             raise UPException(
                 "The _rantanplan extension module is not built. Run "
                 "'pip install -e . --no-build-isolation' first.")
 
-        compiled_problem, compilation_result, problem_ir = \
-            self._prepare_problem(problem)
+        self._output_stream = output_stream
+        try:
+            compiled_problem, compilation_result, problem_ir = \
+                self._prepare_problem(problem)
 
-        args = self._build_args(timeout)
-        self._log_verbose(f"Solving anytime in-process: {' '.join(args)}")
+            args = self._build_args(timeout)
+            self._log_verbose(f"Solving anytime in-process: {' '.join(args)}")
 
-        results: queue.Queue = queue.Queue()
+            results: queue.Queue = queue.Queue()
 
-        def on_plan(instances):
-            results.put(("plan", instances))
+            def on_plan(instances):
+                results.put(("plan", instances))
 
-        def run():
-            try:
-                preprocessed = _rantanplan.preprocess(problem_ir, args)
-                result_ir = _rantanplan.solve_anytime(preprocessed, on_plan)
-                results.put(("final", result_ir))
-            except Exception as e:
-                results.put(("error", e))
-
-        worker = threading.Thread(target=run, daemon=True)
-        worker.start()
-
-        # The callback enqueues every plan before solve_anytime returns, so
-        # all ("plan", ...) items precede the terminal item in the queue.
-        while True:
-            kind, payload = results.get()
-            if kind == "plan":
+            def run():
+                # The C++ log sink must be set and cleared on the thread that
+                # runs preprocess/solve_anytime (it is not synchronized against
+                # a running solve), so it is managed here in the worker.
+                if output_stream is not None:
+                    def _sink(level: int, text: str) -> None:
+                        output_stream.write(text + "\n")
+                    _rantanplan.set_log_sink(_sink)
                 try:
-                    plan = self._build_plan(payload, compiled_problem,
-                                            compilation_result)
+                    preprocessed = _rantanplan.preprocess(problem_ir, args)
+                    result_ir = _rantanplan.solve_anytime(preprocessed, on_plan)
+                    results.put(("final", result_ir))
                 except Exception as e:
-                    self._log_error(f"Error mapping intermediate plan back: {e}")
-                    continue
-                self._log(f"Improving plan found ({len(plan.actions)} actions)")
-                yield PlanGenerationResult(
-                    PlanGenerationResultStatus.INTERMEDIATE, plan, self.name)
-            elif kind == "final":
-                worker.join()
-                yield self._convert_result(
-                    payload, compiled_problem, compilation_result, problem)
-                return
-            else:  # error
-                worker.join()
-                self._log_error(f"An error occurred: {payload}")
-                yield PlanGenerationResult(
-                    PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                    log_messages=[LogMessage(level=LogLevel.ERROR,
-                                             message=str(payload))])
-                return
+                    results.put(("error", e))
+                finally:
+                    if output_stream is not None:
+                        _rantanplan.set_log_sink(None)
+
+            worker = threading.Thread(target=run, daemon=True)
+            worker.start()
+
+            # The callback enqueues every plan before solve_anytime returns, so
+            # all ("plan", ...) items precede the terminal item in the queue.
+            while True:
+                kind, payload = results.get()
+                if kind == "plan":
+                    try:
+                        plan = self._build_plan(payload, compiled_problem,
+                                                compilation_result)
+                    except Exception as e:
+                        self._log_error(f"Error mapping intermediate plan back: {e}")
+                        continue
+                    self._log(f"Improving plan found ({len(plan.actions)} actions)")
+                    yield PlanGenerationResult(
+                        PlanGenerationResultStatus.INTERMEDIATE, plan, self.name)
+                elif kind == "final":
+                    worker.join()
+                    yield self._convert_result(
+                        payload, compiled_problem, compilation_result, problem)
+                    return
+                else:  # error
+                    worker.join()
+                    self._log_error(f"An error occurred: {payload}")
+                    yield PlanGenerationResult(
+                        PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
+                        log_messages=[LogMessage(level=LogLevel.ERROR,
+                                                 message=str(payload))])
+                    return
+        finally:
+            self._output_stream = None
