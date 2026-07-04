@@ -17,12 +17,18 @@ than duplicate it.
 3. [`preprocessing-and-strategy.md`](preprocessing-and-strategy.md) — the
    pass pipeline, the `PreprocessedProblem` contract, and the strategy
    registry/factory that assembles a backend.
-4. [`interference-and-propagators.md`](interference-and-propagators.md) —
+4. [`grounding.md`](grounding.md) — how lifted actions become ground ones,
+   restricted to what's reachable, via join-based matching instead of a
+   naive cross product.
+5. [`relaxed-planning-graph.md`](relaxed-planning-graph.md) — the
+   layer-by-layer reachability graph `ActionPruningPass` builds for
+   tightened bounds, goal-relevance pruning, and cost lower bounds.
+6. [`interference-and-propagators.md`](interference-and-propagators.md) —
    why interference analysis has two interfaces, and how the Z3 user
    propagator is split into composable modules.
-5. [`encoders-and-planners.md`](encoders-and-planners.md) — the encoder
+7. [`encoders-and-planners.md`](encoders-and-planners.md) — the encoder
    families, the planner backends, and how a search mode resolves to one.
-6. [`z3-control-and-interruption.md`](z3-control-and-interruption.md) — how
+8. [`z3-control-and-interruption.md`](z3-control-and-interruption.md) — how
    the Z3 solver is driven incrementally, timeout budgeting, and cross-thread
    cancellation.
 
