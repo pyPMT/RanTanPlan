@@ -33,6 +33,28 @@
 
 namespace rantanplan::api {
 
+void InterruptSlot::interrupt() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (ctx_) {
+        ctx_->interrupt();  // Z3_interrupt: safe from another thread
+    }
+}
+
+ScopedContextPublisher::ScopedContextPublisher(InterruptSlot* slot, z3::context& ctx)
+    : slot_(slot) {
+    if (slot_) {
+        std::lock_guard<std::mutex> lock(slot_->mutex_);
+        slot_->ctx_ = &ctx;
+    }
+}
+
+ScopedContextPublisher::~ScopedContextPublisher() {
+    if (slot_) {
+        std::lock_guard<std::mutex> lock(slot_->mutex_);
+        slot_->ctx_ = nullptr;
+    }
+}
+
 PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& options) {
     // A run starts here: drop statistics accumulated by any previous
     // in-process run so per-run stats don't leak across solves. (The CLI
@@ -128,7 +150,8 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     return pipeline_result;
 }
 
-ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_plan) {
+ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_plan,
+                   InterruptSlot* interrupt_slot) {
     auto& config = rantanplan::Config::instance();
     const auto& problem = pipeline_result.problem;
 
@@ -148,6 +171,9 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
     };
 
     z3::context ctx;
+    // Declared after ctx: unpublishes (and waits for any in-flight
+    // interrupt()) before ctx is destroyed.
+    ScopedContextPublisher publish(interrupt_slot, ctx);
 
     rantanplan::Logger::instance().info("Using strategy: " + config.planner.strategy + " (mode: " + config.planner.mode + ")");
 

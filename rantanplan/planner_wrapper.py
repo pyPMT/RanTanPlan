@@ -577,9 +577,11 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
         queue that this generator drains. Each improving plan is yielded with
         INTERMEDIATE status; the terminal result carries the final status.
 
-        Abandoning the generator early does not stop the solve: there is no
-        external kill in-process, so the (daemon) worker runs until the C++
-        timeout or search limit is reached.
+        Abandoning the generator early stops the solve: the cleanup interrupts
+        the running Z3 search (Preprocessed.interrupt()) and joins the worker.
+        Only the Z3 search is interruptible -- if preprocessing is still
+        running, the cleanup waits for it to finish and interrupts the search
+        as soon as it starts.
 
         When output_stream is given, the C++ log and the wrapper's own prints
         go there instead of stdout.
@@ -598,6 +600,9 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
             self._log_verbose(f"Solving anytime in-process: {' '.join(args)}")
 
             results: queue.Queue = queue.Queue()
+            # The worker publishes its Preprocessed handle here so the cleanup
+            # below can interrupt() the running solve on abandonment.
+            handle_box: dict = {}
 
             def on_plan(instances):
                 results.put(("plan", instances))
@@ -612,6 +617,7 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
                     _rantanplan.set_log_sink(_sink)
                 try:
                     preprocessed = _rantanplan.preprocess(problem_ir, args)
+                    handle_box["pre"] = preprocessed
                     result_ir = _rantanplan.solve_anytime(preprocessed, on_plan)
                     results.put(("final", result_ir))
                 except Exception as e:
@@ -623,32 +629,45 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
             worker = threading.Thread(target=run, daemon=True)
             worker.start()
 
-            # The callback enqueues every plan before solve_anytime returns, so
-            # all ("plan", ...) items precede the terminal item in the queue.
-            while True:
-                kind, payload = results.get()
-                if kind == "plan":
-                    try:
-                        plan = self._build_plan(payload, compiled_problem,
-                                                compilation_result)
-                    except Exception as e:
-                        self._log_error(f"Error mapping intermediate plan back: {e}")
-                        continue
-                    self._log(f"Improving plan found ({len(plan.actions)} actions)")
-                    yield PlanGenerationResult(
-                        PlanGenerationResultStatus.INTERMEDIATE, plan, self.name)
-                elif kind == "final":
-                    worker.join()
-                    yield self._convert_result(
-                        payload, compiled_problem, compilation_result, problem)
-                    return
-                else:  # error
-                    worker.join()
-                    self._log_error(f"An error occurred: {payload}")
-                    yield PlanGenerationResult(
-                        PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                        log_messages=[LogMessage(level=LogLevel.ERROR,
-                                                 message=str(payload))])
-                    return
+            try:
+                # The callback enqueues every plan before solve_anytime
+                # returns, so all ("plan", ...) items precede the terminal
+                # item in the queue.
+                while True:
+                    kind, payload = results.get()
+                    if kind == "plan":
+                        try:
+                            plan = self._build_plan(payload, compiled_problem,
+                                                    compilation_result)
+                        except Exception as e:
+                            self._log_error(f"Error mapping intermediate plan back: {e}")
+                            continue
+                        self._log(f"Improving plan found ({len(plan.actions)} actions)")
+                        yield PlanGenerationResult(
+                            PlanGenerationResultStatus.INTERMEDIATE, plan, self.name)
+                    elif kind == "final":
+                        worker.join()
+                        yield self._convert_result(
+                            payload, compiled_problem, compilation_result, problem)
+                        return
+                    else:  # error
+                        worker.join()
+                        self._log_error(f"An error occurred: {payload}")
+                        yield PlanGenerationResult(
+                            PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
+                            log_messages=[LogMessage(level=LogLevel.ERROR,
+                                                     message=str(payload))])
+                        return
+            finally:
+                # Runs on GeneratorExit (abandonment) and exceptions as well
+                # as on normal return. Interrupt in a loop: the handle may not
+                # exist yet (preprocessing) or the solve may not have
+                # published its context yet -- keep poking until the worker
+                # exits. On the normal path the worker is already joined.
+                while worker.is_alive():
+                    pre = handle_box.get("pre")
+                    if pre is not None:
+                        pre.interrupt()
+                    worker.join(timeout=0.5)
         finally:
             self._output_stream = None

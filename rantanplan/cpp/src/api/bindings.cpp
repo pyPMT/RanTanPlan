@@ -92,12 +92,14 @@ void set_log_sink(const std::optional<LogCallback>& sink) {
 struct Preprocessed {
     PreprocessedProblem pre;
     std::vector<std::string> args; // args preprocess() ran with; solve() reuses them by default
+    api::InterruptSlot interrupt_slot; // cross-thread cancel for the running solve
     bool consumed = false;
 };
 
 /// The solve tail shared by solve() and solve_anytime(): unsolvable
 /// short-circuit, horizon seeding, post-solve stats.
-ir::ResultIR run_solve(PreprocessedProblem& pre, const api::PlanCallback& on_plan = {}) {
+ir::ResultIR run_solve(PreprocessedProblem& pre, const api::PlanCallback& on_plan = {},
+                       api::InterruptSlot* interrupt_slot = nullptr) {
     auto& config = Config::instance();
 
     ir::ResultIR result;
@@ -109,7 +111,7 @@ ir::ResultIR run_solve(PreprocessedProblem& pre, const api::PlanCallback& on_pla
     } else {
         // The pipeline's horizon lower bound drives where the search starts.
         config.planner.start_timestep = pre.lower_bound;
-        result = api::solve(pre, on_plan);
+        result = api::solve(pre, on_plan, interrupt_slot);
     }
 
     if (config.is_debug()) {
@@ -151,7 +153,7 @@ ir::ResultIR solve_handle_impl(Preprocessed& handle,
     handle.consumed = true;
 
     nb::gil_scoped_release release;
-    return run_solve(handle.pre, on_plan);
+    return run_solve(handle.pre, on_plan, &handle.interrupt_slot);
 }
 
 ir::ResultIR solve_handle(Preprocessed& handle,
@@ -290,7 +292,14 @@ NB_MODULE(_rantanplan, m) {
         .def_prop_ro("lower_bound",
                      [](const Preprocessed& p) { return p.pre.lower_bound; })
         .def_prop_ro("consumed",
-                     [](const Preprocessed& p) { return p.consumed; });
+                     [](const Preprocessed& p) { return p.consumed; })
+        .def("interrupt",
+             [](Preprocessed& p) { p.interrupt_slot.interrupt(); },
+             "Cancel the solve currently running on this handle, from any "
+             "thread (flips Z3's interrupt flag; near-instant, no GIL "
+             "gymnastics). The interrupted solve returns promptly with "
+             "TIMEOUT status. Only the Z3 search is interruptible: during "
+             "preprocessing or other non-Z3 phases this is a no-op.");
 
     // ── Functions ───────────────────────────────────────────────────────
     m.def("preprocess", &preprocess_ir, nb::arg("problem"), nb::arg("args"),

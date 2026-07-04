@@ -6,7 +6,12 @@
 #include "problem/problem.hpp"
 
 #include <functional>
+#include <mutex>
 #include <string>
+
+namespace z3 {
+class context;
+}
 
 namespace rantanplan {
 class Plan;
@@ -18,6 +23,37 @@ namespace rantanplan::api {
 /// anytime mode, the final plan otherwise) — the in-process replacement for
 /// polling the plan.txt.N files that --output-plan still writes.
 using PlanCallback = std::function<void(const Plan&)>;
+
+/// Cross-thread cancellation slot. solve() publishes its z3::context here
+/// for exactly the duration of the search; interrupt() flips Z3's interrupt
+/// flag on the published context (documented safe from another thread).
+/// Mutex-guarded rather than a bare atomic: unpublishing (and thus the
+/// context's destruction) waits for any in-flight interrupt() call, closing
+/// the load-then-use-after-free race. Outside the search window interrupt()
+/// is a no-op — preprocessing and non-Z3 phases are not interruptible.
+class InterruptSlot {
+public:
+    void interrupt();
+
+private:
+    friend class ScopedContextPublisher;
+    std::mutex mutex_;
+    z3::context* ctx_ = nullptr;
+};
+
+/// RAII publish/unpublish of a z3::context into an InterruptSlot. Declare it
+/// after the context (destruction order then unpublishes before the context
+/// dies). A null slot makes it a no-op.
+class ScopedContextPublisher {
+public:
+    ScopedContextPublisher(InterruptSlot* slot, z3::context& ctx);
+    ~ScopedContextPublisher();
+    ScopedContextPublisher(const ScopedContextPublisher&) = delete;
+    ScopedContextPublisher& operator=(const ScopedContextPublisher&) = delete;
+
+private:
+    InterruptSlot* slot_;
+};
 
 /**
  * @brief Run the full preprocessing pipeline on a problem.
@@ -39,9 +75,14 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
  *
  * If on_plan is set, it is installed on the planner and invoked from the
  * solver thread with each plan found during the search.
+ *
+ * If interrupt_slot is set, the solve's z3::context is published there for
+ * the duration of the search so another thread can cancel it (the canceled
+ * check surfaces through the planners' timeout path as TIMEOUT).
  */
 ir::ResultIR solve(PreprocessedProblem& pipeline_result,
-                   const PlanCallback& on_plan = {});
+                   const PlanCallback& on_plan = {},
+                   InterruptSlot* interrupt_slot = nullptr);
 
 /**
  * @brief Export the SMT formula for a fixed timestep instead of solving.
