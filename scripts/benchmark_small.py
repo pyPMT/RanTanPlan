@@ -18,9 +18,7 @@ Usage:
 """
 import argparse
 import csv
-import os
 import sys
-import time
 from pathlib import Path
 
 import unified_planning as up
@@ -73,15 +71,12 @@ def discover_instances():
 
 def run_instance(domain_path, problem_path, strategy, timeout, extra_params=None):
     """Run a single (instance, strategy) pair. Returns result dict."""
-    stats_file = f"/tmp/bench_{strategy}_{os.getpid()}_{time.monotonic_ns()}.json"
-
     reader = PDDLReader()
     prob = reader.parse_problem(domain_path, problem_path)
 
     params = {
         "strategy": strategy,
         "verbosity": "silent",
-        "stats_file": stats_file,
     }
     if extra_params:
         params.update(extra_params)
@@ -96,18 +91,13 @@ def run_instance(domain_path, problem_path, strategy, timeout, extra_params=None
         )
         plan_len = len(result.plan.actions) if solved and result.plan else 0
 
+        # Per-solve stats travel in the result (stringified doubles)
         stats = {}
-        if os.path.exists(stats_file):
-            with open(stats_file) as f:
-                for line in f:
-                    line = line.strip()
-                    if ': ' in line:
-                        key, val = line.rsplit(': ', 1)
-                        try:
-                            stats[key] = float(val)
-                        except ValueError:
-                            pass
-            os.unlink(stats_file)
+        for key, val in (result.metrics or {}).items():
+            try:
+                stats[key] = float(val)
+            except ValueError:
+                pass
 
         # Pass timings (preprocessing)
         pass_total = sum(v for k, v in stats.items() if k.startswith("pass.") and k.endswith(".time_ms"))
@@ -134,8 +124,6 @@ def run_instance(domain_path, problem_path, strategy, timeout, extra_params=None
         }
 
     except Exception as e:
-        if os.path.exists(stats_file):
-            os.unlink(stats_file)
         return {
             "solved": False,
             "plan_len": 0,

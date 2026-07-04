@@ -1,7 +1,5 @@
 #include "stats.hpp"
-#include "logger.hpp"
 #include <iostream>
-#include <fstream>
 #include <iomanip>
 
 namespace rantanplan {
@@ -62,26 +60,8 @@ void Stats::print_all() const {
     std::cout << "==================" << std::endl;
 }
 
-void Stats::write_to_file(const std::string& filename) const {
-    // Copy stats under lock, then write without holding lock
-    std::map<std::string, double> stats_copy;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        stats_copy = stats_;
-    }
-
-    std::ofstream file(filename);
-    if (!file) {
-        Logger::instance().error("Could not open stats file for writing: " + filename);
-        return;
-    }
-
-    for (const auto& pair : stats_copy) {
-        file << pair.first << ": " << std::fixed << std::setprecision(3) << pair.second << std::endl;
-    }
-
-    file.close();
-    Logger::instance().info("Statistics written to: " + filename);
+const std::map<std::string, double>& Stats::all() const {
+    return stats_;
 }
 
 size_t Stats::size() const {

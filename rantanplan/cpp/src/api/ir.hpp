@@ -132,6 +132,8 @@ struct ResultIR {
     bool has_plan = false;
     std::vector<ActionInstanceIR> plan;
     std::vector<LogMessageIR> log_messages;
+    /// Per-solve statistics (Stats snapshot taken at the end of the solve)
+    std::vector<std::pair<std::string, double>> stats;
 };
 
 } // namespace rantanplan::ir

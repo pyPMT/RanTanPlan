@@ -146,8 +146,6 @@ class _RantanPlanBase(Engine):
             command.append("--persist-clauses")
         if self._symmetries:
             command.append("--symmetries")
-        if self._stats_file is not None:
-            command.extend(["--stats-file", self._stats_file])
         if self._smt_rpg_checker:
             command.append("--smt-rpg-checker")
         if self._no_goal_relevance:
@@ -411,15 +409,31 @@ class _RantanPlanBase(Engine):
 
         return SequentialPlan(new_actions)
 
+    def _write_stats_file(self, stats) -> None:
+        """Write the per-solve stats to self._stats_file (the --stats-file
+        flag), in the same 'key: value' format the C++ side used to write."""
+        try:
+            with open(self._stats_file, "w") as f:
+                for key, value in stats:
+                    f.write(f"{key}: {value:.3f}\n")
+            self._log(f"Statistics written to: {self._stats_file}")
+        except OSError as e:
+            self._log_error(f"Could not open stats file for writing: {e}")
+
     def _convert_result(self, result_ir,
                         compiled_problem: Problem,
                         compilation_result,
                         original_problem: Problem) -> PlanGenerationResult:
         """Map a ResultIR to a UP result: rebuild action instances by name,
-        map them back through the compilation steps, validate."""
+        map them back through the compilation steps, validate. Per-solve
+        stats surface as PlanGenerationResult.metrics (stringified)."""
         status = self._up_status(result_ir.status)
         log_messages = [LogMessage(level=self._up_log_level(msg.level), message=msg.message)
                         for msg in result_ir.log_messages]
+
+        metrics = {key: str(value) for key, value in result_ir.stats}
+        if self._stats_file is not None:
+            self._write_stats_file(result_ir.stats)
 
         final_plan = None
         if result_ir.has_plan:
@@ -451,6 +465,7 @@ class _RantanPlanBase(Engine):
             status,
             final_plan,
             self.name,
+            metrics=metrics or None,
             log_messages=log_messages
         )
 

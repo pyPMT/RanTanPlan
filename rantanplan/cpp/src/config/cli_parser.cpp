@@ -106,14 +106,6 @@ void CLIParser::parse(Config& config, int argc, char* argv[]) {
         else if (arg == "--persist-clauses") {
             config.global.persist_clauses = true;
         }
-        // Statistics options
-        else if (arg == "--stats-file") {
-            if (i + 1 < argc) {
-                config.global.stats_file = argv[++i];
-            } else {
-                throw std::invalid_argument("--stats-file requires a filename");
-            }
-        }
         // Formula export options
         else if (arg == "--export-formula") {
             config.formula_export.export_formula = true;

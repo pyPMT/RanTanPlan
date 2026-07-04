@@ -112,12 +112,13 @@ ir::ResultIR run_solve(PreprocessedProblem& pre, const api::PlanCallback& on_pla
         result = api::solve(pre, on_plan);
     }
 
-    // Mirror the CLI driver's post-solve stats behavior
     if (config.is_debug()) {
         Stats::instance().print_all();
     }
-    if (!config.global.stats_file.empty()) {
-        Stats::instance().write_to_file(config.global.stats_file);
+    // Stats travel in the result; file writing (--stats-file) is the
+    // Python side's job now.
+    for (const auto& [key, value] : Stats::instance().all()) {
+        result.stats.emplace_back(key, value);
     }
     return result;
 }
@@ -275,7 +276,8 @@ NB_MODULE(_rantanplan, m) {
         .def_ro("status", &ir::ResultIR::status)
         .def_ro("has_plan", &ir::ResultIR::has_plan)
         .def_ro("plan", &ir::ResultIR::plan)
-        .def_ro("log_messages", &ir::ResultIR::log_messages);
+        .def_ro("log_messages", &ir::ResultIR::log_messages)
+        .def_ro("stats", &ir::ResultIR::stats);
 
     // ── Preprocessed handle ─────────────────────────────────────────────
     nb::class_<Preprocessed>(m, "Preprocessed",
