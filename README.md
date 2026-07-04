@@ -18,16 +18,26 @@ A SAT/SMT-based automated planner with parallel action semantics. Combines a Pyt
 
 ## Installation
 
-**Prerequisites**: Python 3.8+, CMake, a C++20 compiler. Z3 and nanobind come from the pip dependencies — no other native libraries needed.
+**Prerequisites**: Python 3.8+, CMake ≥ 3.15, a C++20 compiler. Z3 and nanobind come from pip packages — no other native libraries needed.
 
 ```bash
 git clone https://github.com/pyPMT/RantanPlan.git
 cd RantanPlan
 python -m venv .venv
 source .venv/bin/activate  # Always activate before build/run
-pip install -e .
-python build.py
+
+# Build dependencies go in the venv because the install runs without build
+# isolation (see note below)
+pip install scikit-build-core nanobind z3-solver
+
+pip install -e . --no-build-isolation
 ```
+
+The install itself builds the C++ extension module — there is no separate build
+step. `--no-build-isolation` is required: the module must link the exact same
+libz3 that the `z3-solver` package loads at runtime (two copies of libz3 in one
+process is undefined behavior), so the build has to see the venv's own z3
+package rather than a temporary isolated copy.
 
 ## Usage
 
@@ -140,16 +150,27 @@ The Python frontend uses Unified Planning to parse PDDL, applies optional CNF no
 ```bash
 source .venv/bin/activate  # Always required
 
-# Building
-python build.py              # Standard release build
-python build.py --clean      # Clean rebuild
-python build.py --build-type debug  # Debug build
+# Building — after any C++ change, re-run the install (incremental, a few
+# seconds; the CMake build tree persists in build/). Python-only changes
+# need nothing.
+pip install -e . --no-build-isolation
+
+# Clean rebuild: remove the build tree first
+rm -rf build && pip install -e . --no-build-isolation
+
+# Debug build
+pip install -e . --no-build-isolation --config-settings=cmake.build-type=Debug
 
 # Testing
 python test.py               # All strategies, all test domains
 python test.py --quick       # Fast subset (zenotravel, rover, gripper, hydropower)
 python test.py -v            # Verbose output
 ```
+
+Experimental: scikit-build-core can rebuild the extension automatically on
+`import rantanplan` if installed with
+`--config-settings=editable.rebuild=true` (off by default; see the
+scikit-build-core docs).
 
 ## Citation
 

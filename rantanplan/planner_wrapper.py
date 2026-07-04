@@ -460,7 +460,7 @@ class _RantanPlanBase(Engine):
         if _rantanplan is None:
             raise UPException(
                 "The _rantanplan extension module is not built. Run "
-                "'python build.py' first.")
+                "'pip install -e . --no-build-isolation' first.")
 
         compiled_problem, compilation_result, problem_ir = \
             self._prepare_problem(problem)
@@ -550,7 +550,7 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
         if _rantanplan is None:
             raise UPException(
                 "The _rantanplan extension module is not built. Run "
-                "'python build.py' first.")
+                "'pip install -e . --no-build-isolation' first.")
 
         compiled_problem, compilation_result, problem_ir = \
             self._prepare_problem(problem)

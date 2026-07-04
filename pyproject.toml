@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel", "cmake"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.10", "nanobind", "z3-solver"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "rantanplan"
@@ -18,22 +18,32 @@ classifiers = [
 dependencies = [
     "unified-planning>=1.2.0",
     "z3-solver",
-    "nanobind"
 ]
 
 [project.scripts]
 rantanplan = "rantanplan.cli:main"
 
-[project.entry-points."unified_planning.engines"]
-RantanPlan = "rantanplan.planner_wrapper:RantanPlanPlanner"
-
 [project.urls]
 "Homepage" = "https://github.com/pyPMT/rantanplan"
 "Repository" = "https://github.com/pyPMT/rantanplan"
 
-[tool.setuptools]
-packages = ["rantanplan"]
-include-package-data = true
-
-[tool.setuptools.package-data]
-rantanplan = ["cpp/**/*", "_rantanplan*.so"]
+[tool.scikit-build]
+# CMakeLists.txt lives with the C++ sources, not at the repo root
+cmake.source-dir = "rantanplan/cpp"
+# Persistent build tree outside the package dir -> incremental rebuilds
+build-dir = "build/{wheel_tag}"
+# make runs serial by default (ninja is deliberately not a dependency);
+# match the old build.py's -j 4
+build.tool-args = ["-j4"]
+wheel.packages = ["rantanplan"]
+# C++ sources ship in the sdist, not the wheel (the wheel carries the built .so)
+wheel.exclude = ["rantanplan/cpp/**"]
+sdist.exclude = [
+    ".venv/",
+    "build/",
+    "pddl/",
+    "rantanplan/cpp/build/",
+    "scripts/",
+    "test.py",
+    "*.so",
+]

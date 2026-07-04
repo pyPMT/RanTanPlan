@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.15)
 
 # ==============================================================================
 # PROJECT CONFIGURATION
@@ -9,46 +9,62 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ==============================================================================
-# Z3 SOLVER SETUP
-# ==============================================================================
-# Try to find Z3 using modern CMake first
-find_package(Z3 QUIET)
-
-if(Z3_FOUND)
-    message(STATUS "Found Z3 using CMake package config")
-    set(Z3_LINK_LIBRARY z3::libz3)
-else()
-    # Fallback to manual Z3 setup (original approach)
-    message(STATUS "Using manual Z3 setup")
-    
-    # Z3 paths are set by setup.py during Python package installation
-    set(Z3_INCLUDE_DIR ${Z3_INCLUDE_DIR} CACHE STRING "Z3 include directory")
-    set(Z3_LIB_DIR ${Z3_LIB_DIR} CACHE STRING "Z3 library directory")
-
-    # Locate Z3 library
-    find_library(Z3_LIBRARY
-        NAMES z3 libz3
-        PATHS ${Z3_LIB_DIR}
-        NO_DEFAULT_PATH
-    )
-
-    if(NOT Z3_LIBRARY)
-        message(FATAL_ERROR "Z3 library not found in ${Z3_LIB_DIR}")
-    endif()
-
-    message(STATUS "Found Z3 library: ${Z3_LIBRARY}")
-    set(Z3_LINK_LIBRARY ${Z3_LIBRARY}) # Use the full path to the library
-endif()
-
-
-# ==============================================================================
 # PYTHON / NANOBIND SETUP
 # ==============================================================================
-# Both located via the active venv: build.py passes Python_EXECUTABLE (pins
-# the interpreter whose ABI the module targets) and nanobind_DIR (from the
-# nanobind pip package, like Z3).
+# scikit-build-core passes interpreter hints for the building Python; for a
+# plain CMake configure (e.g. an IDE), FindPython picks the interpreter from
+# the activated shell, or pass -DPython_EXECUTABLE=... explicitly.
 find_package(Python 3.8 COMPONENTS Interpreter Development.Module REQUIRED)
+
+# nanobind comes from its pip package in the build environment; -Dnanobind_DIR
+# (or -Dnanobind_ROOT) remains as an escape hatch.
+if(NOT DEFINED nanobind_DIR AND NOT DEFINED nanobind_ROOT)
+    execute_process(
+        COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
+        OUTPUT_VARIABLE nanobind_ROOT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE NANOBIND_LOOKUP_RESULT
+    )
+    if(NOT NANOBIND_LOOKUP_RESULT EQUAL 0)
+        message(FATAL_ERROR "Could not locate nanobind via ${Python_EXECUTABLE} "
+                            "(is the nanobind pip package installed?)")
+    endif()
+endif()
 find_package(nanobind CONFIG REQUIRED)
+
+# ==============================================================================
+# Z3 SOLVER SETUP
+# ==============================================================================
+# The module must link the exact libz3 the z3 pip package loads (two copies in
+# one process is undefined behavior), so Z3 is located via the interpreter's
+# z3 package. -DZ3_INCLUDE_DIR/-DZ3_LIB_DIR remain as escape hatches.
+if(NOT DEFINED Z3_INCLUDE_DIR OR NOT DEFINED Z3_LIB_DIR)
+    execute_process(
+        COMMAND "${Python_EXECUTABLE}" -c "import z3, os; print(os.path.dirname(z3.__file__))"
+        OUTPUT_VARIABLE Z3_PACKAGE_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE Z3_LOOKUP_RESULT
+    )
+    if(NOT Z3_LOOKUP_RESULT EQUAL 0)
+        message(FATAL_ERROR "Could not locate the z3 package via ${Python_EXECUTABLE} "
+                            "(is the z3-solver pip package installed?)")
+    endif()
+    set(Z3_INCLUDE_DIR "${Z3_PACKAGE_DIR}/include")
+    set(Z3_LIB_DIR "${Z3_PACKAGE_DIR}/lib")
+endif()
+
+find_library(Z3_LIBRARY
+    NAMES z3 libz3
+    PATHS ${Z3_LIB_DIR}
+    NO_DEFAULT_PATH
+)
+
+if(NOT Z3_LIBRARY)
+    message(FATAL_ERROR "Z3 library not found in ${Z3_LIB_DIR}")
+endif()
+
+message(STATUS "Found Z3 library: ${Z3_LIBRARY}")
+set(Z3_LINK_LIBRARY ${Z3_LIBRARY}) # Use the full path to the library
 
 # ==============================================================================
 # TARGET DEFINITION
@@ -192,8 +208,10 @@ endif()
 # ==============================================================================
 # INSTALLATION
 # ==============================================================================
-# The Python module installs into the package directory (rantanplan/)
-install(TARGETS _rantanplan LIBRARY DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/..)
+# scikit-build-core stages the install tree into the wheel; the module lands
+# inside the rantanplan package (for editable installs it is resolved from the
+# build tree via the editable redirect).
+install(TARGETS _rantanplan LIBRARY DESTINATION rantanplan)
 
 # ==============================================================================
 # Set RPATH for Z3 if found manually

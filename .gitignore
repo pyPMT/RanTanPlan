@@ -177,10 +177,6 @@ venv
 .venv
 
 # build artifacts or random files
-rantanplan/cpp/build
-rantanplan/bin/rantanplan
-test_problem.pb
-output_solution.pb
 output.smt2
 plan_model.txt
 CLAUDE.md
@@ -198,9 +194,6 @@ formal_tex
 docs
 slurm_report
 
-# pre-converted files
-*.pb
-pddl/pb-test
 
 # plots
 *.png
