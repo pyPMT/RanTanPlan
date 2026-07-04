@@ -9,7 +9,6 @@ import nanobind
 
 build_parameters = {
     "CMAKE_BUILD_TYPE": "release",
-    "OUTPUT_DIR": os.path.join(os.path.dirname(__file__), "rantanplan", "bin"),
     # the include and lib dirs for Z3. Note we are using the Z3 installed via the python packaging
     "Z3_INCLUDE_DIR": os.path.join(os.path.dirname(z3.__file__), "include"),
     "Z3_LIB_DIR": os.path.join(os.path.dirname(z3.__file__), "lib"),

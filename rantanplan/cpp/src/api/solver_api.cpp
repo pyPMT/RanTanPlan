@@ -1,14 +1,14 @@
 #include "solver_api.hpp"
 
-#include <fstream>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "config/config.hpp"
 #include "config/strategy_registry.hpp"
-#include "problem/protobuf_io.hpp"
+#include "ir_io.hpp"
 #include "strategy_factory.hpp"
 #include "config/strategy_spec.hpp"
 #include "planners/incremental_horizon_planner.hpp"
@@ -128,7 +128,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     return pipeline_result;
 }
 
-PlanGenerationResult solve(PreprocessedProblem& pipeline_result) {
+ir::ResultIR solve(PreprocessedProblem& pipeline_result) {
     auto& config = rantanplan::Config::instance();
     const auto& problem = pipeline_result.problem;
 
@@ -142,9 +142,10 @@ PlanGenerationResult solve(PreprocessedProblem& pipeline_result) {
     rantanplan::StrategyFactory::validate(spec, config.planner.strategy,
                                           config.planner.horizon_schedule);
 
-    PlanGenerationResult result;
-    auto* log_message = result.add_log_messages();
-    log_message->set_level(LogMessage_LogLevel_INFO);
+    ir::ResultIR result;
+    auto add_info = [&result](const std::string& message) {
+        result.log_messages.push_back(ir::LogMessageIR{1 /* INFO */, message});
+    };
 
     z3::context ctx;
 
@@ -172,17 +173,13 @@ PlanGenerationResult solve(PreprocessedProblem& pipeline_result) {
     // Call planner->search() and get the result
     rantanplan::Plan plan = planner->search();
     if (planner->solution_found()) {
-        if (planner->optimality_proven()) {
-            result.set_status(PlanGenerationResult_Status_SOLVED_OPTIMALLY);
-        } else {
-            result.set_status(PlanGenerationResult_Status_SOLVED_SATISFICING);
-        }
-
-        *result.mutable_plan() = rantanplan::plan_to_protobuf(plan);
+        result.status = static_cast<int>(planner->optimality_proven()
+                                             ? ir::SolveStatusIR::SOLVED_OPTIMALLY
+                                             : ir::SolveStatusIR::SOLVED_SATISFICING);
+        result.plan = rantanplan::plan_to_ir(plan);
+        result.has_plan = true;
 
         if (config.is_info()) {
-            log_message = result.add_log_messages();
-            log_message->set_level(LogMessage_LogLevel_INFO);
             std::string msg = "Plan found with " + std::to_string(plan.length()) + " actions.";
             if (rantanplan::uses_branch_and_bound(spec)) {
                 msg += " Cost: " + std::to_string(planner->best_cost()) + ".";
@@ -190,94 +187,59 @@ PlanGenerationResult solve(PreprocessedProblem& pipeline_result) {
                     msg += " (OPTIMAL)";
                 }
             }
-            log_message->set_message(msg);
+            add_info(msg);
         }
     } else if (planner->timed_out()) {
-        result.set_status(PlanGenerationResult_Status_TIMEOUT);
+        result.status = static_cast<int>(ir::SolveStatusIR::TIMEOUT);
         if (config.is_info()) {
-            log_message = result.add_log_messages();
-            log_message->set_level(LogMessage_LogLevel_INFO);
-            log_message->set_message("Timeout reached.");
+            add_info("Timeout reached.");
         }
     } else {
         // No plan found within search limits (max_steps exhausted)
-        result.set_status(PlanGenerationResult_Status_UNSOLVABLE_INCOMPLETELY);
+        result.status = static_cast<int>(ir::SolveStatusIR::UNSOLVABLE_INCOMPLETELY);
         if (config.is_info()) {
-            log_message = result.add_log_messages();
-            log_message->set_level(LogMessage_LogLevel_INFO);
-            log_message->set_message("No plan found within the search limit.");
+            add_info("No plan found within the search limit.");
         }
     }
 
     if (config.is_verbose()) {
-        log_message = result.add_log_messages();
-        log_message->set_level(LogMessage_LogLevel_INFO);
-        log_message->set_message("Finished solving the problem.");
+        add_info("Finished solving the problem.");
     }
 
     // Add memory tracking information to result
     double current_memory = rantanplan::MemoryTracker::instance().get_current_memory_mb();
-
-    log_message = result.add_log_messages();
-    log_message->set_level(LogMessage_LogLevel_INFO);
-    log_message->set_message("Memory usage - Current: " + std::to_string(current_memory) + " MB");
+    add_info("Memory usage - Current: " + std::to_string(current_memory) + " MB");
 
     return result;
 }
 
-int export_formula(const rantanplan::Problem& problem) {
+std::string export_formula(const rantanplan::Problem& problem) {
     auto& config = rantanplan::Config::instance();
 
     // Validate formula export parameters
     if (config.formula_export.timestep < 0) {
-        rantanplan::Logger::instance().error("--formula-timestep must be specified with --export-formula");
-        return 1;
-    }
-
-    if (config.formula_export.output_file.empty()) {
-        rantanplan::Logger::instance().error("--formula-output must be specified with --export-formula");
-        return 1;
+        throw std::invalid_argument("--formula-timestep must be specified with --export-formula");
     }
 
     // Only allow formula export with strategies that support it
     const auto& spec = rantanplan::StrategyRegistry::get(config.planner.strategy);
     if (!rantanplan::supports_formula_export(spec)) {
-        rantanplan::Logger::instance().error(
+        throw std::invalid_argument(
             "Formula export is not supported by strategy '" + config.planner.strategy + "'");
-        return 1;
     }
 
-    try {
-        // Create Z3 context
-        z3::context ctx;
+    // Create Z3 context
+    z3::context ctx;
 
-        // Create the fully wired encoder (interference -> parallelism -> encoder)
-        auto encoder = rantanplan::StrategyFactory::create_encoder(spec, problem, ctx);
+    // Create the fully wired encoder (interference -> parallelism -> encoder)
+    auto encoder = rantanplan::StrategyFactory::create_encoder(spec, problem, ctx);
 
-        rantanplan::Logger::instance().info("Exporting formula for timestep " + std::to_string(config.formula_export.timestep)
-                                       + " using strategy: " + encoder->get_parallelism_strategy_name());
+    rantanplan::Logger::instance().info("Exporting formula for timestep " + std::to_string(config.formula_export.timestep)
+                                   + " using strategy: " + encoder->get_parallelism_strategy_name());
 
-        // Create formula exporter and generate formula
-        rantanplan::FormulaExporter exporter(problem, *encoder, ctx);
-        std::string formula = exporter.export_formula(config.formula_export.timestep);
-
-        // Output formula to file
-        std::ofstream output_file(config.formula_export.output_file);
-        if (!output_file) {
-            rantanplan::Logger::instance().error("Could not open output file: " + config.formula_export.output_file);
-            return 1;
-        }
-        output_file << formula;
-        rantanplan::Logger::instance().info("Formula exported to: " + config.formula_export.output_file);
-
-        google::protobuf::ShutdownProtobufLibrary();
-        return 0;
-
-    } catch (const std::exception& e) {
-        rantanplan::Logger::instance().error("Error during formula export: " + std::string(e.what()));
-        google::protobuf::ShutdownProtobufLibrary();
-        return 1;
-    }
+    // Create formula exporter and generate formula
+    rantanplan::FormulaExporter exporter(problem, *encoder, ctx);
+    return exporter.export_formula(config.formula_export.timestep);
 }
 
 } // namespace rantanplan::api

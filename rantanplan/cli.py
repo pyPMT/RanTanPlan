@@ -56,8 +56,6 @@ Use --list-strategies to see available strategies and their descriptions.
                        help="Timeout in seconds (default: None)")
     parser.add_argument("--max-steps", type=int,
                        help="Maximum planning steps")
-    parser.add_argument("--executable", type=str,
-                       help="Path to RantanPlan C++ executable")
     parser.add_argument("--output-plan", type=str,
                        help="Base path for plan output in IPC format (files written as <path>.1, .2, etc.)")
     parser.add_argument("--stats-file", type=str,
@@ -123,8 +121,6 @@ def _build_planner_params(args) -> Dict[str, object]:
         'strategy': args.strategy,
     }
 
-    if args.executable:
-        planner_params['executable_path'] = args.executable
     if args.max_steps:
         planner_params['max_steps'] = args.max_steps
     if args.stats_file:
@@ -216,15 +212,11 @@ def main():
 
     # Handle --list-strategies
     if args.list_strategies:
-        # Call the C++ executable with --list-strategies
-        import rantanplan
-        executable_path = rantanplan.planner_wrapper.RantanPlanPlanner(**{})._find_executable(None)
         try:
-            import subprocess
-            # C++ planner requires dummy protobuf files as positional args
-            result = subprocess.run([executable_path, "/dev/null", "/dev/null", "--list-strategies"],
-                                  capture_output=True, text=True)
-            print(result.stdout)
+            from rantanplan import _rantanplan
+            print("Available strategies:")
+            for name in _rantanplan.list_strategies():
+                print(f"  {name}")
             sys.exit(0)
         except Exception as e:
             print(f"Error listing strategies: {e}")
