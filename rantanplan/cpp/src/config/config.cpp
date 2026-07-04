@@ -6,17 +6,22 @@
 
 namespace rantanplan {
 
-std::once_flag Config::initialized_flag_;
-std::unique_ptr<Config> Config::instance_;
-
 Config& Config::instance() {
-    std::call_once(initialized_flag_, []() {
-        instance_ = std::unique_ptr<Config>(new Config());
-    });
-    return *instance_;
+    static Config instance;
+    return instance;
 }
 
 void Config::initialize(int argc, char* argv[]) {
+    // Rebuild every section from defaults so re-initialization (a second
+    // in-process run) starts from a clean slate — see the header comment.
+    global = Global{};
+    rpg = RPG{};
+    planner = Planner{};
+    symmetry = Symmetry{};
+    formula_export = FormulaExport{};
+    logging = Logging{};
+    local_reasoning = LocalReasoning{};
+
     CLIParser parser;
     parser.parse(*this, argc, argv);
     validate();

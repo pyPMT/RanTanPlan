@@ -220,6 +220,11 @@ target_link_libraries(rantanplan_core PUBLIC
 add_executable(rantanplan src/main.cpp)
 target_link_libraries(rantanplan PRIVATE rantanplan_core)
 
+# Cross-run state regression harness: two preprocess+solve cycles in one
+# process (nanobind migration, Phase 2). Built but not installed.
+add_executable(double_solve_check tools/double_solve_check.cpp)
+target_link_libraries(double_solve_check PRIVATE rantanplan_core)
+
 # ==============================================================================
 # PLATFORM-SPECIFIC FIXES
 # ==============================================================================
@@ -238,6 +243,11 @@ if(APPLE AND NOT Z3_FOUND)
         COMMENT "Fixing Z3 dylib reference in rantanplan executable to absolute path"
         VERBATIM
     )
+    add_custom_command(TARGET double_solve_check POST_BUILD
+        COMMAND ${CMAKE_INSTALL_NAME_TOOL} -change libz3.dylib ${Z3_LIBRARY} $<TARGET_FILE:double_solve_check>
+        COMMENT "Fixing Z3 dylib reference in double_solve_check to absolute path"
+        VERBATIM
+    )
 endif()
 
 # ==============================================================================
@@ -249,7 +259,7 @@ install(TARGETS rantanplan DESTINATION ${OUTPUT_DIR})
 # Set RPATH for Z3 if found manually
 # ==============================================================================
 if(NOT Z3_FOUND AND Z3_LIB_DIR)
-    set_target_properties(rantanplan PROPERTIES
+    set_target_properties(rantanplan double_solve_check PROPERTIES
         BUILD_WITH_INSTALL_RPATH TRUE
         INSTALL_RPATH "${Z3_LIB_DIR}"
         SKIP_BUILD_RPATH FALSE

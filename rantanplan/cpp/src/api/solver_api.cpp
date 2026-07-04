@@ -34,6 +34,11 @@
 namespace rantanplan::api {
 
 PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& options) {
+    // A run starts here: drop statistics accumulated by any previous
+    // in-process run so per-run stats don't leak across solves. (The CLI
+    // driver runs once per process; in-process callers run many times.)
+    rantanplan::Stats::instance().clear();
+
     // === PREPROCESSING PIPELINE ===
     //
     // Four phases, each with clear responsibilities and data dependencies:

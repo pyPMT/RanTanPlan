@@ -2,8 +2,6 @@
 
 #include "../util/verbosity.hpp"
 #include <string>
-#include <mutex>
-#include <memory>
 
 namespace rantanplan {
 
@@ -72,6 +70,11 @@ public:
         bool mutex_discovery = true;      ///< Tier 1 syntactic mutex detection
     } local_reasoning;
 
+    /// Re-entrant: every call rebuilds all sections from their defaults
+    /// before parsing, so a second in-process run does not inherit the
+    /// previous run's flags (or post-parse mutations like start_timestep).
+    /// Concurrent solves in one process remain unsupported (singleton
+    /// Config, global z3::set_param).
     void initialize(int argc, char* argv[]);
     void validate() const;
 
@@ -85,11 +88,6 @@ private:
     Config() = default;
     Config(const Config&) = delete;
     Config& operator=(const Config&) = delete;
-    
-    static std::once_flag initialized_flag_;
-    static std::unique_ptr<Config> instance_;
-    
-    friend std::default_delete<Config>;
 };
 
 } // namespace rantanplan
