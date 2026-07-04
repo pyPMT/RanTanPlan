@@ -1,9 +1,12 @@
-// Python extension module (_rantanplan).
-//
-// The problem travels as the plain-data IR (api/ir.hpp), built by
-// rantanplan/converter.py; results come back as ResultIR. The module
-// mirrors the C++ two-layer api: preprocess() returns an opaque
-// Preprocessed handle that solve() consumes.
+/**
+ * @file bindings.cpp
+ * @brief Python extension module (_rantanplan).
+ *
+ * The problem travels as the plain-data IR (api/ir.hpp), built by
+ * rantanplan/converter.py; results come back as ResultIR. The module
+ * mirrors the C++ two-layer api: preprocess() returns an opaque
+ * Preprocessed handle that solve() consumes.
+ */
 
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/function.h>

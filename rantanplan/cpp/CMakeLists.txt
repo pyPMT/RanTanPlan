@@ -8,6 +8,10 @@ project(rantanplan)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Emit compile_commands.json so clangd/editor tooling knows the real include
+# paths and flags (Z3, nanobind, -std=c++20) instead of guessing.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # ==============================================================================
 # PYTHON / NANOBIND SETUP
 # ==============================================================================

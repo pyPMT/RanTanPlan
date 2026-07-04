@@ -2,6 +2,10 @@
 
 #include "../config/search_mode.hpp"
 
+/**
+ * @file preprocessor_options.hpp
+ * @brief Feature-level knobs for preprocess() — see PreprocessorOptions.
+ */
 namespace rantanplan {
 
 class Config;

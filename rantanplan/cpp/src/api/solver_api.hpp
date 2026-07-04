@@ -17,6 +17,11 @@ namespace rantanplan {
 class Plan;
 }
 
+/**
+ * @file solver_api.hpp
+ * @brief The two-layer entry points: preprocess() and solve(), plus the
+ *        cross-thread cancellation and plan-callback plumbing they share.
+ */
 namespace rantanplan::api {
 
 /// Callback invoked with each plan the planner reports (improving plans in

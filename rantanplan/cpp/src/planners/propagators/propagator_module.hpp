@@ -13,6 +13,11 @@
 #include <memory>
 #include <string>
 
+/**
+ * @file propagator_module.hpp
+ * @brief PropagatorSharedState (cross-module data) and PropagatorModule (the
+ *        composable hook interface PropagatorStrategy dispatches to).
+ */
 namespace rantanplan {
 
 class PropagatorStrategy;
@@ -21,6 +26,9 @@ class PropagatorStrategy;
 // Shared state — owned by CompositePropagator, accessed by all modules.
 // ---------------------------------------------------------------------------
 
+/// Cross-module state: external references set once at initialization, plus
+/// the action trail and footprint index every module can read. Each module
+/// additionally keeps its own private trail for its own concern.
 struct PropagatorSharedState {
     // External references (set once during initialization)
     const Problem* problem = nullptr;
@@ -76,6 +84,9 @@ struct PropagatorSharedState {
 // Module interface
 // ---------------------------------------------------------------------------
 
+/// A composable concern hooked into PropagatorStrategy's Z3 callbacks
+/// (push/pop/fixed/decide/final). Override only the hooks a given module
+/// needs; the base-class no-ops keep the rest silent.
 class PropagatorModule {
 public:
     virtual ~PropagatorModule() = default;

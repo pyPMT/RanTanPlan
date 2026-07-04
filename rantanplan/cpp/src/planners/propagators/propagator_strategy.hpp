@@ -6,6 +6,11 @@
 #include <memory>
 #include <string>
 
+/**
+ * @file propagator_strategy.hpp
+ * @brief The Z3 user_propagator_base host; see PropagatorModule for the
+ *        composable-module interface it dispatches to.
+ */
 namespace rantanplan {
 
 /**

@@ -7,6 +7,7 @@
 #include <vector>
 
 /**
+ * @file ir.hpp
  * @brief Plain-data IR: the Python <-> C++ problem/result contract.
  *
  * Produced by rantanplan/converter.py (a UP DagWalker) and consumed by

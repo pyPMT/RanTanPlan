@@ -10,6 +10,11 @@
 #include "local_invariants.hpp"
 #include "symmetry_info.hpp"
 
+/**
+ * @file preprocessed_problem.hpp
+ * @brief The layer contract between the preprocessor and any backend. Must
+ *        stay compilable with no Z3 include path (see PreprocessedProblem).
+ */
 namespace rantanplan {
 
 // Z3-using artifact classes appear only as forward declarations

@@ -3,21 +3,31 @@
 #include "../util/verbosity.hpp"
 #include <string>
 
+/**
+ * @file config.hpp
+ * @brief The CLI-facing singleton: parsed by CLIParser, validated by
+ *        Config::validate(). Read by the backend and driver only -- the
+ *        preprocessor takes PreprocessorOptions instead (see
+ *        PreprocessorOptions::from_config, the one Config -> options
+ *        translation site).
+ */
 namespace rantanplan {
 
+/// Centralized configuration singleton, sectioned to mirror the CLI's flag
+/// groups.
 class Config {
 public:
     static Config& instance();
-    
+
     struct Global {
         VerbosityLevel verbosity = VerbosityLevel::INFO;
         bool debug_mode = false;
-        int timeout = 0;              // 0 = no timeout (run indefinitely)
+        int timeout = 0;              ///< 0 = no timeout (run indefinitely)
         std::string log_level = "INFO";
-        bool persist_clauses = false;  // Theory lemmas discarded on backtrack; propagators re-derive eagerly
-        double epsilon = 1e-6;        // Numerical tolerance for floating-point comparisons
-        bool reachability_grounding = true;  // --up-grounding disables this
-        bool numeric_grounding = true;       // --no-numeric-grounding disables this
+        bool persist_clauses = false;  ///< Theory lemmas discarded on backtrack; propagators re-derive eagerly
+        double epsilon = 1e-6;        ///< Numerical tolerance for floating-point comparisons
+        bool reachability_grounding = true;  ///< --up-grounding disables this
+        bool numeric_grounding = true;       ///< --no-numeric-grounding disables this
     } global;
 
     /// Numeric Relaxed Planning Graph settings.
@@ -41,26 +51,26 @@ public:
     } rpg;
     
     struct Planner {
-        std::string strategy = "seq";  // Strategy name (replaces parallelism_strategy, encoder, propagator, interference)
-        std::string mode = "satisficing";  // Search mode: satisficing, optimal, anytime
-        std::string output_plan = "plan.txt";  // Plan output file path (IPC format)
+        std::string strategy = "seq";  ///< Strategy name (looked up in StrategyRegistry)
+        std::string mode = "satisficing";  ///< Search mode: satisficing, optimal, anytime
+        std::string output_plan = "plan.txt";  ///< Plan output file path (IPC format)
         int max_steps = 500;
-        int start_timestep = 0;  // Starting timestep for search (can be set by RPG lower bound)
-        std::string horizon_schedule = "linear";  // Schedule type: linear|arithmetic|geometric|doubling
+        int start_timestep = 0;  ///< Starting timestep for search (can be set by RPG lower bound)
+        std::string horizon_schedule = "linear";  ///< Schedule type: linear|arithmetic|geometric|doubling
     } planner;
-    
+
     struct Symmetry {
-        bool enable_symmetries = false;  // Enable symmetry detection
+        bool enable_symmetries = false;  ///< Enable symmetry detection
     } symmetry;
 
     struct FormulaExport {
-        bool export_formula = false;      // Enable formula export mode
-        int timestep = -1;                // Timestep to export formula for
-        std::string output_file = "";     // Output file for formula (required)
+        bool export_formula = false;      ///< Enable formula export mode
+        int timestep = -1;                ///< Timestep to export formula for
+        std::string output_file = "";     ///< Output file for formula (required)
     } formula_export;
 
     struct Logging {
-        std::string log_file = "";        // Empty = no logging; path = solver decision log
+        std::string log_file = "";        ///< Empty = no logging; path = solver decision log
     } logging;
 
     struct LocalReasoning {

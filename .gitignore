@@ -9,6 +9,7 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+compile_commands.json
 develop-eggs/
 dist/
 downloads/
@@ -193,6 +194,9 @@ ideas
 formal_tex
 docs
 slurm_report
+
+# generated Doxygen API reference (run `make docs` to rebuild)
+developer-docs/doxygen/html/
 
 
 # plots

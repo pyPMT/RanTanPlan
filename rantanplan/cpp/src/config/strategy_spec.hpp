@@ -6,11 +6,30 @@
 
 #include "search_mode.hpp"
 
+/**
+ * @file strategy_spec.hpp
+ * @brief The strategy taxonomy: the enums a StrategySpec is built from, and
+ *        pure derived queries over a spec (no virtuals needed).
+ */
 namespace rantanplan {
 
+/// SAT encoder family: Grounded (one clause set per ground action), Chained
+/// (frame-axiom chaining, reused across elsc/elsc-dt/pdla), R2E (relaxed-to-exact).
 enum class EncoderFamily { Grounded, Chained, R2E };
+
+/// Parallelism semantics for the encoding: Sequential (one action per
+/// timestep), Forall (all non-interfering actions may fire), Exists (any
+/// consistent execution order of the chosen actions is a valid step).
 enum class SemanticsKind { Sequential, Forall, Exists };
+
+/// How action interference is computed: eager (built once, whole graph)
+/// vs. lazy (queried on demand), syntactic (fluent-set overapproximation)
+/// vs. semantic (Z3-checked, precise). None for Sequential semantics.
 enum class InterferenceKind { None, EagerSyntactic, EagerSemantic, LazySyntactic, LazySemantic };
+
+/// Planner backend: Sequential/DoubleTail drive satisficing search with a
+/// growing horizon; BranchAndBound is the cost-optimal/anytime search;
+/// the PDLA variants activate actions lazily under Exists semantics.
 enum class PlannerKind { Sequential, DoubleTail, BranchAndBound, PDLA, PDLASelective, PDLAFinegrained };
 
 /// Composable propagator module kinds.
@@ -18,6 +37,9 @@ enum class PropagatorModuleKind { ForallEager, ForallLazy, ExistsCycle, FrameAxi
 
 using PropagatorFlags = std::set<PropagatorModuleKind>;
 
+/// A named, validated combination of encoder/semantics/interference/
+/// propagator/planner — the contributor unit for adding a new backend
+/// configuration (see StrategyRegistry).
 struct StrategySpec {
     EncoderFamily encoder;
     SemanticsKind semantics;
@@ -55,15 +77,21 @@ inline PlannerKind resolve_planner_kind(SearchMode mode, const StrategySpec& spe
 // Derived queries — pure functions of the spec, no virtuals needed.
 // ---------------------------------------------------------------------------
 
+/// Returns true if the strategy can export its SMT formula for a fixed
+/// timestep instead of solving (no propagator, plain sequential planner).
 inline bool supports_formula_export(const StrategySpec& spec) {
     return spec.propagator.empty() &&
            spec.planner == PlannerKind::Sequential;
 }
 
+/// Returns true if the strategy uses the double-tail planner (incompatible
+/// with non-linear horizon schedules and with optimal/anytime search modes).
 inline bool uses_double_tail(const StrategySpec& spec) {
     return spec.planner == PlannerKind::DoubleTail;
 }
 
+/// Returns true if the spec's own planner field is BranchAndBound. Does not
+/// account for a SearchMode override — see the overload below for that.
 inline bool uses_branch_and_bound(const StrategySpec& spec) {
     return spec.planner == PlannerKind::BranchAndBound;
 }

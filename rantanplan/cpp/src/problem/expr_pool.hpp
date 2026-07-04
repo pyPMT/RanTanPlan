@@ -18,9 +18,15 @@
 //   Currently string-based — only affects construction time, not runtime.
 // - Add `ExprPool::freeze()` to drop the `intern_` map after construction, freeing memory.
 
+/**
+ * @file expr_pool.hpp
+ * @brief ExprID/ExprPool: the interned, structurally-shared representation
+ *        of every precondition, effect, and goal in the problem.
+ */
 namespace rantanplan {
 
 /// Lightweight handle to an interned expression. O(1) equality and hashing.
+/// Only valid within the ExprPool that created it.
 struct ExprID {
     int32_t id = -1;
 
@@ -49,7 +55,9 @@ namespace rantanplan {
 /// Payload carried by leaf nodes in the expression pool.
 using ExprPayload = std::variant<std::monostate, bool, int64_t, double, std::string>;
 
-/// A single node in the expression pool (internal representation).
+/// A single node in the expression pool (internal representation). Two
+/// kinds (FUNCTION_APPLICATION, STATE_VARIABLE) use a head+arguments child
+/// layout — see the ExprPool class comment below for the convention.
 struct ExprNode {
     int kind = 0;     // ExprKind as int
     int op = -1;      // ExprOperator as int, -1 if N/A
