@@ -14,7 +14,7 @@ static ExprID make_object_constant(ExprPool& pool,
 
     ExprNode node;
     node.kind = static_cast<int>(ExprKind::CONSTANT);
-    // NOTE: Leave node.op as default (-1) to match intern_expr() in protobuf_io.cpp,
+    // NOTE: Leave node.op as default (-1) to match intern_nodes() in ir_io.cpp,
     // which does NOT set op for CONSTANT nodes.
 
     // Derive type_id via pointer arithmetic (Type* points into types_ vector).
@@ -56,8 +56,8 @@ Action instantiate_action(ExprPool& pool,
 
     // Create ground action with base name (e.g., "board") and parameters
     // holding the bound object names (e.g., "person2", "plane1", "city0").
-    // This ensures Plan::to_protobuf() writes a protobuf that the Python
-    // reader can resolve against the original lifted problem.
+    // This ensures plan_to_ir() emits action instances the Python side can
+    // resolve against the original lifted problem.
     Action ground(lifted_action.name());
     ground.set_pool(&pool);
 

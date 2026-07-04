@@ -128,7 +128,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     return pipeline_result;
 }
 
-ir::ResultIR solve(PreprocessedProblem& pipeline_result) {
+ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_plan) {
     auto& config = rantanplan::Config::instance();
     const auto& problem = pipeline_result.problem;
 
@@ -169,6 +169,10 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result) {
     }
 
     planner->set_propagator_strategy(std::move(propagator));
+
+    if (on_plan) {
+        planner->set_intermediate_plan_callback(on_plan);
+    }
 
     // Call planner->search() and get the result
     rantanplan::Plan plan = planner->search();

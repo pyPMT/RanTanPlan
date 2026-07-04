@@ -9,8 +9,8 @@ namespace rantanplan {
  * @brief Simple rational number for data transport
  * 
  * Represents a rational number as numerator/denominator fraction.
- * Used only for data transport between protobuf and Z3 - all arithmetic 
- * operations are delegated to the Z3 SMT solver.
+ * Used only for data transport between the problem IR and Z3 - all
+ * arithmetic operations are delegated to the Z3 SMT solver.
  */
 class Real {
 public:

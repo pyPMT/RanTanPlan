@@ -11,9 +11,8 @@ namespace rantanplan {
 ///
 /// Every PARAMETER node in the precondition and effects is replaced by the
 /// CONSTANT node for the bound object. The ground action retains its bound
-/// objects as Parameters (one per original parameter) so that
-/// Plan::to_protobuf() can reconstruct the action arguments for the Python
-/// reader.
+/// objects as Parameters (one per original parameter) so that plan_to_ir()
+/// can reconstruct the action arguments for the Python side.
 ///
 /// The ground action's name follows the convention:
 ///   "move(city0, city1, plane0)"

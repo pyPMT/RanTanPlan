@@ -5,9 +5,19 @@
 #include "preprocessing/preprocessor_options.hpp"
 #include "problem/problem.hpp"
 
+#include <functional>
 #include <string>
 
+namespace rantanplan {
+class Plan;
+}
+
 namespace rantanplan::api {
+
+/// Callback invoked with each plan the planner reports (improving plans in
+/// anytime mode, the final plan otherwise) — the in-process replacement for
+/// polling the plan.txt.N files that --output-plan still writes.
+using PlanCallback = std::function<void(const Plan&)>;
 
 /**
  * @brief Run the full preprocessing pipeline on a problem.
@@ -26,8 +36,12 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
  * Owns spec resolution (registry lookup + problem-specific adjustment +
  * validation) and interference construction. Consumes (moves out of) parts
  * of the preprocessed problem: state constraints, achievers.
+ *
+ * If on_plan is set, it is installed on the planner and invoked from the
+ * solver thread with each plan found during the search.
  */
-ir::ResultIR solve(PreprocessedProblem& pipeline_result);
+ir::ResultIR solve(PreprocessedProblem& pipeline_result,
+                   const PlanCallback& on_plan = {});
 
 /**
  * @brief Export the SMT formula for a fixed timestep instead of solving.

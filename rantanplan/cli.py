@@ -43,9 +43,7 @@ Use --list-strategies to see available strategies and their descriptions.
                        default=None,
                        help="Search mode: satisficing (first plan, default), "
                             "optimal (cost-optimal with proof), "
-                            "anytime (keep improving, write intermediate plans). "
-                            "Note: anytime mode deletes existing plan files "
-                            "matching the output prefix before starting")
+                            "anytime (keep improving, report intermediate plans)")
 
     # List strategies
     parser.add_argument("--list-strategies", action="store_true",

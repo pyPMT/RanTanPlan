@@ -1,9 +1,10 @@
 """UP Problem -> ProblemIR converter (the Python side of the C++ contract).
 
-Replaces the protobuf transport: a DagWalker flattens every expression into
-one shared node pool (children precede parents, shared subexpressions stored
-once), and the problem structure references nodes by index. The C++ loader
-(`ir_io.cpp`) interns the pool in a single forward pass.
+Replaces the protobuf transport: a hand-rolled memoized DFS (see _FNodeToIR
+for why not a DagWalker) flattens every expression into one shared node pool
+(children precede parents, shared subexpressions stored once), and the
+problem structure references nodes by index. The C++ loader (`ir_io.cpp`)
+interns the pool in a single forward pass.
 
 The node shapes deliberately mirror what UP's own ``FNode2Protobuf``
 produced, so the C++ loader stayed a port of the protobuf loader. The

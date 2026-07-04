@@ -6,12 +6,14 @@
 // Preprocessed handle that solve() consumes.
 
 #include <nanobind/nanobind.h>
+#include <nanobind/stl/function.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/unique_ptr.h>
 #include <nanobind/stl/vector.h>
 
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -69,9 +71,9 @@ struct Preprocessed {
     bool consumed = false;
 };
 
-/// The solve tail shared by the IR path and the interim pb path:
-/// unsolvable short-circuit, horizon seeding, post-solve stats.
-ir::ResultIR run_solve(PreprocessedProblem& pre) {
+/// The solve tail shared by solve() and solve_anytime(): unsolvable
+/// short-circuit, horizon seeding, post-solve stats.
+ir::ResultIR run_solve(PreprocessedProblem& pre, const api::PlanCallback& on_plan = {}) {
     auto& config = Config::instance();
 
     ir::ResultIR result;
@@ -83,7 +85,7 @@ ir::ResultIR run_solve(PreprocessedProblem& pre) {
     } else {
         // The pipeline's horizon lower bound drives where the search starts.
         config.planner.start_timestep = pre.lower_bound;
-        result = api::solve(pre);
+        result = api::solve(pre, on_plan);
     }
 
     // Mirror the CLI driver's post-solve stats behavior
@@ -108,7 +110,8 @@ std::unique_ptr<Preprocessed> preprocess_ir(const ir::ProblemIR& problem_ir,
     return handle;
 }
 
-ir::ResultIR solve_handle(Preprocessed& handle, const std::vector<std::string>& args) {
+ir::ResultIR solve_handle_impl(Preprocessed& handle, const std::vector<std::string>& args,
+                               const api::PlanCallback& on_plan) {
     if (handle.consumed) {
         throw std::runtime_error(
             "this Preprocessed handle was already solved; preprocessing "
@@ -118,7 +121,22 @@ ir::ResultIR solve_handle(Preprocessed& handle, const std::vector<std::string>& 
     handle.consumed = true;
 
     nb::gil_scoped_release release;
-    return run_solve(handle.pre);
+    return run_solve(handle.pre, on_plan);
+}
+
+ir::ResultIR solve_handle(Preprocessed& handle, const std::vector<std::string>& args) {
+    return solve_handle_impl(handle, args, {});
+}
+
+ir::ResultIR solve_anytime_handle(
+        Preprocessed& handle, const std::vector<std::string>& args,
+        const std::function<void(const std::vector<ir::ActionInstanceIR>&)>& on_plan) {
+    // nanobind's std::function wrapper re-acquires the GIL when the Python
+    // callable is invoked, so calling it from the solver thread (GIL released
+    // in solve_handle_impl) is safe.
+    return solve_handle_impl(handle, args, [&on_plan](const Plan& plan) {
+        on_plan(plan_to_ir(plan));
+    });
 }
 
 std::string export_formula_ir(const ir::ProblemIR& problem_ir,
@@ -251,6 +269,13 @@ NB_MODULE(_rantanplan, m) {
           "Resolve the configured strategy and search; returns a ResultIR. "
           "Pass the same args as to preprocess(). Consumes the handle "
           "(single-solve). The GIL is released while solving.");
+
+    m.def("solve_anytime", &solve_anytime_handle,
+          nb::arg("preprocessed"), nb::arg("args"), nb::arg("on_plan"),
+          "Like solve(), but additionally invokes on_plan(list[ActionInstanceIR]) "
+          "with each plan the search reports (every improving plan in anytime/"
+          "optimal mode). The callback runs on the solver thread with the GIL "
+          "re-acquired: keep it cheap and do not re-enter this module from it.");
 
     m.def("export_formula", &export_formula_ir, nb::arg("problem"), nb::arg("args"),
           "Export the SMT formula for a fixed timestep instead of solving "

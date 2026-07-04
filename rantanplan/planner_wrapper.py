@@ -17,7 +17,9 @@ from unified_planning.plans import SequentialPlan, ActionInstance
 from unified_planning.shortcuts import get_environment
 from unified_planning.model.fluent import get_all_fluent_exp
 
+import queue
 import sys
+import threading
 
 try:
     from . import _rantanplan
@@ -387,6 +389,25 @@ class _RantanPlanBase(Engine):
     def _up_log_level(level: int) -> LogLevel:
         return (LogLevel.DEBUG, LogLevel.INFO, LogLevel.WARNING, LogLevel.ERROR)[level]
 
+    @staticmethod
+    def _build_plan(instances, compiled_problem: Problem,
+                    compilation_result) -> SequentialPlan:
+        """Rebuild a SequentialPlan from IR action instances by name lookup,
+        mapping each back through the compilation steps."""
+        action_map = {a.name: a for a in compiled_problem.actions}
+        object_map = {o.name: o for o in compiled_problem.all_objects}
+
+        new_actions: list[ActionInstance] = []
+        for instance in instances:
+            action = action_map[instance.action_name]
+            params = tuple(object_map[p] for p in instance.parameters)
+            mapped_ai = compilation_result.map_back_action_instance(
+                ActionInstance(action, params))
+            assert mapped_ai is not None
+            new_actions.append(mapped_ai)
+
+        return SequentialPlan(new_actions)
+
     def _convert_result(self, result_ir,
                         compiled_problem: Problem,
                         compilation_result,
@@ -400,19 +421,8 @@ class _RantanPlanBase(Engine):
         final_plan = None
         if result_ir.has_plan:
             try:
-                action_map = {a.name: a for a in compiled_problem.actions}
-                object_map = {o.name: o for o in compiled_problem.all_objects}
-
-                new_actions: list[ActionInstance] = []
-                for instance in result_ir.plan:
-                    action = action_map[instance.action_name]
-                    params = tuple(object_map[p] for p in instance.parameters)
-                    mapped_ai = compilation_result.map_back_action_instance(
-                        ActionInstance(action, params))
-                    assert mapped_ai is not None
-                    new_actions.append(mapped_ai)
-
-                final_plan = SequentialPlan(new_actions)
+                final_plan = self._build_plan(result_ir.plan, compiled_problem,
+                                              compilation_result)
             except Exception as e:
                 self._log_error(f"Error mapping plan back: {e}")
                 return PlanGenerationResult(
@@ -511,7 +521,7 @@ class RantanPlanOptimalPlanner(_RantanPlanBase, OneshotPlannerMixin):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Anytime planner (temporarily unavailable during the in-process migration)
+# Anytime planner (yields improving plans as the search finds them)
 # ═══════════════════════════════════════════════════════════════════════
 
 class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
@@ -529,9 +539,65 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
                        timeout: Optional[float] = None,
                        output_stream: Optional[IO[str]] = None,
                        ) -> Iterator[PlanGenerationResult]:
-        # The filesystem-polling anytime transport was deleted with the
-        # subprocess path; the in-process callback transport is Phase 6 of
-        # docs/specs/nanobind-in-process.md.
-        raise UPException(
-            "Anytime mode is temporarily unavailable during the in-process "
-            "migration (restored by the solve_anytime callback, Phase 6).")
+        """Run solve_anytime in a worker thread; the C++ plan callback feeds a
+        queue that this generator drains. Each improving plan is yielded with
+        INTERMEDIATE status; the terminal result carries the final status.
+
+        Abandoning the generator early does not stop the solve: there is no
+        external kill in-process, so the (daemon) worker runs until the C++
+        timeout or search limit is reached.
+        """
+        if _rantanplan is None:
+            raise UPException(
+                "The _rantanplan extension module is not built. Run "
+                "'python build.py' first.")
+
+        compiled_problem, compilation_result, problem_ir = \
+            self._prepare_problem(problem)
+
+        args = self._build_args(timeout)
+        self._log_verbose(f"Solving anytime in-process: {' '.join(args)}")
+
+        results: queue.Queue = queue.Queue()
+
+        def on_plan(instances):
+            results.put(("plan", instances))
+
+        def run():
+            try:
+                preprocessed = _rantanplan.preprocess(problem_ir, args)
+                result_ir = _rantanplan.solve_anytime(preprocessed, args, on_plan)
+                results.put(("final", result_ir))
+            except Exception as e:
+                results.put(("error", e))
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+
+        # The callback enqueues every plan before solve_anytime returns, so
+        # all ("plan", ...) items precede the terminal item in the queue.
+        while True:
+            kind, payload = results.get()
+            if kind == "plan":
+                try:
+                    plan = self._build_plan(payload, compiled_problem,
+                                            compilation_result)
+                except Exception as e:
+                    self._log_error(f"Error mapping intermediate plan back: {e}")
+                    continue
+                self._log(f"Improving plan found ({len(plan.actions)} actions)")
+                yield PlanGenerationResult(
+                    PlanGenerationResultStatus.INTERMEDIATE, plan, self.name)
+            elif kind == "final":
+                worker.join()
+                yield self._convert_result(
+                    payload, compiled_problem, compilation_result, problem)
+                return
+            else:  # error
+                worker.join()
+                self._log_error(f"An error occurred: {payload}")
+                yield PlanGenerationResult(
+                    PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
+                    log_messages=[LogMessage(level=LogLevel.ERROR,
+                                             message=str(payload))])
+                return

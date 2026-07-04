@@ -36,4 +36,4 @@ packages = ["rantanplan"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-rantanplan = ["bin/*", "cpp/**/*", "_rantanplan*.so"]
+rantanplan = ["cpp/**/*", "_rantanplan*.so"]

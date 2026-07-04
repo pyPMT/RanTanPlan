@@ -18,7 +18,7 @@ A SAT/SMT-based automated planner with parallel action semantics. Combines a Pyt
 
 ## Installation
 
-**Prerequisites**: Python 3.8+, CMake, protobuf libraries (`brew install protobuf` or `apt-get install libprotobuf-dev protobuf-compiler`)
+**Prerequisites**: Python 3.8+, CMake, a C++20 compiler. Z3 and nanobind come from the pip dependencies — no other native libraries needed.
 
 ```bash
 git clone https://github.com/pyPMT/RantanPlan.git
@@ -43,7 +43,7 @@ rantanplan -d domain.pddl -p problem.pddl --strategy flsc --timeout 120
 # Cost-optimal planning with Branch & Bound
 rantanplan -d domain.pddl -p problem.pddl --strategy elsc --mode optimal
 
-# Anytime planning (writes improving plans to disk)
+# Anytime planning (reports improving plans as they are found)
 rantanplan -d domain.pddl -p problem.pddl --strategy fl --mode anytime
 
 # R2E semantics (declaration-order parallelism)
@@ -53,7 +53,7 @@ rantanplan -d domain.pddl -p problem.pddl --strategy r2e --output-plan solution.
 rantanplan -d domain.pddl -p problem.pddl --strategy flsc-dt
 
 # Core-guided lazy activation over exists-step encoding
-rantanplan -d domain.pddl -p problem.pddl --strategy causal-exists --detect-symmetries
+rantanplan -d domain.pddl -p problem.pddl --strategy pdla --symmetries
 ```
 
 ### Search Modes
@@ -62,7 +62,7 @@ rantanplan -d domain.pddl -p problem.pddl --strategy causal-exists --detect-symm
 |------|-------------|
 | `satisficing` | (default) Find first valid plan, return immediately |
 | `optimal` | Cost-optimal planning using Branch & Bound with abstract suffix. Returns `SOLVED_OPTIMALLY` when optimality is proven |
-| `anytime` | Continuously find improving plans, writing each to disk as `plan.txt.1`, `.2`, etc. |
+| `anytime` | Continuously find improving plans, reporting each as it is found (each is also written to disk as `plan.txt.1`, `.2`, etc.) |
 
 ### Available Strategies
 
@@ -112,15 +112,15 @@ result = planner.solve(problem)
 ## Architecture
 
 ```
-Python Frontend              C++ Backend
+Python Frontend              C++ Backend (_rantanplan module)
 ┌─────────────────┐         ┌──────────────────────┐
 │ CLI / UP Engine │ ───┐    │  Preprocessing       │
 │                 │    │    │  ┌──────────────────┐ │
 │ • PDDL parsing  │    └───▶│  │ Grounding        │ │
-│ • CNF compiler  │ protobuf│  │ RPG analysis     │ │
-│ • Plan validate │◀────┘   │  │ Symmetry detect  │ │
-└─────────────────┘         │  │ Interference     │ │
-                            │  └──────────────────┘ │
+│ • CNF compiler  │ in-     │  │ RPG analysis     │ │
+│ • UP→IR convert │ process │  │ Symmetry detect  │ │
+│ • Plan validate │◀────┘   │  │ Interference     │ │
+└─────────────────┘ nanobind│  └──────────────────┘ │
                             │  Solving               │
                             │  ┌──────────────────┐ │
                             │  │ Encoder          │ │
@@ -133,7 +133,7 @@ Python Frontend              C++ Backend
                             └──────────────────────┘
 ```
 
-The Python frontend uses Unified Planning to parse PDDL, applies optional CNF normalization, and communicates via protobuf with the C++ backend. The backend runs a preprocessing pipeline (reachability grounding, RPG-based action removal, symmetry detection, interference analysis), then encodes the problem as SMT and solves with Z3 using custom propagators.
+The Python frontend uses Unified Planning to parse PDDL, applies optional CNF normalization, converts the problem to a flat plain-data IR, and calls the C++ backend in-process through a nanobind extension module (no subprocess, no serialization). The backend runs a preprocessing pipeline (reachability grounding, RPG-based action removal, symmetry detection, interference analysis), then encodes the problem as SMT and solves with Z3 using custom propagators.
 
 ## Development
 
