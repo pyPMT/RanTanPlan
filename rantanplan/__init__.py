@@ -4,9 +4,9 @@ from .planner_wrapper import RantanPlanPlanner, RantanPlanOptimalPlanner, Rantan
 # Register the planners to the UP framework
 # This is done once the package is imported so its transparent to the user.
 env = up.environment.get_environment()
-env.factory.add_engine('RantanPlan', 'rantanplan.planner_wrapper', 'RantanPlanPlanner')
-env.factory.add_engine('RantanPlan-optimal', 'rantanplan.planner_wrapper', 'RantanPlanOptimalPlanner')
-env.factory.add_engine('RantanPlan-anytime', 'rantanplan.planner_wrapper', 'RantanPlanAnytimePlanner')
+env.factory.add_engine('rantanplan', 'rantanplan.planner_wrapper', 'RantanPlanPlanner')
+env.factory.add_engine('rantanplan-optimal', 'rantanplan.planner_wrapper', 'RantanPlanOptimalPlanner')
+env.factory.add_engine('rantanplan-anytime', 'rantanplan.planner_wrapper', 'RantanPlanAnytimePlanner')
 
 # Fail fast on a libz3 mismatch: the extension module must link the exact libz3
 # the z3 package loads (two copies in one process is undefined behavior).

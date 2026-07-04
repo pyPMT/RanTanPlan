@@ -109,7 +109,7 @@ problem = Problem()
 # ... define problem ...
 
 # Unified Planning integration (auto-discovered)
-with OneshotPlanner(name='RantanPlan') as planner:
+with OneshotPlanner(name='rantanplan') as planner:
     result = planner.solve(problem)
     print(result.plan)
 

@@ -87,7 +87,7 @@ def run_instance(domain_path, problem_path, strategy, timeout, extra_params=None
         params.update(extra_params)
 
     try:
-        with OneshotPlanner(name="RantanPlan", params=params) as p:
+        with OneshotPlanner(name="rantanplan", params=params) as p:
             result = p.solve(prob, timeout=timeout)
 
         solved = result.status in (

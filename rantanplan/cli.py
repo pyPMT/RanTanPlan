@@ -178,7 +178,7 @@ def solve_problem(problem, args):
         PlannerClass: Any = OneshotPlanner
 
         if args.mode == "anytime":
-            with AnytimePlanner(name='RantanPlan-anytime', params=planner_params) as planner:
+            with AnytimePlanner(name='rantanplan-anytime', params=planner_params) as planner:
                 last_result = None
                 for result in planner.get_solutions(problem, timeout=args.timeout):
                     if result.status == PlanGenerationResultStatus.INTERMEDIATE:
@@ -187,12 +187,12 @@ def solve_problem(problem, args):
                     last_result = result
                 return last_result
         elif args.mode == "optimal":
-            with PlannerClass(name='RantanPlan-optimal', params=planner_params) as planner:
+            with PlannerClass(name='rantanplan-optimal', params=planner_params) as planner:
                 result = planner.solve(problem, timeout=args.timeout)
                 return result
         else:
             # satisficing (default)
-            with PlannerClass(name='RantanPlan', params=planner_params) as planner:
+            with PlannerClass(name='rantanplan', params=planner_params) as planner:
                 result = planner.solve(problem, timeout=args.timeout)
                 return result
     except Exception as e:

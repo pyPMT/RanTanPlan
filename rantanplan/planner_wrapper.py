@@ -84,7 +84,7 @@ class _RantanPlanBase(Engine):
 
     @property
     def name(self) -> str:
-        return "RantanPlan"
+        return "rantanplan"
 
     @staticmethod
     def supported_kind():
