@@ -470,7 +470,7 @@ class _RantanPlanBase(Engine):
 
         try:
             preprocessed = _rantanplan.preprocess(problem_ir, args)
-            result_ir = _rantanplan.solve(preprocessed, args)
+            result_ir = _rantanplan.solve(preprocessed)
             return self._convert_result(
                 result_ir, compiled_problem, compilation_result, problem)
         except Exception as e:
@@ -566,7 +566,7 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
         def run():
             try:
                 preprocessed = _rantanplan.preprocess(problem_ir, args)
-                result_ir = _rantanplan.solve_anytime(preprocessed, args, on_plan)
+                result_ir = _rantanplan.solve_anytime(preprocessed, on_plan)
                 results.put(("final", result_ir))
             except Exception as e:
                 results.put(("error", e))

@@ -15,6 +15,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -68,6 +69,7 @@ void initialize_config(const std::vector<std::string>& args) {
 /// same handle is rejected instead of silently running without artifacts.
 struct Preprocessed {
     PreprocessedProblem pre;
+    std::vector<std::string> args; // args preprocess() ran with; solve() reuses them by default
     bool consumed = false;
 };
 
@@ -104,33 +106,40 @@ std::unique_ptr<Preprocessed> preprocess_ir(const ir::ProblemIR& problem_ir,
 
     nb::gil_scoped_release release;
     auto handle = std::make_unique<Preprocessed>();
+    handle->args = args;
     rantanplan::Problem problem = load_problem_from_ir(problem_ir);
     const auto options = PreprocessorOptions::from_config(Config::instance());
     handle->pre = api::preprocess(std::move(problem), options);
     return handle;
 }
 
-ir::ResultIR solve_handle_impl(Preprocessed& handle, const std::vector<std::string>& args,
+ir::ResultIR solve_handle_impl(Preprocessed& handle,
+                               const std::optional<std::vector<std::string>>& args,
                                const api::PlanCallback& on_plan) {
     if (handle.consumed) {
         throw std::runtime_error(
             "this Preprocessed handle was already solved; preprocessing "
             "artifacts are single-consumer -- call preprocess() again");
     }
-    initialize_config(args);
+    // No args (the normal path) -> reuse the args the handle was preprocessed
+    // with; an explicit list replaces them (expert-only: option-dependent
+    // preprocessing decisions are already baked into the handle).
+    initialize_config(args ? *args : handle.args);
     handle.consumed = true;
 
     nb::gil_scoped_release release;
     return run_solve(handle.pre, on_plan);
 }
 
-ir::ResultIR solve_handle(Preprocessed& handle, const std::vector<std::string>& args) {
+ir::ResultIR solve_handle(Preprocessed& handle,
+                          const std::optional<std::vector<std::string>>& args) {
     return solve_handle_impl(handle, args, {});
 }
 
 ir::ResultIR solve_anytime_handle(
-        Preprocessed& handle, const std::vector<std::string>& args,
-        const std::function<void(const std::vector<ir::ActionInstanceIR>&)>& on_plan) {
+        Preprocessed& handle,
+        const std::function<void(const std::vector<ir::ActionInstanceIR>&)>& on_plan,
+        const std::optional<std::vector<std::string>>& args) {
     // nanobind's std::function wrapper re-acquires the GIL when the Python
     // callable is invoked, so calling it from the solver thread (GIL released
     // in solve_handle_impl) is safe.
@@ -262,20 +271,26 @@ NB_MODULE(_rantanplan, m) {
     // ── Functions ───────────────────────────────────────────────────────
     m.def("preprocess", &preprocess_ir, nb::arg("problem"), nb::arg("args"),
           "Run the strategy-independent preprocessing pipeline on a ProblemIR "
-          "with the main CLI's flags; returns a Preprocessed handle. "
+          "with the main CLI's flags; returns a Preprocessed handle. The handle "
+          "remembers the args (solve()/solve_anytime() reuse them by default). "
           "The GIL is released while preprocessing.");
 
-    m.def("solve", &solve_handle, nb::arg("preprocessed"), nb::arg("args"),
+    m.def("solve", &solve_handle, nb::arg("preprocessed"), nb::arg("args") = nb::none(),
           "Resolve the configured strategy and search; returns a ResultIR. "
-          "Pass the same args as to preprocess(). Consumes the handle "
-          "(single-solve). The GIL is released while solving.");
+          "args=None (the default) reuses the handle's preprocess() args. "
+          "Passing a list replaces them for this solve -- expert-only: "
+          "option-dependent preprocessing decisions (mode, symmetries, RPG "
+          "bounds) are already baked into the handle and are NOT recomputed. "
+          "Consumes the handle (single-solve). The GIL is released while "
+          "solving.");
 
     m.def("solve_anytime", &solve_anytime_handle,
-          nb::arg("preprocessed"), nb::arg("args"), nb::arg("on_plan"),
+          nb::arg("preprocessed"), nb::arg("on_plan"), nb::arg("args") = nb::none(),
           "Like solve(), but additionally invokes on_plan(list[ActionInstanceIR]) "
           "with each plan the search reports (every improving plan in anytime/"
           "optimal mode). The callback runs on the solver thread with the GIL "
-          "re-acquired: keep it cheap and do not re-enter this module from it.");
+          "re-acquired: keep it cheap and do not re-enter this module from it. "
+          "args has the same reuse-by-default semantics as solve().");
 
     m.def("export_formula", &export_formula_ir, nb::arg("problem"), nb::arg("args"),
           "Export the SMT formula for a fixed timestep instead of solving "
