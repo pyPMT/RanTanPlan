@@ -27,6 +27,11 @@ import sys
 import threading
 from queue import Queue
 
+try:
+    from . import _rantanplan
+except ImportError:  # module not built yet; only the subprocess path works
+    _rantanplan = None
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Shared base class
@@ -57,6 +62,9 @@ class _RantanPlanBase(Engine):
         self._mode = options.get('mode')
         self._output_plan = options.get('output_plan')
         self._no_local_reasoning = options.get('no_local_reasoning', False)
+        # Temporary escape hatch: in_process=False selects the subprocess
+        # path until Phase 5 of the nanobind migration deletes it.
+        self._in_process = options.get('in_process', True)
 
     # ── Verbosity helpers ────────────────────────────────────────────────
 
@@ -191,10 +199,10 @@ class _RantanPlanBase(Engine):
             if pipe:
                 pipe.close()
 
-    def _build_command(self, problem_filepath: str, solution_filepath: str,
-                       timeout: Optional[float] = None) -> list:
-        command = [self.executable_path, problem_filepath, solution_filepath,
-                  "--strategy", self._strategy]
+    def _build_args(self, timeout: Optional[float] = None) -> list:
+        """The planner's CLI flags, shared by the in-process module and the
+        subprocess command line."""
+        command = ["--strategy", self._strategy]
 
         if self._verbosity is not None:
             command.extend(["--verbosity", self._verbosity])
@@ -228,6 +236,11 @@ class _RantanPlanBase(Engine):
             command.extend(["--timeout", str(int(timeout))])
 
         return command
+
+    def _build_command(self, problem_filepath: str, solution_filepath: str,
+                       timeout: Optional[float] = None) -> list:
+        return [self.executable_path, problem_filepath, solution_filepath] + \
+            self._build_args(timeout)
 
     # ── Problem preparation ──────────────────────────────────────────────
 
@@ -411,11 +424,10 @@ class _RantanPlanBase(Engine):
                     f"Goal contains nested fluent: {nested}. "
                     f"Rewrite using auxiliary parameters or boolean predicates.")
 
-    def _prepare_and_serialize(self, problem: Problem):
-        """Initialize fluents, compile, serialize to protobuf, create temp files.
+    def _prepare_problem(self, problem: Problem):
+        """Initialize fluents, compile, serialize to a protobuf message.
 
-        Returns (compiled_problem, compilation_result,
-                 problem_filepath, solution_filepath).
+        Returns (compiled_problem, compilation_result, pb_problem_msg).
         """
         self._check_no_nested_fluents(problem)
 
@@ -440,6 +452,17 @@ class _RantanPlanBase(Engine):
 
         pb_problem_msg = self._pb_writer.convert(compiled_problem)
 
+        return compiled_problem, compilation_result, pb_problem_msg
+
+    def _prepare_and_serialize(self, problem: Problem):
+        """Prepare the problem and write it to temp files (subprocess path).
+
+        Returns (compiled_problem, compilation_result,
+                 problem_filepath, solution_filepath).
+        """
+        compiled_problem, compilation_result, pb_problem_msg = \
+            self._prepare_problem(problem)
+
         problem_file = tempfile.NamedTemporaryFile(suffix=".pb", delete=False)
         solution_file = tempfile.NamedTemporaryFile(suffix=".pb", delete=False)
         problem_filepath = problem_file.name
@@ -456,10 +479,18 @@ class _RantanPlanBase(Engine):
                               compiled_problem: Problem,
                               compilation_result,
                               original_problem: Problem) -> PlanGenerationResult:
-        """Read the protobuf solution, map actions back, validate."""
+        """Read the protobuf solution from a file (subprocess path)."""
         with open(solution_filepath, "rb") as f:
-            pb_msg = up_pb2.PlanGenerationResult()  # type: ignore
-            pb_msg.ParseFromString(f.read())
+            return self._convert_result(f.read(), compiled_problem,
+                                        compilation_result, original_problem)
+
+    def _convert_result(self, result_bytes: bytes,
+                        compiled_problem: Problem,
+                        compilation_result,
+                        original_problem: Problem) -> PlanGenerationResult:
+        """Convert protobuf result bytes to a UP result: map actions back, validate."""
+        pb_msg = up_pb2.PlanGenerationResult()  # type: ignore
+        pb_msg.ParseFromString(result_bytes)
 
         result_from_protobuf = self._pb_reader.convert(pb_msg, compiled_problem)
 
@@ -511,6 +542,37 @@ class _RantanPlanBase(Engine):
             log_messages=result_log_messages,
             metrics=result_from_protobuf.metrics
         )
+
+    # ── In-process solving ───────────────────────────────────────────────
+
+    def _solve_in_process(self, problem: Problem,
+                          timeout: Optional[float] = None) -> PlanGenerationResult:
+        """Solve via the _rantanplan extension module: no temp files, no
+        subprocess. Timeouts are enforced by the C++ side (--timeout)."""
+        if _rantanplan is None:
+            raise UPException(
+                "The _rantanplan extension module is not built. Run "
+                "'python build.py', or pass in_process=False to use the "
+                "subprocess path.")
+
+        compiled_problem, compilation_result, pb_problem_msg = \
+            self._prepare_problem(problem)
+
+        args = self._build_args(timeout)
+        self._log_verbose(f"Solving in-process: {' '.join(args)}")
+
+        try:
+            result_bytes = _rantanplan.solve(
+                pb_problem_msg.SerializeToString(), args)
+            return self._convert_result(
+                result_bytes, compiled_problem, compilation_result, problem)
+        except Exception as e:
+            # Mirrors the subprocess path's nonzero-exit branch
+            self._log_error(f"An error occurred: {e}")
+            return PlanGenerationResult(
+                PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
+                log_messages=[LogMessage(level=LogLevel.ERROR, message=str(e))]
+            )
 
     # ── IPC plan file parsing ────────────────────────────────────────────
 
@@ -586,6 +648,9 @@ class RantanPlanPlanner(_RantanPlanBase, OneshotPlannerMixin):
               heuristic: Optional[Callable] = None,
               timeout: Optional[float] = None,
               output_stream: Optional[IO[str]] = None) -> PlanGenerationResult:
+
+        if self._in_process:
+            return self._solve_in_process(problem, timeout)
 
         compiled_problem, compilation_result, problem_filepath, solution_filepath = \
             self._prepare_and_serialize(problem)
@@ -666,6 +731,9 @@ class RantanPlanOptimalPlanner(_RantanPlanBase, OneshotPlannerMixin):
               heuristic: Optional[Callable] = None,
               timeout: Optional[float] = None,
               output_stream: Optional[IO[str]] = None) -> PlanGenerationResult:
+
+        if self._in_process:
+            return self._solve_in_process(problem, timeout)
 
         compiled_problem, compilation_result, problem_filepath, solution_filepath = \
             self._prepare_and_serialize(problem)

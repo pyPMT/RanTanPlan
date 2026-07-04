@@ -20,6 +20,7 @@
 #include "config/strategy_registry.hpp"
 #include "problem/protobuf_io.hpp"
 #include "util/logger.hpp"
+#include "util/stats.hpp"
 
 #include "z3++.h"
 
@@ -76,6 +77,14 @@ nb::bytes solve_bytes(nb::bytes problem_pb, const std::vector<std::string>& args
         } else {
             config.planner.start_timestep = pre.lower_bound;
             result = rantanplan::api::solve(pre);
+        }
+
+        // Mirror the CLI driver's post-solve stats behavior
+        if (config.is_debug()) {
+            rantanplan::Stats::instance().print_all();
+        }
+        if (!config.global.stats_file.empty()) {
+            rantanplan::Stats::instance().write_to_file(config.global.stats_file);
         }
     }
 
