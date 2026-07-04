@@ -92,9 +92,10 @@ endif()
 # ==============================================================================
 # TARGET DEFINITION
 # ==============================================================================
-# Create main executable
-add_executable(rantanplan
-    src/main.cpp
+# Core static library: everything except the CLI driver. The executable (and,
+# later, the nanobind module) link this target and inherit its usage
+# requirements (includes, protobuf, Z3) via PUBLIC.
+add_library(rantanplan_core STATIC
     src/api/solver_api.cpp
     src/config/config.cpp
     src/config/cli_parser.cpp
@@ -178,8 +179,8 @@ add_executable(rantanplan
 # Define proto files and generate C++ sources
 set(PROTO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/proto/unified_planning.proto)
 message(STATUS "PROTO_FILES: ${PROTO_FILES}")
-# generate protobuf files for the target
-protobuf_generate(TARGET rantanplan
+# generate protobuf files for the core target
+protobuf_generate(TARGET rantanplan_core
     PROTOS ${PROTO_FILES}
     LANGUAGE cpp
 )
@@ -187,8 +188,9 @@ protobuf_generate(TARGET rantanplan
 # ==============================================================================
 # TARGET CONFIGURATION
 # ==============================================================================
-# Include directories
-target_include_directories(rantanplan PRIVATE
+# Include directories (PUBLIC: the core's headers reference these paths, so
+# consumers of the library need them too)
+target_include_directories(rantanplan_core PUBLIC
     ${CMAKE_CURRENT_BINARY_DIR}                      # generated protobuf sources
     ${CMAKE_CURRENT_BINARY_DIR}/proto                # generated protobuf headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src                  # our source headers
@@ -207,11 +209,16 @@ target_include_directories(rantanplan PRIVATE
     ${Z3_INCLUDE_DIR}                                # Z3 headers
 )
 
-# Link libraries
-target_link_libraries(rantanplan PRIVATE
+# Link libraries (PUBLIC: protobuf and Z3 types appear in the core's public
+# headers — e.g. solver_api.hpp returns PlanGenerationResult)
+target_link_libraries(rantanplan_core PUBLIC
     protobuf::libprotobuf
     ${Z3_LINK_LIBRARY} # Ensure this uses the full path from Z3_LIBRARY
 )
+
+# CLI executable: thin driver over the core library
+add_executable(rantanplan src/main.cpp)
+target_link_libraries(rantanplan PRIVATE rantanplan_core)
 
 # ==============================================================================
 # PLATFORM-SPECIFIC FIXES
