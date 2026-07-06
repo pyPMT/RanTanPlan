@@ -922,6 +922,7 @@ Plan PDLAPlanner::search() {
             plan.write_ipc(config.planner.output_plan, 1,
                            -1.0, true,
                            config.planner.strategy, config.planner.mode, total_time);
+            notify_intermediate_plan(plan);
 
             collect_statistics();
             propagator_strategy_->cleanup();

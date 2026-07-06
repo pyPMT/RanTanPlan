@@ -3,6 +3,11 @@
 #include <string>
 #include "../preprocessing/preprocessed_problem.hpp"
 
+/**
+ * @file pass.hpp
+ * @brief The Pass interface every preprocessing pass implements; see the
+ *        pipeline order enforced in api::preprocess (api/solver_api.cpp).
+ */
 namespace rantanplan {
 
 /**

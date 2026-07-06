@@ -40,8 +40,9 @@ public:
     // Print all statistics (simple format)
     void print_all() const;
 
-    // Write all statistics to file
-    void write_to_file(const std::string& filename) const;
+    // Read-only view of all statistics. Not synchronized: read it after the
+    // solve has finished (run_solve copies it into ResultIR.stats)
+    const std::map<std::string, double>& all() const;
 
     // Get number of statistics stored
     size_t size() const;

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.15)
 
 # ==============================================================================
 # PROJECT CONFIGURATION
@@ -8,94 +8,76 @@ project(rantanplan)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Set default output directory
-if(NOT DEFINED OUTPUT_DIR)
-    set(OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bin" CACHE STRING "Output directory for executable")
-endif()
+# Emit compile_commands.json so clangd/editor tooling knows the real include
+# paths and flags (Z3, nanobind, -std=c++20) instead of guessing.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ==============================================================================
-# PROTOBUF SETUP
+# PYTHON / NANOBIND SETUP
 # ==============================================================================
-option(FETCH_PROTOBUF "Force fetching protobuf via FetchContent instead of using system protobuf" OFF)
+# scikit-build-core passes interpreter hints for the building Python; for a
+# plain CMake configure (e.g. an IDE), FindPython picks the interpreter from
+# the activated shell, or pass -DPython_EXECUTABLE=... explicitly.
+find_package(Python 3.8 COMPONENTS Interpreter Development.Module REQUIRED)
 
-# Try system protobuf first (unless forced to fetch)
-if(NOT FETCH_PROTOBUF)
-    # https://github.com/protocolbuffers/protobuf/issues/12637
-    if(APPLE)
-        find_package(Protobuf QUIET CONFIG)
-    else()
-        find_package(Protobuf QUIET)
+# nanobind comes from its pip package in the build environment; -Dnanobind_DIR
+# (or -Dnanobind_ROOT) remains as an escape hatch.
+if(NOT DEFINED nanobind_DIR AND NOT DEFINED nanobind_ROOT)
+    execute_process(
+        COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
+        OUTPUT_VARIABLE nanobind_ROOT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE NANOBIND_LOOKUP_RESULT
+    )
+    if(NOT NANOBIND_LOOKUP_RESULT EQUAL 0)
+        message(FATAL_ERROR "Could not locate nanobind via ${Python_EXECUTABLE} "
+                            "(is the nanobind pip package installed?)")
     endif()
 endif()
-
-if(Protobuf_FOUND OR PROTOBUF_FOUND)
-    message(STATUS "Found system protobuf: ${Protobuf_VERSION}")
-else()
-    message(STATUS "System protobuf not found, fetching via FetchContent...")
-    include(FetchContent)
-
-    # Configure protobuf build options before fetching
-    set(protobuf_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(protobuf_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-    set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
-    set(protobuf_ABSL_PROVIDER "module" CACHE STRING "" FORCE)
-    set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
-    set(ABSL_BUILD_TESTING OFF CACHE BOOL "" FORCE)
-
-    FetchContent_Declare(
-        protobuf
-        GIT_REPOSITORY https://github.com/protocolbuffers/protobuf.git
-        GIT_TAG        v25.6
-        GIT_SHALLOW    TRUE
-        GIT_SUBMODULES "third_party/abseil-cpp"
-    )
-    FetchContent_MakeAvailable(protobuf)
-
-    # protobuf_generate is not automatically available via FetchContent,
-    # include it explicitly from the fetched protobuf source
-    include(${protobuf_SOURCE_DIR}/cmake/protobuf-generate.cmake)
-endif()
+find_package(nanobind CONFIG REQUIRED)
 
 # ==============================================================================
 # Z3 SOLVER SETUP
 # ==============================================================================
-# Try to find Z3 using modern CMake first
-find_package(Z3 QUIET)
-
-if(Z3_FOUND)
-    message(STATUS "Found Z3 using CMake package config")
-    set(Z3_LINK_LIBRARY z3::libz3)
-else()
-    # Fallback to manual Z3 setup (original approach)
-    message(STATUS "Using manual Z3 setup")
-    
-    # Z3 paths are set by setup.py during Python package installation
-    set(Z3_INCLUDE_DIR ${Z3_INCLUDE_DIR} CACHE STRING "Z3 include directory")
-    set(Z3_LIB_DIR ${Z3_LIB_DIR} CACHE STRING "Z3 library directory")
-
-    # Locate Z3 library
-    find_library(Z3_LIBRARY
-        NAMES z3 libz3
-        PATHS ${Z3_LIB_DIR}
-        NO_DEFAULT_PATH
+# The module must link the exact libz3 the z3 pip package loads (two copies in
+# one process is undefined behavior), so Z3 is located via the interpreter's
+# z3 package. -DZ3_INCLUDE_DIR/-DZ3_LIB_DIR remain as escape hatches.
+if(NOT DEFINED Z3_INCLUDE_DIR OR NOT DEFINED Z3_LIB_DIR)
+    execute_process(
+        COMMAND "${Python_EXECUTABLE}" -c "import z3, os; print(os.path.dirname(z3.__file__))"
+        OUTPUT_VARIABLE Z3_PACKAGE_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE Z3_LOOKUP_RESULT
     )
-
-    if(NOT Z3_LIBRARY)
-        message(FATAL_ERROR "Z3 library not found in ${Z3_LIB_DIR}")
+    if(NOT Z3_LOOKUP_RESULT EQUAL 0)
+        message(FATAL_ERROR "Could not locate the z3 package via ${Python_EXECUTABLE} "
+                            "(is the z3-solver pip package installed?)")
     endif()
-
-    message(STATUS "Found Z3 library: ${Z3_LIBRARY}")
-    set(Z3_LINK_LIBRARY ${Z3_LIBRARY}) # Use the full path to the library
+    set(Z3_INCLUDE_DIR "${Z3_PACKAGE_DIR}/include")
+    set(Z3_LIB_DIR "${Z3_PACKAGE_DIR}/lib")
 endif()
 
+find_library(Z3_LIBRARY
+    NAMES z3 libz3
+    PATHS ${Z3_LIB_DIR}
+    NO_DEFAULT_PATH
+)
+
+if(NOT Z3_LIBRARY)
+    message(FATAL_ERROR "Z3 library not found in ${Z3_LIB_DIR}")
+endif()
+
+message(STATUS "Found Z3 library: ${Z3_LIBRARY}")
+set(Z3_LINK_LIBRARY ${Z3_LIBRARY}) # Use the full path to the library
 
 # ==============================================================================
 # TARGET DEFINITION
 # ==============================================================================
-# Create main executable
-add_executable(rantanplan
-    src/main.cpp
+# Core static library. The nanobind module links this target and inherits
+# its usage requirements (includes, Z3) via PUBLIC.
+add_library(rantanplan_core STATIC
     src/api/solver_api.cpp
+    src/api/ir_io.cpp
     src/config/config.cpp
     src/config/cli_parser.cpp
     src/config/strategy_registry.cpp
@@ -117,7 +99,6 @@ add_executable(rantanplan
     src/problem/action.cpp
     src/problem/plan.cpp
     src/problem/problem.cpp
-    src/problem/protobuf_io.cpp
     src/problem/type.cpp
     src/problem/visitors/fluent_collector.cpp
     src/problem/visitors/fluent_polarity_collector.cpp
@@ -144,7 +125,6 @@ add_executable(rantanplan
     src/planners/propagators/modules/frame_axiom_module.cpp
     src/symmetries/smt_symmetry_checker.cpp
     src/analysis/achievers_analysis.cpp
-    src/analysis/relaxed_planning_graph.cpp
     src/analysis/numeric_relaxed_planning_graph.cpp
     src/analysis/graph.cpp
     src/analysis/interference_analysis.cpp
@@ -175,22 +155,12 @@ add_executable(rantanplan
     src/grounding/interval_evaluator.cpp
 )
 
-# Define proto files and generate C++ sources
-set(PROTO_FILES ${CMAKE_CURRENT_SOURCE_DIR}/proto/unified_planning.proto)
-message(STATUS "PROTO_FILES: ${PROTO_FILES}")
-# generate protobuf files for the target
-protobuf_generate(TARGET rantanplan
-    PROTOS ${PROTO_FILES}
-    LANGUAGE cpp
-)
-
 # ==============================================================================
 # TARGET CONFIGURATION
 # ==============================================================================
-# Include directories
-target_include_directories(rantanplan PRIVATE
-    ${CMAKE_CURRENT_BINARY_DIR}                      # generated protobuf sources
-    ${CMAKE_CURRENT_BINARY_DIR}/proto                # generated protobuf headers
+# Include directories (PUBLIC: the core's headers reference these paths, so
+# consumers of the library need them too)
+target_include_directories(rantanplan_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src                  # our source headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src/config           # config headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src/util             # utility headers
@@ -207,11 +177,16 @@ target_include_directories(rantanplan PRIVATE
     ${Z3_INCLUDE_DIR}                                # Z3 headers
 )
 
-# Link libraries
-target_link_libraries(rantanplan PRIVATE
-    protobuf::libprotobuf
+# Link libraries (PUBLIC: Z3 types appear in the core's public headers)
+target_link_libraries(rantanplan_core PUBLIC
     ${Z3_LINK_LIBRARY} # Ensure this uses the full path from Z3_LIBRARY
 )
+
+# Python extension module — the only artifact. The static core links into a
+# shared module, so it must be position-independent.
+set_target_properties(rantanplan_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+nanobind_add_module(_rantanplan src/api/bindings.cpp)
+target_link_libraries(_rantanplan PRIVATE rantanplan_core)
 
 # ==============================================================================
 # PLATFORM-SPECIFIC FIXES
@@ -225,10 +200,10 @@ if(APPLE AND NOT Z3_FOUND)
     # Instead of relying on RPATH, use install_name_tool to change the recorded
     # dependency path in the 'rantanplan' executable from 'libz3.dylib'
     # to the absolute path ${Z3_LIBRARY}.
-    message(STATUS "macOS manual Z3: Using install_name_tool to set absolute path for libz3.dylib in 'rantanplan'")
-    add_custom_command(TARGET rantanplan POST_BUILD
-        COMMAND ${CMAKE_INSTALL_NAME_TOOL} -change libz3.dylib ${Z3_LIBRARY} $<TARGET_FILE:rantanplan>
-        COMMENT "Fixing Z3 dylib reference in rantanplan executable to absolute path"
+    message(STATUS "macOS manual Z3: Using install_name_tool to set absolute path for libz3.dylib in '_rantanplan'")
+    add_custom_command(TARGET _rantanplan POST_BUILD
+        COMMAND ${CMAKE_INSTALL_NAME_TOOL} -change libz3.dylib ${Z3_LIBRARY} $<TARGET_FILE:_rantanplan>
+        COMMENT "Fixing Z3 dylib reference in _rantanplan module to absolute path"
         VERBATIM
     )
 endif()
@@ -236,13 +211,16 @@ endif()
 # ==============================================================================
 # INSTALLATION
 # ==============================================================================
-install(TARGETS rantanplan DESTINATION ${OUTPUT_DIR})
+# scikit-build-core stages the install tree into the wheel; the module lands
+# inside the rantanplan package (for editable installs it is resolved from the
+# build tree via the editable redirect).
+install(TARGETS _rantanplan LIBRARY DESTINATION rantanplan)
 
 # ==============================================================================
 # Set RPATH for Z3 if found manually
 # ==============================================================================
 if(NOT Z3_FOUND AND Z3_LIB_DIR)
-    set_target_properties(rantanplan PROPERTIES
+    set_target_properties(_rantanplan PROPERTIES
         BUILD_WITH_INSTALL_RPATH TRUE
         INSTALL_RPATH "${Z3_LIB_DIR}"
         SKIP_BUILD_RPATH FALSE

@@ -8,24 +8,23 @@ from unified_planning.engines.mixins.oneshot_planner import OptimalityGuarantee
 from unified_planning.engines.mixins.anytime_planner import AnytimePlannerMixin, AnytimeGuarantee
 from unified_planning.engines import PlanGenerationResultStatus, Engine, CompilationKind, ValidationResultStatus
 from unified_planning.engines.compilers import Grounder, QuantifiersRemover
-from unified_planning.grpc.proto_writer import ProtobufWriter
-from unified_planning.grpc.proto_reader import ProtobufReader
 from unified_planning.exceptions import UPException
 from .cnf_condition_compiler import CNFConditionCompiler
 from .bounded_types_simplifier import BoundedTypesSimplifier
+from .converter import convert_problem
 from unified_planning.model import ProblemKind, Problem
 from unified_planning.plans import SequentialPlan, ActionInstance
 from unified_planning.shortcuts import get_environment
 from unified_planning.model.fluent import get_all_fluent_exp
-import unified_planning.grpc.generated.unified_planning_pb2 as up_pb2
 
-import subprocess
-import tempfile
-import time
-import os
+import queue
 import sys
 import threading
-from queue import Queue
+
+try:
+    from . import _rantanplan
+except ImportError:  # extension module not built yet
+    _rantanplan = None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -38,9 +37,6 @@ class _RantanPlanBase(Engine):
     def __init__(self, **options):
         Engine.__init__(self)
 
-        self._pb_writer = ProtobufWriter()
-        self._pb_reader = ProtobufReader()
-        self.executable_path = self._find_executable(options.get('executable_path'))
         self._verbosity = options.get('verbosity')
         self._strategy = options.get('strategy', 'seq')
         self._max_steps = options.get('max_steps')
@@ -57,6 +53,9 @@ class _RantanPlanBase(Engine):
         self._mode = options.get('mode')
         self._output_plan = options.get('output_plan')
         self._no_local_reasoning = options.get('no_local_reasoning', False)
+        # Set per solve call when the caller passes output_stream (UP's
+        # official log channel); None means stdout as usual.
+        self._output_stream: Optional[IO[str]] = None
 
     # ── Verbosity helpers ────────────────────────────────────────────────
 
@@ -70,61 +69,25 @@ class _RantanPlanBase(Engine):
 
     def _log(self, msg: str) -> None:
         if not self._is_silent:
-            print(msg)
+            print(msg, file=self._output_stream or sys.stdout)
 
     def _log_verbose(self, msg: str) -> None:
         if self._is_verbose:
-            print(msg)
+            print(msg, file=self._output_stream or sys.stdout)
 
     def _log_warning(self, msg: str) -> None:
         if not self._is_silent:
-            print(msg)
+            print(msg, file=self._output_stream or sys.stdout)
 
     @staticmethod
     def _log_error(msg: str) -> None:
         print(msg, file=sys.stderr)
 
-    # ── Executable discovery ─────────────────────────────────────────────
-
-    def _find_executable(self, provided_path):
-        if provided_path:
-            return provided_path
-
-        package_dir = os.path.dirname(__file__)
-        candidates = [
-            os.path.join(package_dir, "bin", "rantanplan"),
-            os.path.join(package_dir, "cpp", "build", "rantanplan"),
-            os.path.join(package_dir, "..", "planner", "build", "rantanplan"),
-            "rantanplan"
-        ]
-
-        for path in candidates:
-            if os.path.exists(path):
-                return path
-            if path == "rantanplan" and self._check_executable_in_path(path):
-                return path
-
-        default_path = os.path.join(package_dir, "cpp", "build", "rantanplan")
-        if not os.path.exists(default_path):
-            raise UPException(
-                f"rantanplan executable not found. Tried: {', '.join(candidates)}. "
-                "Please build the planner and/or provide the correct path."
-            )
-        return default_path
-
-    def _check_executable_in_path(self, executable_name):
-        try:
-            subprocess.run([executable_name, "--help"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-            return True
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
-            return False
-
     # ── Engine metadata ──────────────────────────────────────────────────
 
     @property
     def name(self) -> str:
-        return "RantanPlan"
+        return "rantanplan"
 
     @staticmethod
     def supported_kind():
@@ -169,32 +132,11 @@ class _RantanPlanBase(Engine):
     def destroy(self):
         pass
 
-    # ── Subprocess helpers ───────────────────────────────────────────────
+    # ── Solver arguments ─────────────────────────────────────────────────
 
-    def _stream_output(self, pipe, prefix=""):
-        """Stream output from subprocess pipe directly to stdout in real-time."""
-        if not pipe:
-            return
-        try:
-            for line in iter(pipe.readline, b''):
-                if not line:
-                    break
-                if self._is_silent:
-                    continue
-                line_str = line.decode('utf-8', errors='replace').rstrip()
-                if line_str:
-                    print(f"{prefix}{line_str}")
-                    sys.stdout.flush()
-        except Exception:
-            pass
-        finally:
-            if pipe:
-                pipe.close()
-
-    def _build_command(self, problem_filepath: str, solution_filepath: str,
-                       timeout: Optional[float] = None) -> list:
-        command = [self.executable_path, problem_filepath, solution_filepath,
-                  "--strategy", self._strategy]
+    def _build_args(self, timeout: Optional[float] = None) -> list:
+        """The planner's flags, passed to the in-process module."""
+        command = ["--strategy", self._strategy]
 
         if self._verbosity is not None:
             command.extend(["--verbosity", self._verbosity])
@@ -204,8 +146,6 @@ class _RantanPlanBase(Engine):
             command.append("--persist-clauses")
         if self._symmetries:
             command.append("--symmetries")
-        if self._stats_file is not None:
-            command.extend(["--stats-file", self._stats_file])
         if self._smt_rpg_checker:
             command.append("--smt-rpg-checker")
         if self._no_goal_relevance:
@@ -357,8 +297,6 @@ class _RantanPlanBase(Engine):
         combined_result = CombinedCompilationResult(current_problem, compilation_maps)
         return current_problem, combined_result
 
-    # ── Protobuf result reading ──────────────────────────────────────────
-
     @staticmethod
     def _check_no_nested_fluents(problem: Problem):
         """Reject function composition (nested fluent terms) which is not supported.
@@ -411,11 +349,10 @@ class _RantanPlanBase(Engine):
                     f"Goal contains nested fluent: {nested}. "
                     f"Rewrite using auxiliary parameters or boolean predicates.")
 
-    def _prepare_and_serialize(self, problem: Problem):
-        """Initialize fluents, compile, serialize to protobuf, create temp files.
+    def _prepare_problem(self, problem: Problem):
+        """Initialize fluents, compile, convert to the IR.
 
-        Returns (compiled_problem, compilation_result,
-                 problem_filepath, solution_filepath).
+        Returns (compiled_problem, compilation_result, problem_ir).
         """
         self._check_no_nested_fluents(problem)
 
@@ -438,57 +375,81 @@ class _RantanPlanBase(Engine):
         # Prepend bounded-types maps so map_back_action_instance unwinds them last
         compilation_result.compilation_maps = pre_compilation_maps + compilation_result.compilation_maps
 
-        pb_problem_msg = self._pb_writer.convert(compiled_problem)
+        problem_ir = convert_problem(compiled_problem)
 
-        problem_file = tempfile.NamedTemporaryFile(suffix=".pb", delete=False)
-        solution_file = tempfile.NamedTemporaryFile(suffix=".pb", delete=False)
-        problem_filepath = problem_file.name
-        solution_filepath = solution_file.name
-        problem_file.close()
-        solution_file.close()
+        return compiled_problem, compilation_result, problem_ir
 
-        with open(problem_filepath, "wb") as f:
-            f.write(pb_problem_msg.SerializeToString())
+    # ── Result conversion ────────────────────────────────────────────────
 
-        return compiled_problem, compilation_result, problem_filepath, solution_filepath
+    @staticmethod
+    def _up_status(status: int) -> PlanGenerationResultStatus:
+        name = _rantanplan.SolveStatus(status).name
+        return PlanGenerationResultStatus[name]
 
-    def _read_protobuf_result(self, solution_filepath: str,
-                              compiled_problem: Problem,
-                              compilation_result,
-                              original_problem: Problem) -> PlanGenerationResult:
-        """Read the protobuf solution, map actions back, validate."""
-        with open(solution_filepath, "rb") as f:
-            pb_msg = up_pb2.PlanGenerationResult()  # type: ignore
-            pb_msg.ParseFromString(f.read())
+    @staticmethod
+    def _up_log_level(level: int) -> LogLevel:
+        return (LogLevel.DEBUG, LogLevel.INFO, LogLevel.WARNING, LogLevel.ERROR)[level]
 
-        result_from_protobuf = self._pb_reader.convert(pb_msg, compiled_problem)
+    @staticmethod
+    def _build_plan(instances, compiled_problem: Problem,
+                    compilation_result) -> SequentialPlan:
+        """Rebuild a SequentialPlan from IR action instances by name lookup,
+        mapping each back through the compilation steps."""
+        action_map = {a.name: a for a in compiled_problem.actions}
+        object_map = {o.name: o for o in compiled_problem.all_objects}
+
+        new_actions: list[ActionInstance] = []
+        for instance in instances:
+            action = action_map[instance.action_name]
+            params = tuple(object_map[p] for p in instance.parameters)
+            mapped_ai = compilation_result.map_back_action_instance(
+                ActionInstance(action, params))
+            assert mapped_ai is not None
+            new_actions.append(mapped_ai)
+
+        return SequentialPlan(new_actions)
+
+    def _write_stats_file(self, stats) -> None:
+        """Write the per-solve stats to self._stats_file (the --stats-file
+        flag), in the same 'key: value' format the C++ side used to write."""
+        try:
+            with open(self._stats_file, "w") as f:
+                for key, value in stats:
+                    f.write(f"{key}: {value:.3f}\n")
+            self._log(f"Statistics written to: {self._stats_file}")
+        except OSError as e:
+            self._log_error(f"Could not open stats file for writing: {e}")
+
+    def _convert_result(self, result_ir,
+                        compiled_problem: Problem,
+                        compilation_result,
+                        original_problem: Problem) -> PlanGenerationResult:
+        """Map a ResultIR to a UP result: rebuild action instances by name,
+        map them back through the compilation steps, validate. Per-solve
+        stats surface as PlanGenerationResult.metrics (stringified)."""
+        status = self._up_status(result_ir.status)
+        log_messages = [LogMessage(level=self._up_log_level(msg.level), message=msg.message)
+                        for msg in result_ir.log_messages]
+
+        metrics = {key: str(value) for key, value in result_ir.stats}
+        if self._stats_file is not None:
+            self._write_stats_file(result_ir.stats)
 
         final_plan = None
-        if result_from_protobuf.plan:
+        if result_ir.has_plan:
             try:
-                new_actions: list[ActionInstance] = []
-
-                if hasattr(result_from_protobuf.plan, 'actions'):
-                    plan_actions = result_from_protobuf.plan.actions
-                else:
-                    plan_actions = []
-
-                for ai in plan_actions:
-                    mapped_ai = compilation_result.map_back_action_instance(ai)
-                    assert mapped_ai is not None
-                    new_actions.append(mapped_ai)
-
-                final_plan = SequentialPlan(new_actions)
+                final_plan = self._build_plan(result_ir.plan, compiled_problem,
+                                              compilation_result)
             except Exception as e:
                 self._log_error(f"Error mapping plan back: {e}")
                 return PlanGenerationResult(
                     PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
                     log_messages=[LogMessage(level=LogLevel.ERROR, message=f"Error mapping plan back: {e}")]
                 )
-        self._log(f"Status from planner: {result_from_protobuf.status.name}")
+        self._log(f"Status from planner: {status.name}")
 
         # Validate the plan if one was found
-        if final_plan is not None and result_from_protobuf.status in (
+        if final_plan is not None and status in (
                 PlanGenerationResultStatus.SOLVED_SATISFICING,
                 PlanGenerationResultStatus.SOLVED_OPTIMALLY):
             plan_is_valid = self._validate_plan(original_problem, final_plan)
@@ -498,78 +459,60 @@ class _RantanPlanBase(Engine):
                     level=LogLevel.WARNING,
                     message="Plan validation failed - the plan may not be correct"
                 )
-                result_log_messages = list(result_from_protobuf.log_messages) + [validation_log]
-            else:
-                result_log_messages = result_from_protobuf.log_messages
-        else:
-            result_log_messages = result_from_protobuf.log_messages
+                log_messages = log_messages + [validation_log]
 
         return PlanGenerationResult(
-            result_from_protobuf.status,
+            status,
             final_plan,
             self.name,
-            log_messages=result_log_messages,
-            metrics=result_from_protobuf.metrics
+            metrics=metrics or None,
+            log_messages=log_messages
         )
 
-    # ── IPC plan file parsing ────────────────────────────────────────────
+    # ── In-process solving ───────────────────────────────────────────────
 
-    def _parse_ipc_plan(self, plan_filepath: str,
-                        compiled_problem: Problem,
-                        compilation_result) -> Optional[SequentialPlan]:
-        """Parse an IPC-format plan file back into a UP SequentialPlan.
+    def _solve_in_process(self, problem: Problem,
+                          timeout: Optional[float] = None,
+                          output_stream: Optional[IO[str]] = None,
+                          ) -> PlanGenerationResult:
+        """Solve via the _rantanplan extension module. Timeouts are enforced
+        by the C++ side (--timeout). When output_stream is given, the C++ log
+        and the wrapper's own prints go there instead of stdout."""
+        if _rantanplan is None:
+            raise UPException(
+                "The _rantanplan extension module is not built. Run "
+                "'pip install -e . --no-build-isolation' first.")
 
-        IPC format: lines of ``(action_name param1 param2 ...)``
-        with ``;`` comment lines.  Action/parameter names match those used
-        by the C++ protobuf serialiser.
-        """
+        # The C++ log sink is installed for the duration of the call, on this
+        # thread (the one that runs preprocess/solve -- the module requires
+        # sink changes to happen on the solving thread).
+        self._output_stream = output_stream
+        if output_stream is not None:
+            def _sink(level: int, text: str) -> None:
+                output_stream.write(text + "\n")
+            _rantanplan.set_log_sink(_sink)
         try:
-            with open(plan_filepath, "r") as f:
-                lines = f.readlines()
-        except FileNotFoundError:
-            return None
+            compiled_problem, compilation_result, problem_ir = \
+                self._prepare_problem(problem)
 
-        # Build lookups from the compiled problem
-        action_map = {a.name: a for a in compiled_problem.actions}
-        object_map = {}
-        for obj in compiled_problem.all_objects:
-            object_map[obj.name] = obj
+            args = self._build_args(timeout)
+            self._log_verbose(f"Solving in-process: {' '.join(args)}")
 
-        new_actions: list[ActionInstance] = []
-        for raw_line in lines:
-            line = raw_line.strip()
-            if not line or line.startswith(";"):
-                continue
-            # Strip enclosing parentheses: "(fly p1 c1 c2)" → "fly p1 c1 c2"
-            if line.startswith("(") and line.endswith(")"):
-                line = line[1:-1].strip()
-            parts = line.split()
-            if not parts:
-                continue
-
-            action_name = parts[0]
-            param_names = parts[1:]
-
-            action = action_map.get(action_name)
-            if action is None:
-                self._log_warning(f"  IPC parse: unknown action '{action_name}', skipping")
-                continue
-
-            params = []
-            for pn in param_names:
-                obj = object_map.get(pn)
-                if obj is None:
-                    self._log_warning(f"  IPC parse: unknown object '{pn}' in action '{action_name}', skipping action")
-                    break
-                params.append(obj)
-            else:
-                # All params resolved — create ActionInstance
-                ai = ActionInstance(action, tuple(params))
-                mapped_ai = compilation_result.map_back_action_instance(ai)
-                if mapped_ai is not None:
-                    new_actions.append(mapped_ai)
-
-        return SequentialPlan(new_actions) if new_actions else None
+            try:
+                preprocessed = _rantanplan.preprocess(problem_ir, args)
+                result_ir = _rantanplan.solve(preprocessed)
+                return self._convert_result(
+                    result_ir, compiled_problem, compilation_result, problem)
+            except Exception as e:
+                self._log_error(f"An error occurred: {e}")
+                return PlanGenerationResult(
+                    PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
+                    log_messages=[LogMessage(level=LogLevel.ERROR, message=str(e))]
+                )
+        finally:
+            if output_stream is not None:
+                _rantanplan.set_log_sink(None)
+            self._output_stream = None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -586,65 +529,7 @@ class RantanPlanPlanner(_RantanPlanBase, OneshotPlannerMixin):
               heuristic: Optional[Callable] = None,
               timeout: Optional[float] = None,
               output_stream: Optional[IO[str]] = None) -> PlanGenerationResult:
-
-        compiled_problem, compilation_result, problem_filepath, solution_filepath = \
-            self._prepare_and_serialize(problem)
-
-        try:
-            command = self._build_command(problem_filepath, solution_filepath, timeout)
-            self._log_verbose(f"Running planner: {' '.join(command)}")
-
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=False
-            )
-
-            stdout_thread = threading.Thread(target=self._stream_output, args=(process.stdout, ""))
-            stderr_thread = threading.Thread(target=self._stream_output, args=(process.stderr, "ERROR: "))
-            stdout_thread.daemon = True
-            stderr_thread.daemon = True
-            stdout_thread.start()
-            stderr_thread.start()
-
-            process_timeout = timeout + 10 if timeout else None
-            try:
-                return_code = process.wait(timeout=process_timeout)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                self._log("Planner timed out.")
-                return PlanGenerationResult(
-                    PlanGenerationResultStatus.TIMEOUT, None, self.name,
-                    log_messages=[LogMessage(level=LogLevel.INFO, message="Planner timed out.")]
-                )
-
-            stdout_thread.join(timeout=1.0)
-            stderr_thread.join(timeout=1.0)
-
-            if return_code != 0:
-                error_msg = f"The planner failed with return code {return_code}."
-                if return_code == -11:
-                    error_msg += " - The error might be a segmentation fault (SIGSEGV)."
-                self._log_error(error_msg)
-                return PlanGenerationResult(
-                    PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                    log_messages=[LogMessage(level=LogLevel.ERROR, message=error_msg)]
-                )
-
-            return self._read_protobuf_result(
-                solution_filepath, compiled_problem, compilation_result, problem)
-
-        except Exception as e:
-            self._log_error(f"An error occurred: {e}")
-            return PlanGenerationResult(
-                PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                log_messages=[LogMessage(level=LogLevel.ERROR, message=str(e))]
-            )
-        finally:
-            for filepath in [problem_filepath, solution_filepath]:
-                if os.path.exists(filepath):
-                    os.remove(filepath)
+        return self._solve_in_process(problem, timeout, output_stream)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -666,69 +551,11 @@ class RantanPlanOptimalPlanner(_RantanPlanBase, OneshotPlannerMixin):
               heuristic: Optional[Callable] = None,
               timeout: Optional[float] = None,
               output_stream: Optional[IO[str]] = None) -> PlanGenerationResult:
-
-        compiled_problem, compilation_result, problem_filepath, solution_filepath = \
-            self._prepare_and_serialize(problem)
-
-        try:
-            command = self._build_command(problem_filepath, solution_filepath, timeout)
-            self._log_verbose(f"Running planner: {' '.join(command)}")
-
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=False
-            )
-
-            stdout_thread = threading.Thread(target=self._stream_output, args=(process.stdout, ""))
-            stderr_thread = threading.Thread(target=self._stream_output, args=(process.stderr, "ERROR: "))
-            stdout_thread.daemon = True
-            stderr_thread.daemon = True
-            stdout_thread.start()
-            stderr_thread.start()
-
-            process_timeout = timeout + 10 if timeout else None
-            try:
-                return_code = process.wait(timeout=process_timeout)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                self._log("Planner timed out.")
-                return PlanGenerationResult(
-                    PlanGenerationResultStatus.TIMEOUT, None, self.name,
-                    log_messages=[LogMessage(level=LogLevel.INFO, message="Planner timed out.")]
-                )
-
-            stdout_thread.join(timeout=1.0)
-            stderr_thread.join(timeout=1.0)
-
-            if return_code != 0:
-                error_msg = f"The planner failed with return code {return_code}."
-                if return_code == -11:
-                    error_msg += " - The error might be a segmentation fault (SIGSEGV)."
-                self._log_error(error_msg)
-                return PlanGenerationResult(
-                    PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                    log_messages=[LogMessage(level=LogLevel.ERROR, message=error_msg)]
-                )
-
-            return self._read_protobuf_result(
-                solution_filepath, compiled_problem, compilation_result, problem)
-
-        except Exception as e:
-            self._log_error(f"An error occurred: {e}")
-            return PlanGenerationResult(
-                PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                log_messages=[LogMessage(level=LogLevel.ERROR, message=str(e))]
-            )
-        finally:
-            for filepath in [problem_filepath, solution_filepath]:
-                if os.path.exists(filepath):
-                    os.remove(filepath)
+        return self._solve_in_process(problem, timeout, output_stream)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Anytime planner (yields improving plans via file-system polling)
+# Anytime planner (yields improving plans as the search finds them)
 # ═══════════════════════════════════════════════════════════════════════
 
 class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
@@ -746,112 +573,101 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
                        timeout: Optional[float] = None,
                        output_stream: Optional[IO[str]] = None,
                        ) -> Iterator[PlanGenerationResult]:
+        """Run solve_anytime in a worker thread; the C++ plan callback feeds a
+        queue that this generator drains. Each improving plan is yielded with
+        INTERMEDIATE status; the terminal result carries the final status.
 
-        compiled_problem, compilation_result, problem_filepath, solution_filepath = \
-            self._prepare_and_serialize(problem)
+        Abandoning the generator early stops the solve: the cleanup interrupts
+        the running Z3 search (Preprocessed.interrupt()) and joins the worker.
+        Only the Z3 search is interruptible -- if preprocessing is still
+        running, the cleanup waits for it to finish and interrupts the search
+        as soon as it starts.
 
-        plan_base = self._output_plan or "plan.txt"
+        When output_stream is given, the C++ log and the wrapper's own prints
+        go there instead of stdout.
+        """
+        if _rantanplan is None:
+            raise UPException(
+                "The _rantanplan extension module is not built. Run "
+                "'pip install -e . --no-build-isolation' first.")
 
-        # Remove stale plan files from previous runs so the poller
-        # doesn't pick them up as new solutions.
-        i = 1
-        while os.path.exists(f"{plan_base}.{i}"):
-            os.remove(f"{plan_base}.{i}")
-            i += 1
-
+        self._output_stream = output_stream
         try:
-            command = self._build_command(problem_filepath, solution_filepath, timeout)
-            self._log_verbose(f"Running planner: {' '.join(command)}")
+            compiled_problem, compilation_result, problem_ir = \
+                self._prepare_problem(problem)
 
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=False
-            )
+            args = self._build_args(timeout)
+            self._log_verbose(f"Solving anytime in-process: {' '.join(args)}")
 
-            q: Queue[PlanGenerationResult] = Queue()
+            results: queue.Queue = queue.Queue()
+            # The worker publishes its Preprocessed handle here so the cleanup
+            # below can interrupt() the running solve on abandonment.
+            handle_box: dict = {}
+
+            def on_plan(instances):
+                results.put(("plan", instances))
 
             def run():
-                # Stream stdout/stderr in sub-threads
-                stdout_thread = threading.Thread(
-                    target=self._stream_output, args=(process.stdout, ""))
-                stderr_thread = threading.Thread(
-                    target=self._stream_output, args=(process.stderr, "ERROR: "))
-                stdout_thread.daemon = stderr_thread.daemon = True
-                stdout_thread.start()
-                stderr_thread.start()
+                # The C++ log sink must be set and cleared on the thread that
+                # runs preprocess/solve_anytime (it is not synchronized against
+                # a running solve), so it is managed here in the worker.
+                if output_stream is not None:
+                    def _sink(level: int, text: str) -> None:
+                        output_stream.write(text + "\n")
+                    _rantanplan.set_log_sink(_sink)
+                try:
+                    preprocessed = _rantanplan.preprocess(problem_ir, args)
+                    handle_box["pre"] = preprocessed
+                    result_ir = _rantanplan.solve_anytime(preprocessed, on_plan)
+                    results.put(("final", result_ir))
+                except Exception as e:
+                    results.put(("error", e))
+                finally:
+                    if output_stream is not None:
+                        _rantanplan.set_log_sink(None)
 
-                # Poll for new plan files while process is alive
-                solution_count = 0
-                while process.poll() is None:
-                    next_file = f"{plan_base}.{solution_count + 1}"
-                    if os.path.exists(next_file):
-                        solution_count += 1
-                        plan = self._parse_ipc_plan(
-                            next_file, compiled_problem, compilation_result)
-                        if plan:
-                            q.put(PlanGenerationResult(
-                                PlanGenerationResultStatus.INTERMEDIATE,
-                                plan, self.name))
-                    else:
-                        time.sleep(0.1)
+            worker = threading.Thread(target=run, daemon=True)
+            worker.start()
 
-                # Process finished — pick up any remaining plan files
-                while os.path.exists(f"{plan_base}.{solution_count + 1}"):
-                    solution_count += 1
-                    plan = self._parse_ipc_plan(
-                        f"{plan_base}.{solution_count}",
-                        compiled_problem, compilation_result)
-                    if plan:
-                        q.put(PlanGenerationResult(
-                            PlanGenerationResultStatus.INTERMEDIATE,
-                            plan, self.name))
-
-                stdout_thread.join(timeout=1.0)
-                stderr_thread.join(timeout=1.0)
-
-                # Final result from protobuf (carries correct status)
-                return_code = process.returncode
-                if return_code != 0:
-                    error_msg = f"The planner failed with return code {return_code}."
-                    if return_code == -11:
-                        error_msg += " - The error might be a segmentation fault (SIGSEGV)."
-                    self._log_error(error_msg)
-                    q.put(PlanGenerationResult(
-                        PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                        log_messages=[LogMessage(level=LogLevel.ERROR, message=error_msg)]))
-                else:
-                    try:
-                        final = self._read_protobuf_result(
-                            solution_filepath, compiled_problem,
-                            compilation_result, problem)
-                        q.put(final)
-                    except Exception as e:
-                        self._log_error(f"Error reading final result: {e}")
-                        q.put(PlanGenerationResult(
+            try:
+                # The callback enqueues every plan before solve_anytime
+                # returns, so all ("plan", ...) items precede the terminal
+                # item in the queue.
+                while True:
+                    kind, payload = results.get()
+                    if kind == "plan":
+                        try:
+                            plan = self._build_plan(payload, compiled_problem,
+                                                    compilation_result)
+                        except Exception as e:
+                            self._log_error(f"Error mapping intermediate plan back: {e}")
+                            continue
+                        self._log(f"Improving plan found ({len(plan.actions)} actions)")
+                        yield PlanGenerationResult(
+                            PlanGenerationResultStatus.INTERMEDIATE, plan, self.name)
+                    elif kind == "final":
+                        worker.join()
+                        yield self._convert_result(
+                            payload, compiled_problem, compilation_result, problem)
+                        return
+                    else:  # error
+                        worker.join()
+                        self._log_error(f"An error occurred: {payload}")
+                        yield PlanGenerationResult(
                             PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                            log_messages=[LogMessage(level=LogLevel.ERROR, message=str(e))]))
-
-            t = threading.Thread(target=run, daemon=True)
-            t.start()
-
-            # Main thread: yield results as they arrive
-            status = PlanGenerationResultStatus.INTERMEDIATE
-            while status == PlanGenerationResultStatus.INTERMEDIATE:
-                res = q.get()
-                status = res.status
-                yield res
-
-            t.join()
-
-        except Exception as e:
-            self._log_error(f"An error occurred: {e}")
-            yield PlanGenerationResult(
-                PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                log_messages=[LogMessage(level=LogLevel.ERROR, message=str(e))]
-            )
+                            log_messages=[LogMessage(level=LogLevel.ERROR,
+                                                     message=str(payload))])
+                        return
+            finally:
+                # Runs on GeneratorExit (abandonment) and exceptions as well
+                # as on normal return. Interrupt in a loop: the handle may not
+                # exist yet (preprocessing) or the solve may not have
+                # published its context yet -- keep poking until the worker
+                # exits. On the normal path the worker is already joined.
+                while worker.is_alive():
+                    pre = handle_box.get("pre")
+                    if pre is not None:
+                        pre.interrupt()
+                    worker.join(timeout=0.5)
         finally:
-            for filepath in [problem_filepath, solution_filepath]:
-                if os.path.exists(filepath):
-                    os.remove(filepath)
+            self._output_stream = None

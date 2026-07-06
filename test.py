@@ -4,14 +4,13 @@ Comprehensive test script for the RantanPlan planning system.
 
 Discovers all PDDL problems in pddl/test/ and runs the planner with every
 available strategy, validating each resulting plan. Strategies are auto-
-discovered from the C++ binary via --list-strategies.
+discovered from the extension module via _rantanplan.list_strategies().
 
 Output style: one compact line per test, with a summary at the end.
 """
 import os
 import sys
 import argparse
-import subprocess
 from pathlib import Path
 
 import unified_planning as up
@@ -20,7 +19,7 @@ from unified_planning.shortcuts import OneshotPlanner, PlanValidator
 from unified_planning.engines.results import PlanGenerationResultStatus
 from unified_planning.engines import ValidationResultStatus
 
-from rantanplan.planner_wrapper import RantanPlanPlanner
+import rantanplan  # noqa: F401 — registers the UP engines (also in spawned workers)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -72,17 +71,9 @@ class C:
 # ---------------------------------------------------------------------------
 
 def get_strategies():
-    """Query the C++ binary for available strategies."""
-    planner = RantanPlanPlanner()
-    result = subprocess.run(
-        [planner.executable_path, "/dev/null", "/dev/null", "--list-strategies"],
-        capture_output=True, text=True, check=True,
-    )
-    return [
-        line.strip().split()[0]
-        for line in result.stdout.strip().split('\n')
-        if line.strip() and not line.strip().startswith('Available')
-    ]
+    """Query the extension module for available strategies."""
+    from rantanplan import _rantanplan
+    return list(_rantanplan.list_strategies())
 
 
 def find_problems(quick=False):
@@ -121,7 +112,7 @@ def run_test(name, domain, problem, strategy, verbose=False, up_grounding=False,
         if mode is not None:
             params['mode'] = mode
 
-        engine_name = 'RantanPlan-optimal' if mode == 'optimal' else 'RantanPlan'
+        engine_name = 'rantanplan-optimal' if mode == 'optimal' else 'rantanplan'
         with OneshotPlanner(name=engine_name, params=params) as planner:
             result = planner.solve(prob, timeout=TIMEOUT)
 

@@ -1,6 +1,7 @@
 #include "grounded_encoder.hpp"
 #include "../analysis/interference_analysis.hpp"
 #include "../util/stats.hpp"
+#include "../util/logger.hpp"
 #include "../config/config.hpp"
 #include <iostream>
 #include <functional>
@@ -470,7 +471,8 @@ void GroundedEncoder::build_epc_index() {
 Plan GroundedEncoder::extract_plan(const z3::model& model, int max_timestep) const {
     Plan plan;
 
-    std::cout << "Extracting plan from Z3 model with " << model.size() << " variable assignments" << std::endl;
+    Logger::instance().info("Extracting plan from Z3 model with " +
+                            std::to_string(model.size()) + " variable assignments");
 
     // Use type-safe capability query instead of string comparison
     bool is_parallel = get_parallelism_strategy()->allows_concurrent_actions();

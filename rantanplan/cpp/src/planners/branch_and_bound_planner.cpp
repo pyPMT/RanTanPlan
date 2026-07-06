@@ -264,6 +264,7 @@ Plan BranchAndBoundPlanner::search() {
                     best_plan.write_ipc(config.planner.output_plan, solution_count_,
                                         upper_bound, unit,
                                         config.planner.strategy, config.planner.mode, elapsed);
+                    notify_intermediate_plan(best_plan);
 
                     Logger::instance().info(
                         "  Improved plan: cost=" + std::to_string(upper_bound) +

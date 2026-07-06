@@ -17,8 +17,9 @@
 #include "type.hpp"
 #include "expr_pool.hpp"
 
-// Forward declaration of protobuf-generated Problem class (for friend access from protobuf_io)
-class Problem;
+namespace rantanplan::ir {
+struct ProblemIR;  // plain-data IR (for friend access from ir_io)
+}
 
 namespace rantanplan {
 
@@ -37,8 +38,8 @@ enum class MetricKind { NONE, MINIMIZE_ACTION_COSTS, MINIMIZE_PLAN_LENGTH };
  * such as whether it is a fluent application, function application, or an atom.
  */
 class Problem {
-    // Allow protobuf_io to access private members for deserialization
-    friend Problem load_problem_from_protobuf(const ::Problem& pb_problem);
+    // Allow ir_io to access private members for deserialization
+    friend Problem load_problem_from_ir(const ir::ProblemIR& ir_problem);
 
 public:
     // Constructors

@@ -12,6 +12,11 @@
 #include <string>
 #include <vector>
 
+/**
+ * @file strategy_factory.hpp
+ * @brief Assembles fully wired encoder/planner/propagator components from a
+ *        StrategySpec at solve time.
+ */
 namespace rantanplan {
 
 /// Strategy component factory — handles validation, problem-specific

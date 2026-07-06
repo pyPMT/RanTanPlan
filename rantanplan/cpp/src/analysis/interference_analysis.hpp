@@ -9,6 +9,11 @@
 #include <unordered_map>
 #include <unordered_set>
 
+/**
+ * @file interference_analysis.hpp
+ * @brief The two interference interfaces: InterferenceOracle (universal) and
+ *        InterferenceGraphAnalysis (adds whole-graph access; eager only).
+ */
 namespace rantanplan {
 
 /**

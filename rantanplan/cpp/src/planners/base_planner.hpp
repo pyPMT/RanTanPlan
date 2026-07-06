@@ -8,6 +8,7 @@
 #include <z3++.h>
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -111,6 +112,14 @@ public:
     /// (single-consumer — the bundle must not be reused for a second solve).
     virtual void consume_artifacts(PreprocessedProblem& artifacts) { (void)artifacts; }
 
+    /// Install a callback invoked with each plan the search reports (every
+    /// improving plan for branch-and-bound, the final plan otherwise) — the
+    /// in-process counterpart of the plan.txt.N files written at the same
+    /// points. Runs on the solver thread; must be cheap.
+    void set_intermediate_plan_callback(std::function<void(const Plan&)> callback) {
+        on_intermediate_plan_ = std::move(callback);
+    }
+
     /// Set the propagator strategy for this planner.
     void set_propagator_strategy(std::unique_ptr<PropagatorStrategy> propagator);
 
@@ -144,6 +153,14 @@ protected:
 
     bool solution_found_ = false;
     bool timed_out_ = false;
+
+    /// Optional plan hook (set_intermediate_plan_callback). Concrete planners
+    /// call notify_intermediate_plan() wherever they write plan.txt.N.
+    std::function<void(const Plan&)> on_intermediate_plan_;
+
+    void notify_intermediate_plan(const Plan& plan) const {
+        if (on_intermediate_plan_) on_intermediate_plan_(plan);
+    }
 
     /// Wall-clock deadline for the search. Set from Config::global::timeout in
     /// init_deadline(), then queried via remaining_ms() before each solver.check().

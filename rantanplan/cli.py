@@ -43,9 +43,7 @@ Use --list-strategies to see available strategies and their descriptions.
                        default=None,
                        help="Search mode: satisficing (first plan, default), "
                             "optimal (cost-optimal with proof), "
-                            "anytime (keep improving, write intermediate plans). "
-                            "Note: anytime mode deletes existing plan files "
-                            "matching the output prefix before starting")
+                            "anytime (keep improving, report intermediate plans)")
 
     # List strategies
     parser.add_argument("--list-strategies", action="store_true",
@@ -56,8 +54,6 @@ Use --list-strategies to see available strategies and their descriptions.
                        help="Timeout in seconds (default: None)")
     parser.add_argument("--max-steps", type=int,
                        help="Maximum planning steps")
-    parser.add_argument("--executable", type=str,
-                       help="Path to RantanPlan C++ executable")
     parser.add_argument("--output-plan", type=str,
                        help="Base path for plan output in IPC format (files written as <path>.1, .2, etc.)")
     parser.add_argument("--stats-file", type=str,
@@ -123,8 +119,6 @@ def _build_planner_params(args) -> Dict[str, object]:
         'strategy': args.strategy,
     }
 
-    if args.executable:
-        planner_params['executable_path'] = args.executable
     if args.max_steps:
         planner_params['max_steps'] = args.max_steps
     if args.stats_file:
@@ -184,7 +178,7 @@ def solve_problem(problem, args):
         PlannerClass: Any = OneshotPlanner
 
         if args.mode == "anytime":
-            with AnytimePlanner(name='RantanPlan-anytime', params=planner_params) as planner:
+            with AnytimePlanner(name='rantanplan-anytime', params=planner_params) as planner:
                 last_result = None
                 for result in planner.get_solutions(problem, timeout=args.timeout):
                     if result.status == PlanGenerationResultStatus.INTERMEDIATE:
@@ -193,12 +187,12 @@ def solve_problem(problem, args):
                     last_result = result
                 return last_result
         elif args.mode == "optimal":
-            with PlannerClass(name='RantanPlan-optimal', params=planner_params) as planner:
+            with PlannerClass(name='rantanplan-optimal', params=planner_params) as planner:
                 result = planner.solve(problem, timeout=args.timeout)
                 return result
         else:
             # satisficing (default)
-            with PlannerClass(name='RantanPlan', params=planner_params) as planner:
+            with PlannerClass(name='rantanplan', params=planner_params) as planner:
                 result = planner.solve(problem, timeout=args.timeout)
                 return result
     except Exception as e:
@@ -216,15 +210,11 @@ def main():
 
     # Handle --list-strategies
     if args.list_strategies:
-        # Call the C++ executable with --list-strategies
-        import rantanplan
-        executable_path = rantanplan.planner_wrapper.RantanPlanPlanner(**{})._find_executable(None)
         try:
-            import subprocess
-            # C++ planner requires dummy protobuf files as positional args
-            result = subprocess.run([executable_path, "/dev/null", "/dev/null", "--list-strategies"],
-                                  capture_output=True, text=True)
-            print(result.stdout)
+            from rantanplan import _rantanplan
+            print("Available strategies:")
+            for name in _rantanplan.list_strategies():
+                print(f"  {name}")
             sys.exit(0)
         except Exception as e:
             print(f"Error listing strategies: {e}")

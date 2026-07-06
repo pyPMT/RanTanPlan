@@ -42,7 +42,7 @@ ValueKind classify_value_kind(ExprID value_id, const ExprPool& pool);
  */
 class EffectExpression {
 public:
-    // Effect kinds (simplified from protobuf)
+    // Effect kinds (simplified from UP's effect kinds; values match ir.hpp)
     enum class Kind {
         ASSIGN = 0,   // fluent := value
         INCREASE = 1, // fluent += value
@@ -52,7 +52,7 @@ public:
     // Constructors
     EffectExpression() : kind_(Kind::ASSIGN), value_kind_(ValueKind::CONSTANT) {}
 
-    /// Construct with forall variables (used by protobuf_io).
+    /// Construct with forall variables (used by ir_io).
     EffectExpression(Kind kind, ExprID fluent_id, ExprID value_id,
                      ExprID condition_id, std::vector<ExprID> forall_variable_ids,
                      const ExprPool* pool)

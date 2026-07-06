@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 #include <map>
@@ -26,12 +27,22 @@ namespace rantanplan {
  */
 class Logger {
 public:
+    // Receives each formatted output line (no trailing newline) after
+    // verbosity filtering. The level is the line's minimum verbosity;
+    // errors arrive as SILENT (they always pass the filter).
+    using Sink = std::function<void(VerbosityLevel, const std::string&)>;
+
     // Get the global logger instance
     static Logger& instance();
 
     // Set the verbosity threshold (the driver snapshots it from Config once
     // at startup; util/ itself has no Config dependency)
     void set_verbosity(VerbosityLevel verbosity);
+
+    // Redirect output. An empty sink restores the default (stdout; errors to
+    // stderr). The Logger is process-global: installers must reset the sink
+    // before their scope ends (see ScopedLogSink in bindings.cpp).
+    void set_sink(Sink sink);
 
     // Simple message logging (respects verbosity)
     void info(const std::string& msg);
@@ -82,6 +93,11 @@ public:
 private:
     Logger() = default;
 
+    // Single exit point: every method writes its already-formatted,
+    // verbosity-filtered line through here (default: stdout, errors to
+    // stderr; or the installed sink)
+    void emit(VerbosityLevel level, const std::string& text);
+
     // Formatting helpers
     std::string format_component_line(
         const std::string& component_name,
@@ -90,6 +106,7 @@ private:
 
     VerbosityLevel verbosity_ = VerbosityLevel::INFO;
     bool enabled_ = true;
+    Sink sink_;
 
     static constexpr int COMPONENT_WIDTH = 16;  // Width for component name column
 
