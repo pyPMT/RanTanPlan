@@ -17,7 +17,10 @@ timestep, and a solver to drive. Most of the core's complexity is about
 building that formula *well*: compactly (grounding, pruning, folding static
 fluents), correctly (frame axioms, interference-aware parallelism), and with
 enough structure left over that the solver's own search can exploit it
-(propagators, symmetry breaking, invariants as extra clauses).
+(propagators, symmetry breaking, invariants as extra clauses). What that
+formula concretely looks like — the variables, the clause schemas, a full
+worked example — is [`the-encoding.md`](the-encoding.md), the next doc in
+the reading order.
 
 ## Why three parallelism semantics
 
@@ -250,7 +253,9 @@ initial state: (at rob1 room-a)
    and the `IncrementalHorizonPlanner` starts at `start_timestep = 1` (the
    lower bound just computed). It encodes the initial state
    (`at(rob1, room-a)` true at *t=0*), the frame axioms and action clauses
-   for *t=0*, and a goal literal for *t=1* implying `at(rob1, room-b)`. Z3
+   for *t=0*, and a goal literal for *t=1* implying `at(rob1, room-b)` —
+   the complete formula for exactly this problem is written out in
+   [`the-encoding.md`](the-encoding.md). Z3
    finds the model: `move(rob1, room-a, room-b)` fires at *t=0*.
 
 5. **Plan extraction and mapping back.** `extract_plan()` reads which action
@@ -312,6 +317,25 @@ fuel via the fixpoint RPG/achievers — without including any encoder header
 or calling any Z3 API? Today, yes. Keeping that true is why interference
 analysis (which needs `SemanticsKind` and feeds propagators) is built in
 `api::solve`, not in the preprocessor.
+
+## Try it
+
+Run the pipeline you just read about (from the repo root, inside the venv):
+
+```bash
+rantanplan --list-strategies      # the strategy registry, one line each
+rantanplan -d pddl/small-test/zenotravel/domain.pddl \
+           -p pddl/small-test/zenotravel/instances/pfile13.pddl \
+           --strategy elsc -v
+```
+
+The bracketed log tags are the pipeline stages, in order: `[Grounding I1]`…
+(the reachability fixpoint, iteration by iteration), `[CWA]`,
+`[StaticFluent]`, `[RPG.Numeric L0]`… and `[ActionPruning]`, `[InvOracle]`
+(mutex discovery), `[ArithProfile]` (which SMT logic the problem gets) —
+everything up to there is `api::preprocess()`. Then `[Solving T3]`,
+`[Solving T4]`, … is `api::solve()` — and note it starts at T3, the lower
+bound preprocessing just proved, not at T1.
 
 ## Further reading
 

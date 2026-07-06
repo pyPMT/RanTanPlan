@@ -18,8 +18,10 @@ objects consistent with parameter types — is a cross product:
 100 × 100 × 100 = 1,000,000 candidate instantiations, the overwhelming
 majority of which will never be reachable from the initial state (most
 vehicles never visit most locations). `ReachabilityGrounder` instead
-computes reachability and grounding *together*, as one delete-relaxation
-fixpoint: start from the initial state's facts, ground only the action
+computes reachability and grounding *together*, as one **delete-relaxation**
+fixpoint — "delete relaxation" meaning delete effects are ignored, so facts
+only ever accumulate and reachability becomes a cheap monotone computation
+rather than a search: start from the initial state's facts, ground only the action
 instances whose preconditions are already satisfied, apply their effects to
 grow the fact set, and repeat until nothing new is reachable.
 
@@ -147,3 +149,35 @@ pruning, and achiever tracking is a separate structure,
 `NumericRelaxedPlanningGraph`, built fresh (over the now-ground problem)
 by `ActionPruningPass` — see
 [`relaxed-planning-graph.md`](relaxed-planning-graph.md).
+
+## Try it
+
+The worked example's iteration table, on a real domain:
+
+```bash
+rantanplan -d pddl/small-test/zenotravel/domain.pddl \
+           -p pddl/small-test/zenotravel/instances/pfile13.pddl \
+           --strategy elsc -v 2>&1 | grep Grounding
+```
+
+```
+[Grounding     ]  initial facts: 13  |  action schemas: 5
+[Grounding I1  ]  new actions: 19   |  new facts: 5   |  total facts: 18   |  numeric pruned: 46
+[Grounding I2  ]  new actions: 178  |  new facts: 56  |  total facts: 74   |  numeric pruned: 12
+[Grounding I3  ]  new actions: 328  |  new facts: 34  |  total facts: 108  |  numeric pruned: 12
+[Grounding I4  ]  new actions: 42   |  new facts: 0   |  total facts: 108  |  numeric pruned: 12
+[Grounding I5  ]  new actions: 0    |  new facts: 0   |  total facts: 108  |  numeric pruned: 12
+[Grounding     ]  fixpoint: 5 iterations  |  actions: 567  |  reachable facts: 108
+[Grounding     ]  lower bound: 3
+```
+
+Each `I` line is one round of the flowchart above: the join finds new
+bindings, their add-effects grow the `FactIndex`, and the loop repeats
+until iteration 5 finds nothing new. The `numeric pruned` column is the
+provisional numeric rejection at work — 46 bindings rejected in iteration 1
+get retried (and mostly accepted) once refueling widens the fuel bounds.
+For contrast, the full typed cross product for these 5 schemas is 579
+instances (which is what `--up-grounding`, Python-side UP grounding,
+produces): zenotravel is small and dense, so reachability only shaves it
+to 567 — on sparser domains (mprime: 20% activation) the gap is the whole
+point.

@@ -90,8 +90,26 @@ Python as `SolveStatusIR::TIMEOUT` either way.
 Python's `Preprocessed.interrupt()` (see
 [`python-cpp-boundary.md`](python-cpp-boundary.md)) needs to cancel a solve
 running on a *different* thread, without touching the GIL and without
-racing the C++ side tearing down the `z3::context` it's cancelling. The
-mechanism, entirely in `api/solver_api.cpp`:
+racing the C++ side tearing down the `z3::context` it's cancelling:
+
+```mermaid
+sequenceDiagram
+    participant Py as any Python thread
+    participant Slot as InterruptSlot<br/>(mutex-guarded)
+    participant Sol as solver thread<br/>(api::solve)
+    participant Z3 as z3::context
+
+    Sol->>Slot: publish &ctx (ScopedContextPublisher)
+    Sol->>Z3: solver.check(assumptions) — running…
+    Py->>Slot: handle.interrupt()
+    Slot->>Z3: ctx->interrupt() — flips a flag
+    Z3-->>Sol: check() returns unknown ("canceled")
+    Sol->>Sol: handle_unknown_result() → timed_out_
+    Sol->>Slot: unpublish (RAII, before ctx dies)
+    Sol-->>Py: ResultIR with status TIMEOUT
+```
+
+The mechanism, entirely in `api/solver_api.cpp`:
 
 ```cpp
 void InterruptSlot::interrupt() {
@@ -191,3 +209,32 @@ throughput/memory tradeoff exposed as a flag rather than a fixed choice
 because which side wins depends on how expensive a given propagator
 module's re-derivation is versus how much backtracking a given problem
 triggers; there's no universally-better setting.
+
+## Try it
+
+Cross-thread cancellation, end to end — a hard instance, a 3-second fuse
+on another thread, and the `interrupt → check() returns unknown → TIMEOUT`
+path from this doc (run from the repo root, inside the venv):
+
+```python
+import threading
+from unified_planning.io import PDDLReader
+from rantanplan.converter import convert_problem
+from rantanplan import _rantanplan
+
+problem = PDDLReader().parse_problem(
+    "pddl/small-test/expedition/domain.pddl",
+    "pddl/small-test/expedition/instances/pfile1.pddl")
+handle = _rantanplan.preprocess(convert_problem(problem),
+                                ["--strategy", "elsc", "--verbosity", "verbose"])
+threading.Timer(3.0, handle.interrupt).start()
+result = _rantanplan.solve(handle)
+print(_rantanplan.SolveStatus(result.status).name)   # -> TIMEOUT
+```
+
+Expedition is hard enough that the search is still climbing horizons when
+the timer fires — the log shows `[Solving T10]` (or wherever it got to)
+cut off mid-`check()`, then `*** TIMEOUT during solve at horizon 10 ***`:
+Z3 noticed the interrupt flag, returned `unknown` with a "canceled" reason,
+and `handle_unknown_result()` turned it into the same `TIMEOUT` a
+wall-clock deadline would produce.

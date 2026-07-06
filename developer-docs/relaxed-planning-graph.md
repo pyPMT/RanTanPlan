@@ -185,3 +185,25 @@ state-dependent cost (SDAC) — see
 [`preprocessing-and-strategy.md`](preprocessing-and-strategy.md) for where
 `tightened_bounds`, `sdac_cost_lower_bounds`, and `fixpoint_rpg` fit into
 the rest of the `PreprocessedProblem` contract.
+
+## Try it
+
+Watch the layers expand and the pruning loop iterate:
+
+```bash
+rantanplan -d pddl/small-test/zenotravel/domain.pddl \
+           -p pddl/small-test/zenotravel/instances/pfile13.pddl \
+           --strategy elsc -v 2>&1 | grep -E "RPG.Numeric L|ActionPruning|NumericBounds"
+```
+
+The `[RPG.Numeric L*]` lines are the layer expansion, and
+`bool: 108 (F:95/T:13/B:0)` is the 3-valued boolean state from this doc —
+counts of `FALSE_ONLY` / `TRUE_ONLY` / `BOTH`. Watch layer by layer as
+facts drain into `BOTH` (by layer 4, `F:0/T:0/B:108` — every boolean fluent
+can be either value) and the applicable-`actions` count climbs to all 567.
+The `[ActionPruning]` lines are the outer loop from the flowchart:
+iteration 1 removes 36 goal-irrelevant actions, the RPG is rebuilt over the
+shrunken problem, iteration 2 removes nothing — fixpoint. The
+`[NumericBounds]` lines are the tightened intervals headed for
+`PreprocessedProblem` (note `fuel(plane1) = [0, 2326]` — finite on both
+sides, where naive reachability would say `[0, ∞)`).

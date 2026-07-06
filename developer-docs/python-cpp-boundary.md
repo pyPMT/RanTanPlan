@@ -124,7 +124,8 @@ sequenceDiagram
 `preprocess()` returns a `Preprocessed` handle — an opaque C++ object owning
 the `PreprocessedProblem` — rather than the struct itself, because
 preprocessing artifacts are **single-consumer**: `solve()` moves achievers
-and SDAC cost bounds out of the bundle it's handed. A second `solve()` call
+(the which-action-can-supply-which-fact analysis the PDLA planners consume)
+and SDAC (state-dependent action cost) bounds out of the bundle it's handed. A second `solve()` call
 on an already-consumed handle raises rather than silently running without
 those artifacts (`handle.consumed`, checked in `solve_handle_impl`).
 
@@ -136,35 +137,16 @@ already baked into the handle and are not recomputed for the new args.
 
 ## The GIL
 
-### What it is
-
-The GIL (**G**lobal **I**nterpreter **L**ock) is a single mutex inside
-CPython (the reference Python implementation) that only lets **one thread
-execute Python bytecode at a time**, no matter how many OS threads or CPU
-cores are available. It exists because CPython's core data structures —
-most visibly, the reference count on every Python object, used for garbage
-collection — aren't thread-safe. Rather than adding fine-grained locking
-everywhere (which the CPython team have separately been experimenting with
-removing, under the name "free-threaded" or "no-GIL" Python), CPython uses
-one big lock: any thread that wants to touch a Python object first has to
-acquire it.
-
-The practical consequence: plain Python threads (`threading.Thread`) don't
-give you real CPU-bound parallelism. Ten Python threads doing pure
-computation on a 10-core machine still run one at a time, taking turns —
-the GIL is released and re-acquired periodically so no single thread
-monopolizes the interpreter, but only one is ever *executing Python code*
-at a given instant. Threads help with I/O-bound work (a thread can release
-the GIL while blocked on a socket or file read, letting another thread run),
-but not with CPU-bound work — unless the CPU-bound work happens *outside*
-the interpreter, in a C extension.
-
-That's the loophole every native extension (nanobind, pybind11, the
-original CPython C API) relies on: a C/C++ function called from Python can
-explicitly release the GIL for the duration of a long-running, pure-native
-computation — one that touches no Python objects — and re-acquire it only
-when it needs to hand a result back. While released, other Python threads
-(if any exist) are free to run.
+CPython's GIL (**G**lobal **I**nterpreter **L**ock) is the single mutex
+that lets only one thread execute Python bytecode at a time — it protects
+reference counts and other interpreter state, and it's why plain Python
+threads never run CPU-bound work in parallel. The loophole every native
+extension relies on: a C/C++ function called from Python may *release* the
+GIL for the duration of a long pure-native computation (one that touches
+no Python objects), letting other Python threads run meanwhile, and
+re-acquire it only to hand results back. That loophole is RantanPlan's
+entire threading story. (Background: the
+[Python glossary entry](https://docs.python.org/3/glossary.html#term-global-interpreter-lock).)
 
 ### How RantanPlan uses it
 
@@ -216,3 +198,21 @@ one back through whatever compilation steps ran before conversion
 (quantifier removal, optional CNF compilation) via
 `compilation_result.map_back_action_instance`. The result is validated
 against the *original* (pre-compilation) problem before being returned.
+
+## Try it
+
+The libz3 hazard from the first section, made checkable — the module and
+the `z3` package must report the same version, because they must be the
+same shared library:
+
+```python
+from rantanplan import _rantanplan
+import z3
+print(_rantanplan.z3_version())   # e.g. 4.16.0.0 — what the module linked
+print(z3.get_version_string())    # e.g. 4.16.0   — what `import z3` loaded
+```
+
+To see the raw boundary in action — `preprocess()`, `solve()`, and a
+cross-thread `interrupt()` called directly on the module, no UP engine
+wrapper — run the "Try it" snippet at the end of
+[`z3-control-and-interruption.md`](z3-control-and-interruption.md).

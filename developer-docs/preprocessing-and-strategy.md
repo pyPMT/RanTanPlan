@@ -5,8 +5,10 @@
 `preprocessing/preprocessed_problem.hpp` is the one typed boundary between
 `api::preprocess()` and `api::solve()`. It holds:
 
-- The **canonical problem** — grounded, CWA-complete initial state, static
-  fluents folded, pruned.
+- The **canonical problem** — grounded, CWA-complete initial state (the
+  closed-world assumption — anything not stated true is false — made
+  explicit, so every fluent has a value at timestep 0), static fluents
+  folded, pruned.
 - A **verdict** — `proven_unsolvable` (and which pass proved it) and
   `lower_bound`, the tightest horizon lower bound any pass established. This
   drives `Config::planner.start_timestep`, so search doesn't waste time on
@@ -63,6 +65,101 @@ insert it at the right point in this list (the ordering constraints are
 documented inline at the insertion site in `solver_api.cpp` — for example,
 static fluent folding must run before the invariant oracle, or invariants
 would be computed over fluents the encoding won't emit).
+
+## Where the state constraints come from: `InvariantOraclePass`
+
+The `state_constraints` the encoder re-asserts at every timestep
+([`the-encoding.md`](the-encoding.md)) — mutex groups, numeric bounds,
+object-fluent domains, conservation laws — are produced by
+`InvariantOraclePass` (`passes/invariant_oracle_pass.cpp`) in two phases.
+
+**Phase A: harvest what earlier passes already proved.** The tightened
+numeric intervals from the fixpoint RPG become per-fluent bound
+constraints (`fuel(plane1) ≥ 0`, `fuel(plane1) ≤ 2326`); the RPG's
+reachable-value sets for object fluents become domain constraints; and
+**conservation laws** come from a syntactic scan (`bound_tightening.cpp`):
+a pair `(f, g)` is conserved if every action touching either one has
+constant, unconditional increase/decrease effects with `Δf + Δg = 0` —
+then `f + g` equals its initial value in every reachable state
+(petrobras-style loaded/free-capacity pairs are the motivating case).
+Conservation laws feed back into bounds too: from `f + g = C` and `g ≥ 0`
+follows `f ≤ C`.
+
+**Phase B: discover and verify mutex groups.** Candidate generation is
+purely syntactic: take each action-modified boolean predicate, group its
+ground instances by fixing one argument — all of `at(rob1, *)`, all of
+`in(person3, *)` — and keep groups of 2–20 members (capped at the 50
+largest). Every candidate must then survive verification:
+
+```mermaid
+flowchart TD
+    C["candidate group<br/>e.g. at(rob1, *)"] --> T1{"Tier 1: syntactic<br/>every adder also deletes<br/>exactly one member?"}
+    T1 -->|yes| V[verified at-most-one]
+    T1 -->|no| H2{"Tier 1.5: h² fixpoint<br/>some member pair<br/>jointly reachable?"}
+    H2 -->|no| V
+    H2 -->|yes| D[discarded]
+    V --> EXO{"exactly one true initially,<br/>and no delete without add?"}
+    EXO -->|yes| E1[upgraded to exactly-one]
+    EXO -->|no| AMO[stays at-most-one]
+    E1 --> X["cross-predicate merge:<br/>located(p,*) + in(p,*)<br/>→ one exactly-one group"]
+    AMO --> X
+```
+
+- **Tier 1 (syntactic, microseconds):** the group can never grow past one
+  true member if every action that sets a member true also sets exactly
+  one member false — swap-shaped effects like `move`'s
+  `¬at(?from), at(?to)`.
+- **Tier 1.5 (h² fixpoint):** for the candidates Tier 1 can't verify,
+  `H2MutexChecker` (`passes/h2_mutex_checker.cpp`) runs a *pairwise*
+  reachability fixpoint: maintain "f is reachable" and "f and g are
+  jointly reachable," grow both over the actions until nothing changes. A
+  member pair never jointly reachable at fixpoint is mutex. (This is the
+  h² construction from the h^m heuristic family, used as a verifier.)
+- **Exactly-one upgrade:** if exactly one member is true initially and no
+  action deletes a member without adding one, at-most-one strengthens to
+  exactly-one — which the encoder turns into `AtLeast` + `AtMost` instead
+  of `AtMost` alone.
+- **Cross-predicate merge:** verified groups over *different* predicates
+  of the same entity — `located(person0, *)` and `in(person0, *)` — are
+  merged and re-verified into one larger exactly-one group ("person0 is in
+  exactly one place, counting being aboard a plane").
+
+You can watch both phases in any verbose run — zenotravel pfile13 gives
+`[InvOracle] rpg_bounds: 7 | conservation_laws: 0 | domain_constraints: 0`
+followed by `mutex_candidates: 32 | tier1_amo: 0 | h2_amo: 20 |
+exactly_one: 13` (see "Try it" below).
+
+## Symmetry detection: `SymmetryAnalysisPass`
+
+Gated by `--symmetries` (`enable_symmetries`). The idea is Rintanen's
+symmetry reduction (*"Symmetry Reduction for SAT Representations of
+Transition Systems"*, ICAPS 2003): two objects of the same type are
+**symmetric** if swapping them everywhere in the problem leaves both the
+initial state and the goals logically equivalent — nothing distinguishes
+them, so any plan using one has a mirror plan using the other, and the
+solver shouldn't explore both. `SMTSymmetryChecker`
+(`symmetries/smt_symmetry_checker.cpp`) proves equivalence with Z3,
+building the initial state and goals over *uninterpreted fluent functions*
+(`z3core`'s `LiftedEncodingVisitor` — this is that visitor's only
+consumer) and checking the swap by substitution. The pass runs in two
+steps:
+
+1. **Detect** on the original pre-grounding problem (smaller initial
+   state, cheaper Z3 queries): which object pairs are swappable.
+2. **Complete** on the grounded problem: for each swap, collect the
+   related variable pairs (`at(rob1, room-a)` ↔ `at(rob2, room-a)`) and
+   action pairs (`move(rob1, …)` ↔ `move(rob2, …)`) — the `SymmetryInfo`
+   structs stored on `PreprocessedProblem`.
+
+The *breaking* happens later, in the encoder (`encode_symmetries`,
+[`the-encoding.md`](the-encoding.md)), and it's conditional: at each
+timestep, **if** the state is still symmetric under the swap (all variable
+pairs currently equal), **then** the swap-related action pairs must fire
+in lexicographic order. The condition is what makes it sound *and* cheap —
+once the plan has differentiated the two objects, the ordering constraint
+disables itself. Only action pairs differing in a single parameter are
+ordered (Rintanen's Table 1; the paper notes that ordering *all* pairs
+overwhelms the solver).
 
 ## `Config` vs `PreprocessorOptions`
 
@@ -165,7 +262,8 @@ payoff the strategy pattern is for: nobody wrote a
 
 `resolve_planner_kind(SearchMode, StrategySpec)` in `strategy_spec.hpp`
 handles the interaction between the CLI's search mode and the strategy's
-declared planner: satisficing mode uses whatever planner the strategy names,
+declared planner: satisficing mode (any valid plan is acceptable — the
+default) uses whatever planner the strategy names,
 but optimal/anytime mode always forces `BranchAndBound` — and raises if the
 strategy is double-tail or PDLA, which cannot run under those modes at all
 (see [`encoders-and-planners.md`](encoders-and-planners.md) for why).
@@ -291,3 +389,23 @@ private:
 Nothing here is wired into `StrategyFactory` or `strategy_registry.cpp` —
 this is a parallel consumer of `api::preprocess()`'s output, not a new
 `StrategySpec` planner kind.
+
+## Try it
+
+Both the registry and the pass pipeline are directly observable:
+
+```bash
+rantanplan --list-strategies      # every StrategyEntry, name + description
+rantanplan -d pddl/small-test/zenotravel/domain.pddl \
+           -p pddl/small-test/zenotravel/instances/pfile13.pddl \
+           --strategy elsc -v
+```
+
+The verbose log's bracketed tags fire in exactly the pipeline diagram's
+order: `[Grounding]` → `[CWA]` → `[StaticFluent]` → `[ActionPruning]` (with
+`[RPG.Numeric]` and `[Achievers]` inside it) → `[InvOracle]` →
+`[ArithProfile]`. Then rerun with `--no-local-reasoning`: the `[InvOracle]`
+lines vanish (no mutexes, no exactly-one groups for the encoder to assert)
+and the `[NumericBounds]` intervals get looser — on zenotravel,
+`fuel(plane1)` drops from `[0, 2326]` to `[-inf, 2326]`, because the proof
+that fuel never goes negative was local reasoning's.

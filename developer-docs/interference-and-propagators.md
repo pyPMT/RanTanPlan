@@ -186,6 +186,30 @@ gets registered at all — only modules that actually need `on_decide`
 notifications should return `true`, since every module pays the cost of the
 callback being registered if any one of them needs it.
 
+## Try it
+
+The syntactic/semantic tradeoff, quantified — run the same instance under
+eager syntactic (`f`) and eager semantic (`fgs`) interference and compare
+the graph stats:
+
+```bash
+rantanplan -d pddl/small-test/zenotravel/domain.pddl \
+           -p pddl/small-test/zenotravel/instances/pfile13.pddl \
+           --strategy f   --stats-file /tmp/stats_f.txt
+rantanplan -d pddl/small-test/zenotravel/domain.pddl \
+           -p pddl/small-test/zenotravel/instances/pfile13.pddl \
+           --strategy fgs --stats-file /tmp/stats_fgs.txt
+grep interference /tmp/stats_f.txt /tmp/stats_fgs.txt
+```
+
+On the same 531 ground actions, syntactic builds **85,032** interference
+edges in **~27 ms**; semantic asks Z3 about every pair and builds
+**21,852** edges in **~22 s** — roughly 800× the build cost for a graph
+four times sparser. Every edge that disappeared is a pair like the
+`refuel_a`/`refuel_b` example above: syntactically overlapping, semantically
+commuting — and each one is a mutex clause ∀-step no longer has to emit,
+which is the whole bet the semantic strategies make.
+
 ### The module kinds
 
 `PropagatorModuleKind` (`config/strategy_spec.hpp`) lists the composable
