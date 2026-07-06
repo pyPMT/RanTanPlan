@@ -8,13 +8,6 @@ builds a genuine **layer-by-layer** graph over the *already-ground* problem,
 and is what `ActionPruningPass` actually uses for tightened bounds,
 goal-relevance pruning, SDAC cost lower bounds, and achiever tracking.
 
-*(There is a second class, `RelaxedPlanningGraph` — boolean-only, no
-numeric handling — sitting in `analysis/`. It's dead code: nothing outside
-its own file references it, and its own header comment says as much
-("Currently unused... kept for potential lightweight/fast-path use"). This
-doc is entirely about `NumericRelaxedPlanningGraph`, the one actually
-built.)*
-
 ## What a "layer" is
 
 Layer 0 is the initial state. Layer *k+1* is what you get by taking every

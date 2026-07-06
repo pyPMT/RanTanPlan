@@ -125,7 +125,6 @@ add_library(rantanplan_core STATIC
     src/planners/propagators/modules/frame_axiom_module.cpp
     src/symmetries/smt_symmetry_checker.cpp
     src/analysis/achievers_analysis.cpp
-    src/analysis/relaxed_planning_graph.cpp
     src/analysis/numeric_relaxed_planning_graph.cpp
     src/analysis/graph.cpp
     src/analysis/interference_analysis.cpp
