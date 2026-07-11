@@ -1,0 +1,1 @@
+../../bench/satellite/domain.pddl

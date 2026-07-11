@@ -1,0 +1,1 @@
+../../../bench/15puzzle/instances/korf10_problem.pddl

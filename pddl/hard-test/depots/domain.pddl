@@ -1,0 +1,1 @@
+../../bench/depots/domain.pddl

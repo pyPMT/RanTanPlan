@@ -1,0 +1,1 @@
+../../bench/zenotravel/domain.pddl

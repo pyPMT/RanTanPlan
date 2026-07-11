@@ -1,0 +1,1 @@
+../../bench/factory-robot/domain.pddl

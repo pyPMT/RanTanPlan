@@ -1,0 +1,1 @@
+../../bench/fo-counters/domain.pddl

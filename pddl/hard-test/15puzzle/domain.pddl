@@ -1,0 +1,1 @@
+../../bench/15puzzle/korf10_domain.pddl

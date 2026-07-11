@@ -33,6 +33,7 @@ from rantanplan.planner_wrapper import RantanPlanPlanner
 # ---------------------------------------------------------------------------
 
 BENCH_DIR = Path("pddl/small-test")
+HARD_BENCH_DIR = Path("pddl/hard-test")
 
 STRATEGIES = [
     "elsc",
@@ -47,10 +48,10 @@ DEFAULT_TIMEOUT = 120
 # Instance discovery
 # ---------------------------------------------------------------------------
 
-def discover_instances():
-    """Find all (name, domain_path, problem_path) in pddl/small-test/."""
+def discover_instances(bench_dir=BENCH_DIR):
+    """Find all (name, domain_path, problem_path) in the given suite dir."""
     instances = []
-    for domain_dir in sorted(BENCH_DIR.iterdir()):
+    for domain_dir in sorted(bench_dir.iterdir()):
         if not domain_dir.is_dir():
             continue
         domain_pddl = domain_dir / "domain.pddl"
@@ -189,6 +190,8 @@ def main():
                         help="Number of parallel jobs (default: 4, use 1 for sequential)")
     parser.add_argument("--no-goal-relevance", action="store_true",
                         help="Disable goal-relevance action removal preprocessing (enabled by default)")
+    parser.add_argument("--hard", action="store_true",
+                        help=f"Use the harder suite in {HARD_BENCH_DIR}/ instead of {BENCH_DIR}/")
     args = parser.parse_args()
 
     strategies = args.strategy if args.strategy else STRATEGIES
@@ -196,9 +199,10 @@ def main():
     if args.no_goal_relevance:
         extra_params["no_goal_relevance"] = True
 
-    instances = discover_instances()
+    bench_dir = HARD_BENCH_DIR if args.hard else BENCH_DIR
+    instances = discover_instances(bench_dir)
     if not instances:
-        print(f"No instances found in {BENCH_DIR}/")
+        print(f"No instances found in {bench_dir}/")
         sys.exit(1)
 
     total = len(instances) * len(strategies)
