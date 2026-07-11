@@ -167,6 +167,18 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
     rantanplan::StrategyFactory::validate(spec, config.planner.strategy,
                                           config.planner.horizon_schedule);
 
+    // Declared state invariants are trusted plan requirements asserted at
+    // every state.  The R2E encoder deliberately skips state constraints
+    // (chain-substituted intermediate states), so accepting the problem
+    // would silently drop a requirement — reject instead.
+    if (!problem.state_invariants().empty() &&
+        spec.encoder == rantanplan::EncoderFamily::R2E) {
+        throw std::invalid_argument(
+            "Strategy '" + config.planner.strategy + "' (R2E encoder) does not "
+            "support declared state invariants ((:constraints (always ...))). "
+            "Use a grounded/chained strategy instead.");
+    }
+
     ir::ResultIR result;
     auto add_info = [&result](const std::string& message) {
         result.log_messages.push_back(ir::LogMessageIR{1 /* INFO */, message});

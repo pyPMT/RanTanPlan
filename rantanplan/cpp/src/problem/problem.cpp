@@ -132,6 +132,7 @@ Problem Problem::clone_base() const {
     result.grounded_fluents_ = grounded_fluents_;
     result.initial_state_ = initial_state_;
     result.goals_ = goals_;
+    result.state_invariants_ = state_invariants_;
     result.metric_kind_ = metric_kind_;
     result.all_integer_ = all_integer_;
 
@@ -183,7 +184,8 @@ Problem Problem::with_actions(std::vector<Action> new_actions) const {
 
 Problem Problem::with_simplified(std::vector<Action> new_actions,
                                   std::vector<Goal> new_goals,
-                                  std::vector<Assignment> new_initial_state) const {
+                                  std::vector<Assignment> new_initial_state,
+                                  std::vector<ExprID> new_state_invariants) const {
     Problem result = clone_base();
 
     // Replace actions with contiguous IDs
@@ -193,9 +195,10 @@ Problem Problem::with_simplified(std::vector<Action> new_actions,
     }
     result.build_action_mappings();
 
-    // Replace goals and initial state
+    // Replace goals, initial state, and state invariants
     result.goals_ = std::move(new_goals);
     result.initial_state_ = std::move(new_initial_state);
+    result.state_invariants_ = std::move(new_state_invariants);
 
     // Rebuild grounded fluents from the new data (static fluents are now
     // constants in expressions, so they won't be collected).

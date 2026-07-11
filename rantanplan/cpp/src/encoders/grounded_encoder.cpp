@@ -66,6 +66,14 @@ z3::expr GroundedEncoder::encode_initial_state() {
         z3::expr value_expr = convert_expr_id_to_z3(assignment.value_id(), 0);
         initial_state.push_back(fluent_expr == value_expr);
     }
+
+    // Declared state invariants hold at state 0 (states 1..h+1 are covered
+    // by encode_state_constraints, which asserts them at t+1).  An initial
+    // state violating a declaration makes the instance UNSAT — correct
+    // under PDDL-requirement semantics.
+    for (ExprID inv : problem_.state_invariants()) {
+        initial_state.push_back(convert_expr_id_to_z3(inv, 0));
+    }
     
     // Collect statistics
     stats.set("encoder.initial_constraints", initial_state.size());
@@ -351,12 +359,36 @@ z3::expr GroundedEncoder::encode_symmetries(int t) {
     return z3::mk_and(symmetry_constraints);
 }
 
+// Two sources feed this method, at opposite ends of the trust spectrum:
+//
+//  - problem_.state_invariants(): DECLARED by the user via
+//    `(:constraints (always f))` — trusted requirements that define plan
+//    validity.  They must prune, must cover every state (0..h+1, goal
+//    state included), and must not be droppable by any preprocessing
+//    option; a declaration inconsistent with the dynamics correctly makes
+//    the instance unsolvable.
+//  - state_constraints_: DERIVED by the InvariantOraclePass (mutex groups,
+//    RPG bounds, domains, conservation laws) — proven redundant facts that
+//    exist only to speed up the solver.  Skipping them anywhere (options
+//    off, final state, R2E's no-op override) can never affect soundness.
+//
+// Hence the asymmetries below: declarations are read from the problem
+// (not from the oracle-owned state_constraints_) and asserted at t+1 plus
+// state 0 in encode_initial_state, giving exactly-once coverage of every
+// state; derived constraints keep their historical at-t convention, where
+// coverage gaps are harmless.
 z3::expr GroundedEncoder::encode_state_constraints(int t) {
-    if (state_constraints_.empty()) {
+    if (state_constraints_.empty() && problem_.state_invariants().empty()) {
         return ctx_.bool_val(true);
     }
 
     z3::expr_vector conjuncts(ctx_);
+
+    // Declared state invariants: planners call this for every added
+    // timestep t = 0..h, so asserting at t+1 covers states 1..h+1.
+    for (ExprID inv : problem_.state_invariants()) {
+        conjuncts.push_back(convert_expr_id_to_z3(inv, t + 1));
+    }
 
     // Mutex constraints: atmost(members, 1) and optionally atleast(members, 1)
     for (const auto& mutex : state_constraints_.mutexes) {

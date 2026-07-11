@@ -273,6 +273,18 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
     # --- Goals ---
     out.goals = [walker.walk(goal) for goal in problem.goals]
 
+    # --- Declared state invariants: bodies of `(always f)` constraints ---
+    # (The planner declares STATE_INVARIANTS support only, so UP rejects
+    # other trajectory-constraint kinds upstream; this check is defensive.)
+    state_invariants = []
+    for tc in problem.trajectory_constraints:
+        if not tc.is_always():
+            raise UPException(
+                f"Unsupported trajectory constraint (only 'always' state "
+                f"invariants are supported): {tc}")
+        state_invariants.append(walker.walk(tc.arg(0)))
+    out.state_invariants = state_invariants
+
     # --- Metric (first supported one wins, like the protobuf loader) ---
     metric_kind = 0
     for metric in problem.quality_metrics:

@@ -123,6 +123,10 @@ class _RantanPlanBase(Engine):
         supported_kind.set_actions_cost_kind('REAL_NUMBERS_IN_ACTIONS_COST')
         supported_kind.set_actions_cost_kind('FLUENTS_IN_ACTIONS_COST')
         supported_kind.set_actions_cost_kind('STATIC_FLUENTS_IN_ACTIONS_COST')
+        # Declared state invariants: `(:constraints (always f))` only —
+        # UP classifies always-only constraints as STATE_INVARIANTS, so
+        # sometime/sometime-after/... problems are rejected upstream.
+        supported_kind.set_constraints_kind('STATE_INVARIANTS')
         return supported_kind
 
     @staticmethod

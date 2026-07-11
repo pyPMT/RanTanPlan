@@ -121,7 +121,8 @@ public:
      */
     Problem with_simplified(std::vector<Action> new_actions,
                             std::vector<Goal> new_goals,
-                            std::vector<Assignment> new_initial_state) const;
+                            std::vector<Assignment> new_initial_state,
+                            std::vector<ExprID> new_state_invariants) const;
 
     /**
      * Returns a new Problem with extra assignments appended to the initial state.
@@ -141,6 +142,12 @@ public:
     const std::vector<Goal>& goals() const { return goals_; }
     size_t goal_count() const { return goals_.size(); }
     const Goal& goal(size_t index) const { return goals_[index]; }
+
+    // Declared state invariants (PDDL `(:constraints (always φ))`), trusted
+    // as given: PDDL-requirement semantics, asserted by encoders at every
+    // state.  A declaration inconsistent with the dynamics correctly makes
+    // the instance unsolvable.
+    const std::vector<ExprID>& state_invariants() const { return state_invariants_; }
 
     // Metric access
     bool has_metric() const { return metric_kind_ != MetricKind::NONE; }
@@ -223,6 +230,7 @@ private:
     std::vector<ExprID> grounded_fluents_;
     std::vector<Assignment> initial_state_;
     std::vector<Goal> goals_;
+    std::vector<ExprID> state_invariants_;
     std::shared_ptr<std::vector<Type>> types_ = std::make_shared<std::vector<Type>>();
     
     // Metric

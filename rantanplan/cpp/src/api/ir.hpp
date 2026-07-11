@@ -105,6 +105,7 @@ struct ProblemIR {
     std::vector<ActionIR> actions;
     std::vector<AssignmentIR> initial_state;
     std::vector<uint32_t> goals;
+    std::vector<uint32_t> state_invariants;  ///< bodies of `(always f)` constraints
     int metric_kind = 0;  ///< MetricKindIR value
 };
 

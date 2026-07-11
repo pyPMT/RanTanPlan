@@ -259,6 +259,7 @@ NB_MODULE(_rantanplan, m) {
         .def_rw("actions", &ir::ProblemIR::actions)
         .def_rw("initial_state", &ir::ProblemIR::initial_state)
         .def_rw("goals", &ir::ProblemIR::goals)
+        .def_rw("state_invariants", &ir::ProblemIR::state_invariants)
         .def_rw("metric_kind", &ir::ProblemIR::metric_kind);
 
     // ── Results ─────────────────────────────────────────────────────────

@@ -341,10 +341,19 @@ void StaticFluentPass::apply(PreprocessedProblem& result) const {
         }
     }
 
+    // Step 6b: Simplify declared state invariants (same substitution as goals —
+    // an invariant mentioning a folded static fluent would dangle otherwise)
+    std::vector<ExprID> new_invariants;
+    new_invariants.reserve(problem.state_invariants().size());
+    for (ExprID inv : problem.state_invariants()) {
+        new_invariants.push_back(simplify_expr(pool, inv, static_values));
+    }
+
     // Step 7: Build new problem (re-collects grounded fluents automatically)
     size_t old_fluent_count = problem.grounded_fluent_count();
     result.problem = problem.with_simplified(
-        std::move(new_actions), std::move(new_goals), std::move(new_initial_state));
+        std::move(new_actions), std::move(new_goals), std::move(new_initial_state),
+        std::move(new_invariants));
     size_t new_fluent_count = result.problem.grounded_fluent_count();
 
     Stats::instance().set("static_fluent.removed",

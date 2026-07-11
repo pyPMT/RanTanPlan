@@ -1,0 +1,5 @@
+(define (problem counters-free)
+ (:domain ordered-counters)
+ (:init (= (value_x) 0) (= (value_y) 0))
+ (:goal (and (= (value_x) 3) (= (value_y) 3)))
+)

@@ -217,6 +217,11 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
         problem.goals_.emplace_back(ctx.id(ir_goal), &problem.pool());
     }
 
+    // --- Load declared state invariants (bodies of `always` constraints) ---
+    for (uint32_t ir_inv : ir_problem.state_invariants) {
+        problem.state_invariants_.push_back(ctx.id(ir_inv));
+    }
+
     // --- Load metric (costs already resolved per action by the converter) ---
     auto metric_kind = static_cast<ir::MetricKindIR>(ir_problem.metric_kind);
     if (metric_kind == ir::MetricKindIR::MINIMIZE_ACTION_COSTS) {

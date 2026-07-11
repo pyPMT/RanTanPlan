@@ -1,0 +1,6 @@
+(define (problem counters-goal-violates)
+ (:domain ordered-counters)
+ (:init (= (value_x) 0) (= (value_y) 0))
+ (:goal (and (= (value_x) 3) (= (value_y) 3)))
+ (:constraints (always (< (value_x) (value_y))))
+)
