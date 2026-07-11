@@ -100,7 +100,7 @@ protected:
     // the blocking literals of needed-but-dormant achievers straight into
     // the core, without search.  Deliberately clause-only: an equivalent
     // latch-chain encoding (auxiliary lm_c_t variables) slowed large
-    // satisfiable queries measurably.  CGB_NO_LANDMARKS=1 disables (ablation).
+    // satisfiable queries measurably.
 
     std::vector<ExprID> landmarks_;
     void adopt_landmarks();
@@ -117,7 +117,6 @@ protected:
     //    assumptions before search begins, so it cannot perturb; a conflict
     //    puts a SET of contributors into the core (activation by deficit
     //    breadth rather than one presence-clause achiever per round).
-    //    CGB_NO_DEFICIT=1 disables (ablation).
     //
     //  - Horizon jumps: when a budget-free core forces an extension, jump
     //    to the smallest horizon the count landmarks do not refute under

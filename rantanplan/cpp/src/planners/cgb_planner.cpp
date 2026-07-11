@@ -9,7 +9,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
 
 namespace rantanplan {
 
@@ -122,11 +121,6 @@ std::unordered_set<const Action*> CGBPlanner::extract_relaxed_plan() {
 }
 
 void CGBPlanner::seed_activations() {
-    if (std::getenv("CGB_NO_SEED")) {
-        // Ablation: no upfront activation — cores drive all activation.
-        Logger::instance().info("CGB seed: disabled (CGB_NO_SEED)");
-        return;
-    }
     std::unordered_set<const Action*> relaxed_plan = extract_relaxed_plan();
     for (const Action* a : relaxed_plan) {
         activate_action(a);
@@ -149,10 +143,6 @@ void CGBPlanner::adopt_landmarks() {
     // is excluded — not worth a clause.  The artifact keeps every landmark
     // regardless, so deficit budgets and horizon jumps still see the wide
     // ones.
-    if (std::getenv("CGB_NO_LANDMARKS")) {
-        Logger::instance().info("CGB landmarks: disabled (CGB_NO_LANDMARKS)");
-        return;
-    }
     const size_t max_achievers = 32;
     int skipped_wide = 0;
     for (const LandmarkInfo& info : landmark_data_.landmarks) {
@@ -257,7 +247,6 @@ z3::expr real_const(z3::context& ctx, double v) {
 /// are maxima either way).  A deficit no activation can cover yields a
 /// blk-free conflict, i.e. the horizon jump of count_bound_target.
 void CGBPlanner::assert_deficit_budgets(int t) {
-    if (std::getenv("CGB_NO_DEFICIT")) return;
     int asserted = 0;
     for (const LandmarkInfo& info : landmark_data_.landmarks) {
         // Default landmarks (residual 1, unit contributions) carry no
