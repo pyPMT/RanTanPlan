@@ -89,6 +89,10 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
         // Per-timestep PDLA (fine-grained activation)
         {"pdla-fg",   {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::PDLAFinegrained},
                        "PDLA with per-timestep activation"}},
+
+        // Core-guided activation (optional-occurrence loop, stripped of PDLA heuristics)
+        {"cgb",       {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::CGB},
+                       "Core-guided lazy activation (stripped optional-occurrence loop)"}},
     };
     return registry;
 }

@@ -123,6 +123,29 @@ void AchieversAnalysis::analyze(const Problem& problem) {
 
     // Perform semantic achiever analysis using SMT
     analyze_semantic_achievers();
+
+    compute_init_satisfied(problem);
+}
+
+void AchieversAnalysis::compute_init_satisfied(const Problem& problem) {
+    // Exact evaluation of every collected condition at the (CWA-complete)
+    // initial state, via a model of the layer-0 assignments.  Shared by the
+    // landmark closure (init-satisfied conditions are excluded) and
+    // relaxed-plan seeding (they need no achiever).
+    init_satisfied_conditions_.clear();
+    z3::solver init_solver(*ctx_);
+    for (const Assignment& a : problem.initial_state()) {
+        init_solver.add(visitor_->convert_from_pool(a.fluent_id(), 0) ==
+                        visitor_->convert_from_pool(a.value_id(), 0));
+    }
+    if (init_solver.check() != z3::sat) return;
+    z3::model init_model = init_solver.get_model();
+    for (ExprID cond : get_all_conditions()) {
+        z3::expr cond_z3 = visitor_->convert_from_pool(cond, 0);
+        if (init_model.eval(cond_z3, true).is_true()) {
+            init_satisfied_conditions_.insert(cond);
+        }
+    }
 }
 
 void AchieversAnalysis::process_action_preconditions(const Action& action) {

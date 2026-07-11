@@ -17,6 +17,7 @@
 #include "../planners/double_tail_planner.hpp"
 #include "../planners/branch_and_bound_planner.hpp"
 #include "../planners/pdla_planner.hpp"
+#include "../planners/cgb_planner.hpp"
 
 #include "../planners/propagators/modules/exists_cycle_module.hpp"
 #include "../planners/propagators/modules/forall_mutex_module.hpp"
@@ -246,6 +247,9 @@ std::unique_ptr<BasePlanner> StrategyFactory::create_planner(
             planner = std::move(p);
             break;
         }
+        case PlannerKind::CGB:
+            planner = std::make_unique<CGBPlanner>(problem, encoder, ctx);
+            break;
     }
     if (!planner) {
         throw std::invalid_argument("Unknown planner kind");

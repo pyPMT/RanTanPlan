@@ -27,6 +27,7 @@
 #include "passes/cwa_initial_state_pass.hpp"
 #include "passes/static_fluent_pass.hpp"
 #include "passes/invariant_oracle_pass.hpp"
+#include "passes/landmark_analysis_pass.hpp"
 #include "analysis/interference_analysis.hpp"
 
 #include "z3++.h"
@@ -103,6 +104,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     rantanplan::StaticFluentPass static_fluent_pass;
     rantanplan::ActionPruningPass action_pruning_pass(options);
     rantanplan::InvariantOraclePass invariant_oracle_pass(options);
+    rantanplan::LandmarkAnalysisPass landmark_analysis_pass;
     rantanplan::SymmetryAnalysisPass symmetry_analysis_pass(
         original_problem ? &*original_problem : nullptr);
     rantanplan::ArithmeticProfilePass arithmetic_profile_pass;
@@ -121,6 +123,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
 
     // --- DISCOVER ---
     passes.push_back(&invariant_oracle_pass);
+    passes.push_back(&landmark_analysis_pass);
 
     // --- PROFILE ---
     if (options.enable_symmetries) {

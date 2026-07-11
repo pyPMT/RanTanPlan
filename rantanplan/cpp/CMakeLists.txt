@@ -116,6 +116,7 @@ add_library(rantanplan_core STATIC
     src/planners/double_tail_planner.cpp
     src/planners/branch_and_bound_planner.cpp
     src/planners/pdla_planner.cpp
+    src/planners/cgb_planner.cpp
     src/planners/formula_exporter.cpp
     src/encoders/abstract_suffix_encoder.cpp
     src/planners/propagators/propagator_strategy.cpp
@@ -139,6 +140,7 @@ add_library(rantanplan_core STATIC
     src/passes/arithmetic_profile_pass.cpp
     src/passes/action_pruning_pass.cpp
     src/passes/invariant_oracle_pass.cpp
+    src/passes/landmark_analysis_pass.cpp
     src/passes/bound_tightening.cpp
     src/passes/h2_mutex_checker.cpp
     src/passes/symmetry_analysis_pass.cpp

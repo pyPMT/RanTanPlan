@@ -7,6 +7,7 @@
 #include "../analysis/arithmetic_profile.hpp"
 #include "../grounding/interval.hpp"
 #include "../problem/problem.hpp"
+#include "landmark_data.hpp"
 #include "local_invariants.hpp"
 #include "symmetry_info.hpp"
 
@@ -48,6 +49,7 @@ struct PreprocessedProblem {
     std::unordered_map<ExprID, Interval> tightened_bounds; ///< Tightened numeric bounds (from ActionPruningPass)
     std::vector<ConservationConstraint> conservation_laws; ///< Conservation laws (from ActionPruningPass)
     StateConstraints state_constraints; ///< State constraints from InvariantOraclePass
+    LandmarkData landmark_data; ///< Disjunctive action landmarks (from LandmarkAnalysisPass)
 
     // Out-of-line special members so the forward-declared artifact types
     // never need to be complete for users of this header.

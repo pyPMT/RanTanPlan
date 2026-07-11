@@ -29,8 +29,9 @@ enum class InterferenceKind { None, EagerSyntactic, EagerSemantic, LazySyntactic
 
 /// Planner backend: Sequential/DoubleTail drive satisficing search with a
 /// growing horizon; BranchAndBound is the cost-optimal/anytime search;
-/// the PDLA variants activate actions lazily under Exists semantics.
-enum class PlannerKind { Sequential, DoubleTail, BranchAndBound, PDLA, PDLASelective, PDLAFinegrained };
+/// the PDLA variants activate actions lazily under Exists semantics;
+/// CGB grows per-schema occurrence budgets named by unsat cores.
+enum class PlannerKind { Sequential, DoubleTail, BranchAndBound, PDLA, PDLASelective, PDLAFinegrained, CGB };
 
 /// Composable propagator module kinds.
 enum class PropagatorModuleKind { ForallEager, ForallLazy, ExistsCycle, FrameAxiom };
@@ -69,6 +70,11 @@ inline PlannerKind resolve_planner_kind(SearchMode mode, const StrategySpec& spe
         std::string mode_str = (mode == SearchMode::Optimal) ? "optimal" : "anytime";
         throw std::invalid_argument(
             "Mode '" + mode_str + "' is incompatible with PDLA strategies.");
+    }
+    if (spec.planner == PlannerKind::CGB) {
+        std::string mode_str = (mode == SearchMode::Optimal) ? "optimal" : "anytime";
+        throw std::invalid_argument(
+            "Mode '" + mode_str + "' is incompatible with the CGB strategy.");
     }
     return PlannerKind::BranchAndBound;
 }

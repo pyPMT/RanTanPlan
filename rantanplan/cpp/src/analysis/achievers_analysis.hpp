@@ -107,6 +107,12 @@ public:
     const std::unordered_set<ExprID>& get_all_conditions() const;
     const std::unordered_set<ExprID>& get_pre_conditions() const;
     const std::unordered_set<ExprID>& get_goal_conditions() const;
+
+    /// Conditions (from get_all_conditions) that hold at the initial state,
+    /// evaluated exactly against a model of the layer-0 assignments.
+    const std::unordered_set<ExprID>& get_init_satisfied_conditions() const {
+        return init_satisfied_conditions_;
+    }
     
     // Output method
     void print_analysis() const;
@@ -153,6 +159,7 @@ private:
 
     // RPG action layer ordering: action_id → first layer where applicable
     std::unordered_map<int, int> action_id_to_first_layer_;
+    std::unordered_set<ExprID> init_satisfied_conditions_;
     int arpg_num_layers_ = 1;
 
     // Statistics tracking
@@ -171,6 +178,9 @@ private:
 
     // Common initialization logic shared by both constructors
     void initialize_from_rpg_data(const Problem& problem, RPGData rpg_data);
+
+    // Exact init-state evaluation of all collected conditions
+    void compute_init_satisfied(const Problem& problem);
 
     // Helper methods
     void extract_cnf_literals(ExprID eid, std::vector<ExprID>& literals);
