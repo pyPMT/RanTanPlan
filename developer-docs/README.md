@@ -55,8 +55,8 @@ for when you meet one out of order.
 
 - **Achiever** — a ground action that can make a given fact true.
   `AchieversAnalysis` precomputes, for every fact, its possible achievers;
-  the PDLA planners chain backward through this graph to decide which
-  actions to activate ([`encoders-and-planners.md`](encoders-and-planners.md)).
+  the CGB planner and the landmark analysis pass chain backward through
+  this graph ([`encoders-and-planners.md`](encoders-and-planners.md)).
 - **Anytime** — search mode that reports every improving plan as it's
   found, converging toward optimal. Runs on the branch-and-bound planner
   ([`encoders-and-planners.md`](encoders-and-planners.md)).

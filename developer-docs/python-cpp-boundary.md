@@ -30,8 +30,10 @@ runtime.
 
 `rantanplan/cpp/src/api/ir.hpp` defines the plain-data structs Python and
 C++ agree on. The interesting part is `ProblemIR.nodes`: every expression in
-the problem (preconditions, effects, goals, costs) is flattened into **one
-shared node pool**, where each node's `children` are indices into that same
+the problem (preconditions, effects, goals, costs, declared state
+invariants — `ProblemIR.state_invariants` carries the bodies of PDDL
+`(always φ)` constraints as node indices, exactly like `goals`) is
+flattened into **one shared node pool**, where each node's `children` are indices into that same
 array, and — this is the part that matters — **children always precede
 their parents**. The C++ loader (`ir_io.cpp`) interns the whole pool in a
 single forward pass because of this invariant; it never has to look ahead or
@@ -124,7 +126,7 @@ sequenceDiagram
 `preprocess()` returns a `Preprocessed` handle — an opaque C++ object owning
 the `PreprocessedProblem` — rather than the struct itself, because
 preprocessing artifacts are **single-consumer**: `solve()` moves achievers
-(the which-action-can-supply-which-fact analysis the PDLA planners consume)
+(the which-action-can-supply-which-fact analysis the CGB planner consumes)
 and SDAC (state-dependent action cost) bounds out of the bundle it's handed. A second `solve()` call
 on an already-consumed handle raises rather than silently running without
 those artifacts (`handle.consumed`, checked in `solve_handle_impl`).

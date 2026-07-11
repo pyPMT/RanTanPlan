@@ -29,7 +29,7 @@ true: a consumer of `PreprocessedProblem` that never wants to touch Z3 can
 include this header without pulling Z3 in transitively.
 
 Artifacts are also **single-consumer**: `BasePlanner::consume_artifacts()`
-*moves* what a planner needs (achievers for PDLA, SDAC cost bounds for
+*moves* what a planner needs (achievers for CGB, SDAC cost bounds for
 branch-and-bound) out of the bundle. A `PreprocessedProblem` cannot feed a
 second `solve()` call — this is enforced at the nanobind layer too (the
 `Preprocessed.consumed` flag; see
@@ -47,7 +47,8 @@ flowchart LR
     B --> C[Static fluent folding]
     C --> D["Action pruning<br/>(RPG + goal relevance)"]
     D --> E[Invariant oracle<br/>local reasoning]
-    E --> F["[Symmetry analysis]<br/>(optional)"]
+    E --> L[Landmark analysis]
+    L --> F["[Symmetry analysis]<br/>(optional)"]
     F --> G[Arithmetic profile]
     G --> PP[PreprocessedProblem]
 ```
@@ -129,6 +130,31 @@ You can watch both phases in any verbose run — zenotravel pfile13 gives
 followed by `mutex_candidates: 32 | tier1_amo: 0 | h2_amo: 20 |
 exactly_one: 13` (see "Try it" below).
 
+**Derived vs declared.** Everything above is *derived* — proven redundant
+facts the encoder may freely skip (they only ever cost speed). Problems may
+additionally carry *declared* state invariants, the bodies of PDDL
+`(:constraints (always φ))` blocks: these live on `Problem` itself
+(`state_invariants()`), not in `state_constraints`, precisely because they
+are trusted requirements that define plan validity and must survive every
+preprocessing option (including `--no-local-reasoning`, which disables this
+pass entirely). The encoder asserts them at every state including the goal
+state, and `r2e` rejects problems that declare them. See the comment on
+`GroundedEncoder::encode_state_constraints` for the full contrast.
+
+## Landmark analysis: `LandmarkAnalysisPass`
+
+Runs right after the invariant oracle. An AND/OR closure over the achiever
+graph (goal conditions not satisfied initially are landmarks; a condition
+required by *all* achievers of a landmark is itself a landmark) produces
+`LandmarkData`: disjunctive action landmarks with a uniform count semantics
+— every landmark means "achiever firings must accumulate ≥ residual mass",
+where linear numeric thresholds get real residuals and per-firing
+contributions, and everything else takes the sound default of residual 1 —
+plus natural orderings and a depth lower bound folded into the pipeline's
+`lower_bound`. The CGB planner consumes this artifact for its presence
+clauses, deficit budgets, and horizon jumps. The full design-and-measurement
+log is `docs/pdla-optional-occurrence-roadmap.md` §5.
+
 ## Symmetry detection: `SymmetryAnalysisPass`
 
 Gated by `--symmetries` (`enable_symmetries`). The idea is Rintanen's
@@ -197,10 +223,10 @@ a plain `StrategySpec` (`config/strategy_spec.hpp`):
 | Semantics | `SemanticsKind` | Sequential, Forall, Exists |
 | Interference | `InterferenceKind` | None / Eager·Lazy × Syntactic·Semantic |
 | Propagator modules | `PropagatorFlags` (a `std::set<PropagatorModuleKind>`) | ForallEager, ForallLazy, ExistsCycle, FrameAxiom |
-| Planner | `PlannerKind` | Sequential, DoubleTail, BranchAndBound, PDLA family |
+| Planner | `PlannerKind` | Sequential, DoubleTail, BranchAndBound, CGB |
 
 `StrategyRegistry` (`config/strategy_registry.cpp`) maps CLI strategy names
-(`"elsc"`, `"fl-dt"`, `"pdla"`, …) to `StrategyEntry { spec, description }`.
+(`"elsc"`, `"fl-dt"`, `"cgb"`, …) to `StrategyEntry { spec, description }`.
 This table is the single place a new strategy gets added — see the
 `/add-strategy` skill. `--list-strategies` and `test.py`'s strategy
 discovery both read this registry; neither hardcodes a strategy list.
@@ -228,7 +254,7 @@ optional inputs (symmetry data, state constraints) are applied via setters
 after construction. Planners declare what preprocessing artifacts they need
 via `BasePlanner::consume_artifacts()` rather than the caller
 `dynamic_cast`-ing to find out (an earlier version of this code did exactly
-that, for both PDLA and branch-and-bound, before being cleaned up). The one
+that before being cleaned up). The one
 ordering Z3 itself imposes — the propagator must attach to the planner's
 solver, so the propagator is created after the planner — is the caller's
 (`api::solve`'s) responsibility, not the factory's.
@@ -265,7 +291,7 @@ handles the interaction between the CLI's search mode and the strategy's
 declared planner: satisficing mode (any valid plan is acceptable — the
 default) uses whatever planner the strategy names,
 but optimal/anytime mode always forces `BranchAndBound` — and raises if the
-strategy is double-tail or PDLA, which cannot run under those modes at all
+strategy is double-tail or CGB, which cannot run under those modes at all
 (see [`encoders-and-planners.md`](encoders-and-planners.md) for why).
 
 ## Extension points

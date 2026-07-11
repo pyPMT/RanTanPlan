@@ -4,14 +4,16 @@ A SAT/SMT-based automated planner with parallel action semantics. Combines a Pyt
 
 ## Key Features
 
-- **Three parallelism semantics**: Sequential, ∀-step (forall), ∃-step (exists), R2∃-step
-- **Multiple encoding strategies**: Grounded, chained, R2∃-step, reified
+- **Four parallelism semantics**: Sequential, ∀-step (forall), ∃-step (exists), R2∃-step
+- **Multiple encoding strategies**: Grounded, chained, R2∃-step
 - **Search modes**: Satisficing, cost-optimal (Branch & Bound), anytime
+- **Core-guided lazy activation** (`cgb`): actions start dormant behind blocking assumptions; UNSAT cores drive activation and horizon growth
 - **Interference analysis**: Syntactic (eager/lazy) and semantic (eager/lazy)
 - **Custom Z3 propagators**: Lazy interference via cycle detection, decision heuristics
 - **Numeric planning**: Full support for numeric fluents with SMT-based relaxed planning graph
+- **Declared state invariants**: PDDL `(:constraints (always φ))` asserted at every state
 - **Symmetry breaking**: Object symmetry detection and breaking
-- **Preprocessing pipeline**: Reachability grounding, RPG-based action removal, CWA completion
+- **Preprocessing pipeline**: Reachability grounding, RPG-based action removal, CWA completion, invariant discovery, landmark analysis
 - **Unified Planning integration**: Plug-and-play with UP framework
 
 **Limitation**: Does not support PDDL actions that both delete and add the same fluent.
@@ -63,8 +65,27 @@ rantanplan -d domain.pddl -p problem.pddl --strategy r2e --output-plan solution.
 rantanplan -d domain.pddl -p problem.pddl --strategy flsc-dt
 
 # Core-guided lazy activation over exists-step encoding
-rantanplan -d domain.pddl -p problem.pddl --strategy pdla --symmetries
+rantanplan -d domain.pddl -p problem.pddl --strategy cgb
 ```
+
+### Declared state invariants
+
+Problems may declare state invariants with PDDL 3 syntax, in the **instance
+file**, after `:goal` and before `:metric`:
+
+```lisp
+(:constraints (always (<= (value_x) (value_y))))
+```
+
+Declarations are trusted as given (PDDL-requirement semantics, no
+verification) and asserted at every state, initial and goal states
+included — a declaration inconsistent with the dynamics correctly makes
+the instance unsolvable. Only `always` constraints are supported
+(`sometime`-style constraints are rejected), and the `r2e` strategy
+rejects problems with invariants. Under parallel-step strategies the
+invariant is checked at step boundaries; `seq` gives exact PDDL 3
+semantics. Declaring known structure (e.g. an exactly-one invariant over
+numeric fluents) can speed up solving substantially.
 
 ### Search Modes
 
@@ -92,11 +113,13 @@ rantanplan -d domain.pddl -p problem.pddl --strategy pdla --symmetries
 | `elsc` | ∃-step | Lazy semantic | Chained | Best for ∃-step |
 | `egs` | ∃-step | Eager semantic | Grounded | Experimental |
 | `egsc` | ∃-step | Eager semantic | Chained | Experimental |
+| `elsc-fp` | ∃-step | Lazy semantic | Chained | elsc + lazy frame-axiom propagator |
 | `r2e` | R2∃-step | ARPG-based order | R2E | Novel encoding |
+| `cgb` | ∃-step | Lazy semantic | Chained | Core-guided lazy activation |
 
-Strategy names encode components: **e**xists/**f**orall, **l**azy/**g**(ea)**g**er, **s**emantic, **c**hain. Use `--list-strategies` for a full list with descriptions.
+Strategy names encode components: **e**xists/**f**orall, **l**azy/ea**g**er, **s**emantic, **c**hain. Use `--list-strategies` for a full list with descriptions.
 
-All strategies (except `-dt` variants) support `--mode optimal` and `--mode anytime` for cost-optimal and anytime planning respectively.
+All strategies except the `-dt` variants and `cgb` support `--mode optimal` and `--mode anytime` for cost-optimal and anytime planning respectively.
 
 **Double-tail variants** (`seq-dt`, `f-dt`, `fl-dt`, `e-dt`, `el-dt`, etc.) use bidirectional (forward + backward) search for faster satisficing planning. Only compatible with `--mode satisficing`.
 

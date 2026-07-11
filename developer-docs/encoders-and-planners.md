@@ -24,9 +24,9 @@ strategy implements: `encode_initial_state()`, `encode_actions(t)`,
   with **chain variables for cumulative numeric effects**, so several
   actions writing the same numeric fluent can legally share a timestep
   (see the section below). This is the encoder behind the
-  `elsc`/`elsc-dt`/`pdla`/`pdla-sel`/`pdla-fg`/`elsc-fp` family and the
+  `elsc`/`elsc-dt`/`elsc-fp`/`cgb` family and the
   `flsc`/`flsc-dt`/`fgsc`/`egsc` family — a single encoder implementation
-  serves both sequential-planner and PDLA consumers, which is the strategy
+  serves both sequential-planner and CGB consumers, which is the strategy
   pattern's component-reuse payoff described in
   [`architecture-overview.md`](architecture-overview.md): the contributor
   unit is "one encoder," not "one encoder-planner pair."
@@ -146,16 +146,21 @@ schedule, and the intermediate-plan callback used for anytime results (see
   plain `z3::solver` feasibility checks with progressively tighter cost
   bounds, preserving full propagator compatibility. The full algorithm is
   the "Optimal and anytime" section below.
-- **PDLA family** (`PDLAPlanner`, selective and fine-grained variants) —
-  *Property-Directed lazy Activation*, a core-guided lazy-activation loop
-  under ∃-step semantics inspired by IC3/PDR and CEGAR: actions are
-  activated (given a blocking literal usable at every timestep) only when
-  an unsatisfied-precondition "obligation," chained backward from the goal
-  through the achiever graph, demands one. This is why PDLA is the planner
-  that consumes the achiever analysis artifact from `PreprocessedProblem`
-  (via `consume_artifacts`) — it needs the achiever graph to drive
-  obligation chaining, not just for a one-off heuristic. Like double-tail,
-  it cannot run under optimal/anytime modes.
+- **CGB** (`CGBPlanner`) — core-guided lazy activation under ∃-step
+  semantics (successor to the removed PDLA family, which it dominated on
+  both benchmark suites): every ground action starts dormant behind a
+  per-action blocking assumption literal, and UNSAT cores drive all
+  growth — blocking literals in the core name exactly the actions to
+  activate; a blocking-free core means the horizon itself binds, so the
+  planner extends it (jumping past horizons the count landmarks refute).
+  Relaxed-plan seeding pre-activates near-certain actions, and landmark
+  presence clauses plus count-landmark deficit budgets (from
+  `LandmarkAnalysisPass`) let single cores name whole activation sets.
+  This is why CGB is the planner that consumes the achiever and landmark
+  artifacts from `PreprocessedProblem` (via `consume_artifacts`). Like
+  double-tail, it cannot run under optimal/anytime modes. Full
+  implementation log with measurements:
+  `docs/pdla-optional-occurrence-roadmap.md`.
 
 ## Search modes and how a planner gets picked
 
@@ -164,7 +169,7 @@ choice, orthogonal to the strategy's own declared `PlannerKind`.
 `resolve_planner_kind(mode, spec)` (`config/strategy_spec.hpp`) reconciles
 the two: satisficing mode uses whatever planner the strategy names;
 optimal and anytime modes always force `BranchAndBoundPlanner`, and raise
-`std::invalid_argument` up front if the strategy is double-tail or PDLA —
+`std::invalid_argument` up front if the strategy is double-tail or CGB —
 both of those are structurally satisficing-only, not something the search
 loop could accommodate.
 
@@ -176,7 +181,7 @@ loop could accommodate.
 | Satisficing | `Sequential` (e.g. `"elsc"`) | `Sequential` — unchanged, runs as `IncrementalHorizonPlanner` |
 | Satisficing | `DoubleTail` (e.g. `"elsc-dt"`) | `DoubleTail` — unchanged, runs as `DoubleTailPlanner` |
 | Optimal | `Sequential` (e.g. `"seq --mode optimal"`) | `BranchAndBound` — forced, regardless of the strategy's own planner |
-| Optimal or Anytime | `DoubleTail` or any `PDLA*` | throws `std::invalid_argument` at resolution time, before any solving starts |
+| Optimal or Anytime | `DoubleTail` or `CGB` | throws `std::invalid_argument` at resolution time, before any solving starts |
 
 The forcing in row 3 is why `"elsc"` under `--mode optimal` and `"elsc"`
 under `--mode satisficing` run entirely different planner classes despite

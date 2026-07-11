@@ -359,24 +359,28 @@ z3::expr GroundedEncoder::encode_symmetries(int t) {
     return z3::mk_and(symmetry_constraints);
 }
 
-// Two sources feed this method, at opposite ends of the trust spectrum:
+// Two sources feed this method.  Mechanically they are the same thing —
+// "assert formula f at every state" — and could share one convention;
+// what actually distinguishes them is ONE bit: may the constraint be
+// skipped?
 //
-//  - problem_.state_invariants(): DECLARED by the user via
-//    `(:constraints (always f))` — trusted requirements that define plan
-//    validity.  They must prune, must cover every state (0..h+1, goal
-//    state included), and must not be droppable by any preprocessing
-//    option; a declaration inconsistent with the dynamics correctly makes
-//    the instance unsolvable.
 //  - state_constraints_: DERIVED by the InvariantOraclePass (mutex groups,
-//    RPG bounds, domains, conservation laws) — proven redundant facts that
-//    exist only to speed up the solver.  Skipping them anywhere (options
-//    off, final state, R2E's no-op override) can never affect soundness.
+//    RPG bounds, domains, conservation laws).  Proven redundant, so
+//    skipping them anywhere is sound (options off, final state uncovered,
+//    R2E's no-op override) — they only ever cost speed.
+//  - problem_.state_invariants(): DECLARED by the user via
+//    `(:constraints (always f))`.  Trusted requirements that define plan
+//    validity — never skippable, by anyone.  Hence: read from the problem
+//    (immune to oracle options and its state_constraints_ overwrite),
+//    asserted at t+1 here plus state 0 in encode_initial_state so every
+//    state 0..h+1 including the GOAL state is covered exactly once, and
+//    R2E (whose override skips this method) is rejected at solve time.
 //
-// Hence the asymmetries below: declarations are read from the problem
-// (not from the oracle-owned state_constraints_) and asserted at t+1 plus
-// state 0 in encode_initial_state, giving exactly-once coverage of every
-// state; derived constraints keep their historical at-t convention, where
-// coverage gaps are harmless.
+// The differing timestep conventions (derived at t, declared at t+1) are
+// NOT semantic: derived constraints could equally use the exactly-once
+// convention.  They keep their historical at-t form so this feature does
+// not perturb the measured behavior of every existing strategy; unifying
+// the conventions is fine but needs a suite A/B.
 z3::expr GroundedEncoder::encode_state_constraints(int t) {
     if (state_constraints_.empty() && problem_.state_invariants().empty()) {
         return ctx_.bool_val(true);
