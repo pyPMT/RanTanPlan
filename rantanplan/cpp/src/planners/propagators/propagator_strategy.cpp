@@ -166,9 +166,4 @@ bool PropagatorStrategy::manages_parallelism_constraints() const {
     return false;
 }
 
-void PropagatorStrategy::on_action_activated(int action_id, int max_timestep) {
-    for (auto& m : modules_)
-        m->on_action_activated(action_id, max_timestep);
-}
-
 } // namespace rantanplan

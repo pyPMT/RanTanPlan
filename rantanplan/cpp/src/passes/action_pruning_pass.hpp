@@ -16,7 +16,7 @@ namespace rantanplan {
  *   - fixpoint_rpg: final RPG on the pruned problem
  *   - tightened_bounds: numeric bounds (RPG + syntactic + conservation-derived)
  *   - conservation_laws: discovered f + g == C invariants
- *   - achievers: goal-relevant achiever analysis (for PDLA planners)
+ *   - achievers: goal-relevant achiever analysis (for the CGB planner)
  *   - sdac_cost_lower_bounds: cost bounds on the FINAL action set
  *
  * Runs when any of rpg_enabled, goal_relevance, or

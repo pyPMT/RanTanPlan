@@ -14,7 +14,7 @@
 namespace rantanplan {
 
 /// SAT encoder family: Grounded (one clause set per ground action), Chained
-/// (frame-axiom chaining, reused across elsc/elsc-dt/pdla), R2E (relaxed-to-exact).
+/// (frame-axiom chaining, reused across elsc/elsc-dt/cgb), R2E (relaxed-to-exact).
 enum class EncoderFamily { Grounded, Chained, R2E };
 
 /// Parallelism semantics for the encoding: Sequential (one action per
@@ -29,9 +29,9 @@ enum class InterferenceKind { None, EagerSyntactic, EagerSemantic, LazySyntactic
 
 /// Planner backend: Sequential/DoubleTail drive satisficing search with a
 /// growing horizon; BranchAndBound is the cost-optimal/anytime search;
-/// the PDLA variants activate actions lazily under Exists semantics;
-/// CGB grows per-schema occurrence budgets named by unsat cores.
-enum class PlannerKind { Sequential, DoubleTail, BranchAndBound, PDLA, PDLASelective, PDLAFinegrained, CGB };
+/// CGB activates ground actions lazily under Exists semantics, with
+/// growth named by unsat cores.
+enum class PlannerKind { Sequential, DoubleTail, BranchAndBound, CGB };
 
 /// Composable propagator module kinds.
 enum class PropagatorModuleKind { ForallEager, ForallLazy, ExistsCycle, FrameAxiom };
@@ -63,13 +63,6 @@ inline PlannerKind resolve_planner_kind(SearchMode mode, const StrategySpec& spe
         throw std::invalid_argument(
             "Mode '" + mode_str + "' is incompatible with double-tail strategies. "
             "Use a non-dt strategy (e.g., 'fl' instead of 'fl-dt').");
-    }
-    if (spec.planner == PlannerKind::PDLA ||
-        spec.planner == PlannerKind::PDLASelective ||
-        spec.planner == PlannerKind::PDLAFinegrained) {
-        std::string mode_str = (mode == SearchMode::Optimal) ? "optimal" : "anytime";
-        throw std::invalid_argument(
-            "Mode '" + mode_str + "' is incompatible with PDLA strategies.");
     }
     if (spec.planner == PlannerKind::CGB) {
         std::string mode_str = (mode == SearchMode::Optimal) ? "optimal" : "anytime";
@@ -110,13 +103,6 @@ inline bool uses_branch_and_bound(SearchMode mode, const StrategySpec& spec) {
 /// Returns true if SDAC cost evaluation is unsound with this strategy.
 inline bool sdac_unsafe(const StrategySpec& spec) {
     return spec.semantics == SemanticsKind::Exists;
-}
-
-/// Returns true if the strategy uses a PDLA planner variant.
-inline bool uses_pdla(const StrategySpec& spec) {
-    return spec.planner == PlannerKind::PDLA ||
-           spec.planner == PlannerKind::PDLASelective ||
-           spec.planner == PlannerKind::PDLAFinegrained;
 }
 
 } // namespace rantanplan

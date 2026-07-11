@@ -12,7 +12,6 @@
 #include "strategy_factory.hpp"
 #include "config/strategy_spec.hpp"
 #include "planners/incremental_horizon_planner.hpp"
-#include "planners/pdla_planner.hpp"
 #include "planners/formula_exporter.hpp"
 #include "util/memory_tracker.hpp"
 #include "util/scoped_timer.hpp"

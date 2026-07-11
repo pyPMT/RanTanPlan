@@ -112,9 +112,6 @@ public:
     /// Only modules returning true cause the (expensive) callback to be registered.
     virtual bool wants_decide_callback() const { return false; }
 
-    /// PDLA hook — called between solver.check() calls when an action is activated.
-    virtual void on_action_activated(int /*action_id*/, int /*max_timestep*/) {}
-
     /// Report statistics at end of search.
     virtual void cleanup() {}
 

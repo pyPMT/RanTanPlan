@@ -3,7 +3,7 @@
 Small benchmark suite for RantanPlan — 15 diverse instances from pddl/small-test/.
 
 Selected from SLURM cluster results.  Most timings target the 20-100s range
-across elsc/elsc-fp/pdla strategies.  Covers:
+across elsc/elsc-fp/cgb strategies.  Covers:
 - Sparse vs dense encoding (mprime vs block-grouping)
 - Propagator-critical instances (satellite/pfile2, rover/pfile14)
 - Boolean-numeric interaction (petrobras/bartak_A2+A3 — CHC conservation laws)
@@ -12,7 +12,7 @@ across elsc/elsc-fp/pdla strategies.  Covers:
 
 Usage:
     python benchmark_small.py                       # Default strategies
-    python benchmark_small.py -s pdla               # Single strategy
+    python benchmark_small.py -s cgb                # Single strategy
     python benchmark_small.py --timeout 180         # Custom timeout
     python benchmark_small.py --csv results.csv     # Save CSV
 """
@@ -38,7 +38,7 @@ HARD_BENCH_DIR = Path("pddl/hard-test")
 STRATEGIES = [
     "elsc",
     "elsc-fp",
-    "pdla",
+    "cgb",
 ]
 
 DEFAULT_TIMEOUT = 120

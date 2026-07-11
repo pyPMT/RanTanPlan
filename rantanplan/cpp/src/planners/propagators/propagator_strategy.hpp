@@ -68,7 +68,6 @@ public:
     void cleanup();
     std::string get_name() const;
     bool manages_parallelism_constraints() const;
-    void on_action_activated(int action_id, int max_timestep);
 
     PropagatorSharedState& shared() { return shared_; }
 

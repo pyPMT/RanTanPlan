@@ -80,17 +80,7 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
         {"elsc-fp",   {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle, M::FrameAxiom}, K::Sequential},
                        "Exists-step, lazy semantic, chained encoder, frame propagator"}},
 
-        // PDLA
-        {"pdla",      {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::PDLA},
-                       "Property-directed lazy activation"}},
-        {"pdla-sel",  {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::PDLASelective},
-                       "PDLA, selective blocking (leaner on sparse domains)"}},
-
-        // Per-timestep PDLA (fine-grained activation)
-        {"pdla-fg",   {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::PDLAFinegrained},
-                       "PDLA with per-timestep activation"}},
-
-        // Core-guided activation (optional-occurrence loop, stripped of PDLA heuristics)
+        // Core-guided activation (optional-occurrence loop)
         {"cgb",       {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::CGB},
                        "Core-guided lazy activation (stripped optional-occurrence loop)"}},
     };

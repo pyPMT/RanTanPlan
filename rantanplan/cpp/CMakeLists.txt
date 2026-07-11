@@ -115,7 +115,6 @@ add_library(rantanplan_core STATIC
     src/planners/incremental_horizon_planner.cpp
     src/planners/double_tail_planner.cpp
     src/planners/branch_and_bound_planner.cpp
-    src/planners/pdla_planner.cpp
     src/planners/cgb_planner.cpp
     src/planners/formula_exporter.cpp
     src/encoders/abstract_suffix_encoder.cpp
