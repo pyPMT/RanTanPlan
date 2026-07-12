@@ -16,8 +16,8 @@ from functools import partial
 # Pipeline:
 #   - Input UP problem
 #   - NNF normalization (UP's built-in Nnf walker)
-#   - Flatten And/Or
-#   - Distribute Or over And (budget-guarded) to obtain CNF (And of Ors)
+#   - Bottom-up conversion to a clause set (list of tuples of literals),
+#     distributing Or over And via cartesian products (budget-guarded)
 #   - Output new UP problem with:
 #       * each goal in CNF, splitting top-level And into multiple goals
 #       * each instantaneous action's preconditions in CNF, with top-level And
@@ -27,8 +27,9 @@ from functools import partial
 #   - Determinism: preserve UP traversal order when possible; no sorting.
 #     The resulting CNF has stable ordering to allow deterministic clause/literal
 #     IDs to be assigned on the C++ side by a single stable traversal.
-#   - Safety: if CNF distribution risks blow-up, a node-budget guard leaves the
-#     original condition unchanged rather than risking exponential growth.
+#   - Safety: the clause count is computed before each cartesian product; if it
+#     would exceed max_node_budget, the original condition is left unchanged
+#     rather than risking exponential growth.
 #   - Theory-agnostic: this only rewrites boolean connectives; theory atoms
 #     remain unchanged.
 
@@ -40,13 +41,14 @@ class CNFConditionCompiler(Engine, CompilerMixin):
 
     Notes
     - Uses UP's NNF walker to remove →/↔ and push negations to atoms.
-    - Then flattens and distributes OR over AND to obtain CNF.
-    - Distribution may blow up in size; a guard limits expansion via max_node_budget.
+    - Then converts bottom-up to a clause set, distributing OR over AND.
+    - Distribution may blow up in size; a guard limits the resulting clause
+      count via max_node_budget.
     - If the guard is exceeded, the formula is left unchanged for safety.
     """
 
     def __init__(self, *, max_node_budget: int = 100000):
-        # max_node_budget: heuristic bound to prevent exponential expansion.
+        # max_node_budget: bound on the number of CNF clauses per condition.
         Engine.__init__(self)
         CompilerMixin.__init__(self, CompilationKind.GROUNDING)  # placeholder kind
         self._max_node_budget = max_node_budget
@@ -183,49 +185,49 @@ class CNFConditionCompiler(Engine, CompilerMixin):
         nnf_walker = up_dnf.Nnf(env)
         f_nnf = nnf_walker.get_nnf_expression(f)
         em = env.expression_manager
-        # Flatten shallow And/Or trees for stability and smaller expressions
-        f_flat = self._flatten(f_nnf, em)
-        # Distribute Or over And to obtain ∧ of ∨; guard to limit worst-case blow-up
-        f_dist = self._distribute_or_over_and(f_flat, em, self._max_node_budget)
-        # Final flatten for clean CNF shape
-        f_cnf = self._flatten(f_dist, em)
-        return f_cnf
-
-    def _flatten(self, f, em):
-        # Flatten nested And/Or preserving left-to-right order for determinism
-        if f.is_and():
-            items: List = []
-            for a in f.args:
-                a = self._flatten(a, em)
-                items.extend(a.args if a.is_and() else [a])
-            return em.And(*items)
-        if f.is_or():
-            items: List = []
-            for a in f.args:
-                a = self._flatten(a, em)
-                items.extend(a.args if a.is_or() else [a])
-            return em.Or(*items)
-        return f
-
-    def _distribute_or_over_and(self, f, em, budget: int):
-        # Assumes NNF; recursively distribute one And inside an Or at a time.
-        # If the node budget is exhausted, return the partially transformed formula.
-        if budget <= 0:
+        # Convert to a clause set (list of tuples of literals); FNodes are only
+        # rebuilt once at the end, avoiding expression-manager churn on
+        # intermediate results.
+        clauses = self._cnf_clauses(f_nnf, self._max_node_budget)
+        if clauses is None:
+            # Budget exceeded: leave the condition unchanged for safety
             return f
+        if not clauses:
+            return em.TRUE()
+        return em.And(*(em.Or(*c) for c in clauses))
+
+    def _cnf_clauses(self, f, budget: int) -> Optional[List[tuple]]:
+        # Assumes NNF. Returns the CNF of f as a list of clauses (tuples of
+        # literal FNodes), preserving left-to-right traversal order for
+        # determinism, or None if the clause count would exceed the budget.
         if f.is_and():
-            return em.And(*[self._distribute_or_over_and(x, em, budget - 1) for x in f.args])
+            clauses: List[tuple] = []
+            for a in f.args:
+                sub = self._cnf_clauses(a, budget)
+                if sub is None:
+                    return None
+                clauses.extend(sub)
+                if len(clauses) > budget:
+                    return None
+            return clauses
         if f.is_or():
-            # Flatten OR for easier handling
-            or_args = [self._distribute_or_over_and(x, em, budget - 1) for x in f.args]
-            # Find an AND inside to distribute over
-            for i, a in enumerate(or_args):
-                if a.is_and():
-                    rest = or_args[:i] + or_args[i+1:]
-                    # Distribute: (A1 ∧ ... ∧ Ak) ∨ R  == ∧j (Aj ∨ R)
-                    conj_parts = []
-                    for aj in a.args:
-                        conj_parts.append(self._distribute_or_over_and(em.Or(aj, *rest), em, budget - 1))
-                    return em.And(*conj_parts)
-            # No AND inside OR → already a clause
-            return em.Or(*or_args)
-        return f
+            subs: List[List[tuple]] = []
+            count = 1
+            for a in f.args:
+                sub = self._cnf_clauses(a, budget)
+                if sub is None:
+                    return None
+                if not sub:
+                    # Disjunct is True → the whole Or is True
+                    return []
+                count *= len(sub)
+                if count > budget:
+                    return None
+                subs.append(sub)
+            # Distribute: cartesian product of the children's clause sets
+            product: List[tuple] = [()]
+            for sub in subs:
+                product = [acc + clause for acc in product for clause in sub]
+            return product
+        # Literal or theory atom → a unit clause
+        return [(f,)]
