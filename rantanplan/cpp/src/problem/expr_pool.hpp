@@ -149,6 +149,7 @@ public:
     bool is_not(ExprID id) const { return op(id) == ExprOperator::NOT; }
     bool is_implies(ExprID id) const { return op(id) == ExprOperator::IMPLIES; }
     bool is_iff(ExprID id) const { return op(id) == ExprOperator::IFF; }
+    bool is_count(ExprID id) const { return op(id) == ExprOperator::COUNT; }
     bool is_equals(ExprID id) const { return op(id) == ExprOperator::EQUALS; }
     bool is_plus(ExprID id) const { return op(id) == ExprOperator::PLUS; }
     bool is_minus(ExprID id) const { return op(id) == ExprOperator::MINUS; }

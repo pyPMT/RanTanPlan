@@ -2,6 +2,7 @@
 #include "z3_variable_factory.hpp"
 #include "../problem/fluent.hpp"
 #include "../problem/effect_expression.hpp"
+#include <optional>
 #include <stdexcept>
 
 namespace rantanplan {
@@ -131,6 +132,74 @@ z3::expr GroundedEncodingVisitor::handle_implies(const std::vector<z3::expr>& ar
     return z3::implies(args[0], args[1]);
 }
 
+z3::expr GroundedEncodingVisitor::handle_count(const std::vector<z3::expr>& args) {
+    // Fallback for counts in arbitrary arithmetic contexts: sum of
+    // ite(b, 1, 0). Comparisons against integer constants never reach
+    // this — convert_node intercepts them into native PB constraints.
+    z3::expr one = variable_factory_->make_numeric_val(static_cast<int64_t>(1));
+    z3::expr zero = variable_factory_->make_numeric_val(static_cast<int64_t>(0));
+    z3::expr result = zero;
+    for (const auto& arg : args) {
+        result = result + z3::ite(arg, one, zero);
+    }
+    return result.simplify();
+}
+
+z3::expr GroundedEncodingVisitor::encode_count_comparison(ExprID count_id,
+                                                          ExprOperator op,
+                                                          int64_t constant,
+                                                          bool count_on_left) {
+    const ExprPool& pool = problem_->pool();
+
+    // Convert the count's boolean arguments at the current timestep.
+    z3::expr_vector bools(ctx_);
+    for (ExprID arg : pool.arguments(count_id)) {
+        bools.push_back(convert_node(arg));
+    }
+    const int64_t n = static_cast<int64_t>(bools.size());
+
+    // Normalize to bounds on the number of true arguments:
+    // min_true <= |{true args}| <= max_true (either side optional).
+    std::optional<int64_t> min_true, max_true;
+    if (count_on_left) {
+        switch (op) {
+            case ExprOperator::LESS_EQUAL:    max_true = constant; break;
+            case ExprOperator::LESS_THAN:     max_true = constant - 1; break;
+            case ExprOperator::GREATER_EQUAL: min_true = constant; break;
+            case ExprOperator::GREATER_THAN:  min_true = constant + 1; break;
+            case ExprOperator::EQUALS:        min_true = max_true = constant; break;
+            default:
+                throw std::runtime_error("encode_count_comparison: unexpected operator");
+        }
+    } else {  // constant op Count(...)
+        switch (op) {
+            case ExprOperator::LESS_EQUAL:    min_true = constant; break;
+            case ExprOperator::LESS_THAN:     min_true = constant + 1; break;
+            case ExprOperator::GREATER_EQUAL: max_true = constant; break;
+            case ExprOperator::GREATER_THAN:  max_true = constant - 1; break;
+            case ExprOperator::EQUALS:        min_true = max_true = constant; break;
+            default:
+                throw std::runtime_error("encode_count_comparison: unexpected operator");
+        }
+    }
+
+    z3::expr_vector parts(ctx_);
+    if (min_true) {
+        if (*min_true > n) return ctx_.bool_val(false);
+        if (*min_true > 0) {
+            parts.push_back(z3::atleast(bools, static_cast<unsigned>(*min_true)));
+        }
+    }
+    if (max_true) {
+        if (*max_true < 0) return ctx_.bool_val(false);
+        if (*max_true < n) {
+            parts.push_back(z3::atmost(bools, static_cast<unsigned>(*max_true)));
+        }
+    }
+    if (parts.empty()) return ctx_.bool_val(true);
+    return parts.size() == 1 ? parts[0] : z3::mk_and(parts);
+}
+
 // ============================================================================
 // ExprID-based conversion: walks ExprNode directly via ExprPool
 // ============================================================================
@@ -241,6 +310,38 @@ z3::expr GroundedEncodingVisitor::convert_node(ExprID id) {
     if (kind == ExprKind::FUNCTION_APPLICATION) {
         auto op = static_cast<ExprOperator>(node.op);
 
+        // Cardinality fast path: a comparison between a Count and an
+        // integer constant becomes a native Z3 pseudo-boolean constraint
+        // (atmost/atleast) instead of an ite-sum comparison.
+        if (is_comparison_operator(op) && pool.argument_count(id) == 2) {
+            ExprID lhs = pool.argument(id, 0);
+            ExprID rhs = pool.argument(id, 1);
+            auto is_count_app = [&](ExprID e) {
+                return pool.is_function_application(e) && pool.is_count(e);
+            };
+            auto int_constant = [&](ExprID e) -> std::optional<int64_t> {
+                const ExprNode& n = pool.get(e);
+                if (!n.children.empty()) return std::nullopt;
+                if (std::holds_alternative<int64_t>(n.payload)) {
+                    return std::get<int64_t>(n.payload);
+                }
+                if (std::holds_alternative<double>(n.payload)) {
+                    double d = std::get<double>(n.payload);
+                    if (d == static_cast<int64_t>(d)) return static_cast<int64_t>(d);
+                }
+                return std::nullopt;
+            };
+            if (is_count_app(lhs)) {
+                if (auto k = int_constant(rhs)) {
+                    return encode_count_comparison(lhs, op, *k, true);
+                }
+            } else if (is_count_app(rhs)) {
+                if (auto k = int_constant(lhs)) {
+                    return encode_count_comparison(rhs, op, *k, false);
+                }
+            }
+        }
+
         // Recursively convert arguments
         std::vector<z3::expr> z3_args;
         z3_args.reserve(pool.argument_count(id));
@@ -263,6 +364,7 @@ z3::expr GroundedEncodingVisitor::convert_node(ExprID id) {
             case ExprOperator::MULTIPLY:      return handle_multiply(z3_args);
             case ExprOperator::DIVIDE:        return handle_divide(z3_args);
             case ExprOperator::IMPLIES:       return handle_implies(z3_args);
+            case ExprOperator::COUNT:         return handle_count(z3_args);
             default:
                 throw std::runtime_error("Unsupported operator in ExprID conversion: " + std::to_string(static_cast<int>(op)));
         }

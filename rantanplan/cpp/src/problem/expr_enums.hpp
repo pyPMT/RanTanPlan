@@ -34,6 +34,12 @@ enum class ExprOperator {
     // Logical operators
     AND, OR, NOT, IMPLIES, IFF,
 
+    // Pseudo-boolean: integer-valued count of n boolean arguments.
+    // Deliberately NOT in the arithmetic/logical/comparison categories:
+    // folding passes must treat it opaquely; the Z3 visitors encode it
+    // natively (atmost/atleast for comparisons with constants).
+    COUNT,
+
     // Unknown operator
     UNKNOWN
 };
@@ -62,6 +68,7 @@ inline ExprOperator string_to_expr_operator(const std::string& op_string) {
     if (op_string == "up:not") return ExprOperator::NOT;
     if (op_string == "up:implies") return ExprOperator::IMPLIES;
     if (op_string == "up:iff") return ExprOperator::IFF;
+    if (op_string == "up:count") return ExprOperator::COUNT;
 
     // Standard notation
     if (op_string == "+") return ExprOperator::PLUS;
@@ -82,6 +89,7 @@ inline ExprOperator string_to_expr_operator(const std::string& op_string) {
     if (op_string == "not") return ExprOperator::NOT;
     if (op_string == "=>") return ExprOperator::IMPLIES;
     if (op_string == "<=>") return ExprOperator::IFF;
+    if (op_string == "count") return ExprOperator::COUNT;
 
     return ExprOperator::UNKNOWN;
 }
@@ -106,6 +114,7 @@ inline std::string expr_operator_to_string(ExprOperator op) {
         case ExprOperator::NOT: return "not";
         case ExprOperator::IMPLIES: return "=>";
         case ExprOperator::IFF: return "=";
+        case ExprOperator::COUNT: return "count";
         default: return "";
     }
 }

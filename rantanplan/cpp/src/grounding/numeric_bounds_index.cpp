@@ -54,6 +54,11 @@ static Interval evaluate_constant_expr_range(
         ExprOperator op = pool.op(eid);
         size_t nargs = pool.argument_count(eid);
 
+        if (op == ExprOperator::COUNT) {
+            // A count of boolean conditions is bounded by its arity.
+            return Interval(0.0, static_cast<double>(nargs));
+        }
+
         if (nargs == 2) {
             Interval lhs = evaluate_constant_expr_range(
                 pool.argument(eid, 0), pool, problem, constant_ranges);

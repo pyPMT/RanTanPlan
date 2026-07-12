@@ -48,6 +48,7 @@ _OPERATOR_NAMES = {
     OperatorKind.NOT: "up:not",
     OperatorKind.IMPLIES: "up:implies",
     OperatorKind.IFF: "up:iff",
+    OperatorKind.COUNT: "up:count",
     OperatorKind.EXISTS: "up:exists",
     OperatorKind.FORALL: "up:forall",
 }

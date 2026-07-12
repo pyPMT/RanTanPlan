@@ -67,6 +67,12 @@ private:
     z3::expr handle_multiply(const std::vector<z3::expr>& args);
     z3::expr handle_divide(const std::vector<z3::expr>& args);
     z3::expr handle_implies(const std::vector<z3::expr>& args);
+    // Count support: standalone counts become sums of ite(b,1,0);
+    // comparisons against integer constants become native Z3
+    // pseudo-boolean constraints (atmost/atleast).
+    z3::expr handle_count(const std::vector<z3::expr>& args);
+    z3::expr encode_count_comparison(ExprID count_id, ExprOperator op,
+                                     int64_t constant, bool count_on_left);
 };
 
 } // namespace rantanplan
