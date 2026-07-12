@@ -28,6 +28,7 @@ public:
         double epsilon = 1e-6;        ///< Numerical tolerance for floating-point comparisons
         bool reachability_grounding = true;  ///< --up-grounding disables this
         bool numeric_grounding = true;       ///< --no-numeric-grounding disables this
+        bool cnf_normalization = true;       ///< --no-cnf-normalization disables this
     } global;
 
     /// Numeric Relaxed Planning Graph settings.

@@ -146,6 +146,7 @@ add_library(rantanplan_core STATIC
     src/passes/grounding_pass.cpp
     src/passes/cwa_initial_state_pass.cpp
     src/passes/static_fluent_pass.cpp
+    src/passes/cnf_normalization_pass.cpp
     src/problem/substitution.cpp
     src/grounding/fact_index.cpp
     src/grounding/binding_matcher.cpp

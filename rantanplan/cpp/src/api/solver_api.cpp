@@ -25,6 +25,7 @@
 #include "passes/grounding_pass.hpp"
 #include "passes/cwa_initial_state_pass.hpp"
 #include "passes/static_fluent_pass.hpp"
+#include "passes/cnf_normalization_pass.hpp"
 #include "passes/invariant_oracle_pass.hpp"
 #include "passes/landmark_analysis_pass.hpp"
 #include "analysis/interference_analysis.hpp"
@@ -83,6 +84,8 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     // Ordering constraints:
     //   - Grounding before CWA (CWA needs all grounded fluents visible)
     //   - CWA before StaticFluent (needs complete initial state to identify constants)
+    //   - StaticFluent before CnfNormalization (folding first collapses disjunctions
+    //     over static predicates; distributing before folding can blow up)
     //   - StaticFluent before ActionPruning (simpler expressions → tighter RPG bounds)
     //   - ActionPruning before InvariantOracle (produces bounds + conservation laws it consumes)
     //   - SymmetryAnalysis after all pruning (runs on smallest action set)
@@ -101,6 +104,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     rantanplan::GroundingPass grounding_pass;
     rantanplan::CWAInitialStatePass cwa_pass;
     rantanplan::StaticFluentPass static_fluent_pass;
+    rantanplan::CnfNormalizationPass cnf_normalization_pass;
     rantanplan::ActionPruningPass action_pruning_pass(options);
     rantanplan::InvariantOraclePass invariant_oracle_pass(options);
     rantanplan::LandmarkAnalysisPass landmark_analysis_pass;
@@ -116,6 +120,9 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     }
     passes.push_back(&cwa_pass);
     passes.push_back(&static_fluent_pass);
+    if (options.enable_cnf_normalization) {
+        passes.push_back(&cnf_normalization_pass);
+    }
 
     // --- PRUNE ---
     passes.push_back(&action_pruning_pass);

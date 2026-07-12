@@ -26,6 +26,7 @@ struct PreprocessorOptions {
     // --- Pass-list construction ---
     bool enable_grounding = true;    ///< Reachability grounding pass
     bool enable_symmetries = false;  ///< Symmetry detection + completion
+    bool enable_cnf_normalization = true;  ///< CNF-normalize conditions after static folding
 
     // --- Action pruning (RPG + goal relevance) ---
     bool rpg_enabled = true;         ///< Run NumericRPG (lower bound + reachability)

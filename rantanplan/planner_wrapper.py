@@ -9,7 +9,6 @@ from unified_planning.engines.mixins.anytime_planner import AnytimePlannerMixin,
 from unified_planning.engines import PlanGenerationResultStatus, Engine, CompilationKind, ValidationResultStatus
 from unified_planning.engines.compilers import Grounder, QuantifiersRemover
 from unified_planning.exceptions import UPException
-from .cnf_condition_compiler import CNFConditionCompiler
 from .bounded_types_simplifier import BoundedTypesSimplifier
 from .converter import convert_problem
 from unified_planning.model import ProblemKind, Problem
@@ -154,6 +153,8 @@ class _RantanPlanBase(Engine):
             command.append("--smt-rpg-checker")
         if self._no_goal_relevance:
             command.append("--no-goal-relevance")
+        if self._no_cnf_normalization:
+            command.append("--no-cnf-normalization")
         if self._horizon_schedule is not None:
             command.extend(["--horizon-schedule", self._horizon_schedule])
         if self._log_file is not None:
@@ -254,24 +255,9 @@ class _RantanPlanBase(Engine):
         else:
             self._log_verbose("  Quantifier removal not needed for this problem type.")
 
-        # Step 2: CNF normalization of goals and preconditions
-        try:
-            if not self._no_cnf_normalization:
-                cnf_compiler = CNFConditionCompiler()
-                if cnf_compiler.supports(current_problem.kind):
-                    self._log_verbose("  Applying CNF normalization (goals and preconditions)...")
-                    cnf_result = cnf_compiler.compile(current_problem, CompilationKind.GROUNDING)
-                    current_problem = cnf_result.problem
-                    compilation_maps.append(cnf_result)
-                    self._log_verbose("  CNF normalization completed.")
-                else:
-                    self._log_verbose("  CNF normalization not needed for this problem type.")
-            else:
-                self._log_verbose("  CNF normalization disabled by configuration.")
-        except Exception as e:
-            self._log_warning(f"  CNF normalization skipped due to error: {e}")
-
-        # Step 3: Ground the problem (unless C++ backend will handle it)
+        # Step 2: Ground the problem (unless C++ backend will handle it)
+        # (CNF normalization now happens in the C++ pipeline, after grounding
+        # and static-fluent folding — see passes/cnf_normalization_pass.cpp)
         if self._up_grounding:
             self._log_verbose("  Applying UP grounder ...")
             grounder = Grounder()

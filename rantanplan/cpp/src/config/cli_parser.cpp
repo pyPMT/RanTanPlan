@@ -96,6 +96,9 @@ void CLIParser::parse(Config& config, int argc, char* argv[]) {
         else if (arg == "--no-numeric-grounding") {
             config.global.numeric_grounding = false;
         }
+        else if (arg == "--no-cnf-normalization") {
+            config.global.cnf_normalization = false;
+        }
         else if (arg == "--smt-rpg-checker") {
             config.rpg.use_interval_checker = false;
         }
