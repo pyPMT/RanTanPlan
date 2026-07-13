@@ -151,6 +151,7 @@ NumericRelaxedPlanningGraph::NumericRelaxedPlanningGraph(const Problem& problem)
 
     // Build ground fluent -> schema mapping and run freeze analysis
     build_fluent_schema_map();
+    precompute_declared_bounds();
     precompute_freezes();
 
     Logger::instance().debug("NumericRelaxedPlanningGraph initialized:");
@@ -697,6 +698,11 @@ void NumericRelaxedPlanningGraph::compute_numeric_bounds(
         // Apply directional widening (modifies new_bounds in place)
         apply_widening(fluent_id, new_bounds, prev_bounds);
 
+        // Clamp to declared bounds: reachable values under bounded-type
+        // semantics never exceed [lb, ub], so intersect (undoing any widening
+        // past a declared side). The bound then stabilises at lb/ub.
+        clamp_to_declared(fluent_id, new_bounds);
+
         next_state.numeric_bounds[fluent_id] = new_bounds;
     }
 
@@ -851,8 +857,12 @@ void NumericRelaxedPlanningGraph::apply_widening(
         schema_id = schema_it->second;
     }
 
-    // Widen lower if threshold exceeded and not frozen
-    if (schema_id < 0 || !freeze_lower_.count(schema_id)) {
+    // A declared bound caps growth, so never widen that side to +-infinity.
+    bool declared_lower = schema_id >= 0 && declared_lower_by_schema_.count(schema_id);
+    bool declared_upper = schema_id >= 0 && declared_upper_by_schema_.count(schema_id);
+
+    // Widen lower if threshold exceeded and neither frozen nor declared
+    if (schema_id < 0 || (!freeze_lower_.count(schema_id) && !declared_lower)) {
         auto count_it = lower_expansion_count_.find(fluent_id);
         if (count_it != lower_expansion_count_.end() &&
             count_it->second >= widening_threshold_ &&
@@ -861,14 +871,42 @@ void NumericRelaxedPlanningGraph::apply_widening(
         }
     }
 
-    // Widen upper if threshold exceeded and not frozen
-    if (schema_id < 0 || !freeze_upper_.count(schema_id)) {
+    // Widen upper if threshold exceeded and neither frozen nor declared
+    if (schema_id < 0 || (!freeze_upper_.count(schema_id) && !declared_upper)) {
         auto count_it = upper_expansion_count_.find(fluent_id);
         if (count_it != upper_expansion_count_.end() &&
             count_it->second >= widening_threshold_ &&
             !std::isinf(new_bounds.upper)) {
             new_bounds.upper = std::numeric_limits<double>::infinity();
         }
+    }
+}
+
+void NumericRelaxedPlanningGraph::precompute_declared_bounds() {
+    for (const auto& fluent : problem_.fluents()) {
+        if (!fluent.is_function()) continue;
+        if (fluent.declared_lower_bound()) {
+            declared_lower_by_schema_[fluent.id()] = *fluent.declared_lower_bound();
+        }
+        if (fluent.declared_upper_bound()) {
+            declared_upper_by_schema_[fluent.id()] = *fluent.declared_upper_bound();
+        }
+    }
+}
+
+void NumericRelaxedPlanningGraph::clamp_to_declared(
+    int fluent_id, NumericBounds& bounds) const {
+    auto schema_it = fluent_schema_map_.find(fluent_id);
+    if (schema_it == fluent_schema_map_.end()) return;
+    int schema_id = schema_it->second;
+
+    auto lo = declared_lower_by_schema_.find(schema_id);
+    if (lo != declared_lower_by_schema_.end() && bounds.lower < lo->second) {
+        bounds.lower = lo->second;
+    }
+    auto hi = declared_upper_by_schema_.find(schema_id);
+    if (hi != declared_upper_by_schema_.end() && bounds.upper > hi->second) {
+        bounds.upper = hi->second;
     }
 }
 

@@ -302,6 +302,13 @@ private:
     /// Maps ground fluent_id -> fluent schema ID (for freeze lookup).
     std::unordered_map<int, int> fluent_schema_map_;
 
+    /// Declared numeric bounds per fluent schema ID (from bounded int/real
+    /// value types, e.g. integer[0, 15]). Reachable values under bounded-type
+    /// semantics stay within these, so intervals are clamped to them and the
+    /// declared sides are exempt from widening to +-infinity.
+    std::unordered_map<int, double> declared_lower_by_schema_;
+    std::unordered_map<int, double> declared_upper_by_schema_;
+
     // ========================================================================
     // MEMBER VARIABLES - Configuration
     // ========================================================================
@@ -528,6 +535,17 @@ private:
      * @brief Build fluent_schema_map_ for ground fluent ID -> schema ID mapping
      */
     void build_fluent_schema_map();
+
+    /**
+     * @brief Populate declared_{lower,upper}_by_schema_ from bounded fluent types.
+     */
+    void precompute_declared_bounds();
+
+    /**
+     * @brief Intersect a fluent's bounds with its declared [lb, ub] (no-op if
+     *        the fluent has no declared bound).
+     */
+    void clamp_to_declared(int fluent_id, NumericBounds& bounds) const;
 
 
     // ========================================================================

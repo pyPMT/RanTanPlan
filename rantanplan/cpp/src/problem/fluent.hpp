@@ -36,6 +36,18 @@ public:
     void set_value_type(const Type* value_type) { value_type_ = value_type; }
     void add_parameter(const Parameter& param) { parameters_.push_back(param); }
     void set_parameters(const std::vector<Parameter>& parameters) { parameters_ = parameters; }
+
+    // Declared numeric bounds (from bounded int/real value types, e.g.
+    // integer[0, 15]). Either side may be unset for a one-sided bound.
+    void set_declared_bounds(std::optional<double> lower, std::optional<double> upper) {
+        lower_bound_ = lower;
+        upper_bound_ = upper;
+    }
+    std::optional<double> declared_lower_bound() const { return lower_bound_; }
+    std::optional<double> declared_upper_bound() const { return upper_bound_; }
+    bool has_declared_bounds() const {
+        return lower_bound_.has_value() || upper_bound_.has_value();
+    }
     
     // Convenience methods
     bool is_predicate() const {
@@ -71,6 +83,8 @@ private:
     int id_;
     const Type* value_type_ = nullptr;
     std::vector<Parameter> parameters_;
+    std::optional<double> lower_bound_;
+    std::optional<double> upper_bound_;
 };
 
 } // namespace rantanplan

@@ -73,6 +73,21 @@ void StrategyFactory::validate(const StrategySpec& spec,
 }
 
 void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
+    // Declared numeric bounds (bounded int/real fluents) are only sound with the
+    // Grounded encoder, which asserts them at every concrete timestep via
+    // encode_state_constraints. The Chained and R2E encoders reason over
+    // chain-substituted intermediate variables (ζ) that bypass those boundary
+    // constraints, so a plan could transiently violate a declared bound. Bail
+    // out rather than silently drop the bound (per-variable soundness analysis
+    // and encoder demotion are left for a follow-up).
+    if (problem.has_declared_bounds() && spec.encoder != EncoderFamily::Grounded) {
+        throw std::invalid_argument(
+            "Declared numeric bounds (bounded int/real fluent types) are only "
+            "sound with the Grounded encoder; this strategy's chained/relaxed "
+            "encoder uses intermediate variables that can violate the bounds. "
+            "Use a Grounded-encoder strategy such as els, seq, or f.");
+    }
+
     if (uses_branch_and_bound(spec) &&
         problem.has_metric() && problem.has_state_dependent_costs() &&
         sdac_unsafe(spec)) {

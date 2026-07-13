@@ -71,6 +71,15 @@ public:
     bool has_fluent(const std::string& name) const;
     const Fluent* find_fluent(const std::string& name) const;
 
+    /// True if any fluent carries a declared numeric bound (bounded int/real
+    /// value type, e.g. integer[0, 15]).
+    bool has_declared_bounds() const {
+        for (const auto& f : fluents_) {
+            if (f.has_declared_bounds()) return true;
+        }
+        return false;
+    }
+
     // Grounded fluent access
     // NOTE: Grounded fluents are stored with IDs matching their position in the grounded_fluents_ vector.
     // This provides a stable ID system where grounded_fluent_id == index in grounded_fluents() vector.

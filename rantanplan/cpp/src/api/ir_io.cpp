@@ -195,6 +195,10 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
                                      "' for fluent '" + ir_fluent.name + "'");
         }
         problem.fluents_.emplace_back(ir_fluent.name, value_type, params);
+        if (ir_fluent.lower_bound || ir_fluent.upper_bound) {
+            problem.fluents_.back().set_declared_bounds(ir_fluent.lower_bound,
+                                                        ir_fluent.upper_bound);
+        }
     }
     problem.build_fluent_mappings();
 

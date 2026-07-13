@@ -406,9 +406,13 @@ z3::expr GroundedEncoder::encode_state_constraints(int t) {
         }
     }
 
-    // Numeric bound constraints
+    // Numeric bound constraints (RPG-derived and declared bounded types).
+    // Asserted at t+1: this is called per transition t = 0..h-1, so t+1 covers
+    // states 1..h — including the goal state h, which declared bounds must cover
+    // (state-invariant semantics). State 0 is pinned by encode_initial_state;
+    // RPG bounds are over-approximations, so t+1 is equally sound for them.
     for (const auto& bound : state_constraints_.bounds) {
-        z3::expr fluent = convert_expr_id_to_z3(bound.fluent_id, t);
+        z3::expr fluent = convert_expr_id_to_z3(bound.fluent_id, t + 1);
         z3::expr val = fluent.is_int()
             ? ctx_.int_val(static_cast<int64_t>(bound.bound))
             : ctx_.real_val(std::to_string(bound.bound).c_str());

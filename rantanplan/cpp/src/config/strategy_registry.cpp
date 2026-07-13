@@ -81,7 +81,7 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
                        "Exists-step, lazy semantic, chained encoder, frame propagator"}},
 
         // Core-guided activation (optional-occurrence loop)
-        {"cgb",       {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::CGB},
+        {"cgb",       {{E::Grounded, S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::CGB},
                        "Core-guided lazy activation (stripped optional-occurrence loop)"}},
     };
     return registry;

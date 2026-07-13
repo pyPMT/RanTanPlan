@@ -38,6 +38,10 @@ struct ConservationConstraint {
 /// These hold in every reachable state and are injected at every timestep.
 struct StateConstraints {
     std::vector<MutexConstraint> mutexes;
+    /// Numeric bounds: RPG-derived (over-approximations) plus declared bounded
+    /// int/real types. The encoder asserts them at state t+1 so the goal state
+    /// is covered — matching UP's "bounded types are checked as state
+    /// invariants" semantics.
     std::vector<BoundConstraint> bounds;
     std::vector<DomainConstraint> domains;
     std::vector<ConservationConstraint> conservations;
