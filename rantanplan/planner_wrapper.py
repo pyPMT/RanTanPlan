@@ -9,7 +9,6 @@ from unified_planning.engines.mixins.anytime_planner import AnytimePlannerMixin,
 from unified_planning.engines import PlanGenerationResultStatus, Engine, CompilationKind, ValidationResultStatus
 from unified_planning.engines.compilers import Grounder, QuantifiersRemover
 from unified_planning.exceptions import UPException
-from .bounded_types_simplifier import BoundedTypesSimplifier
 from .converter import convert_problem
 from unified_planning.model import ProblemKind, Problem
 from unified_planning.plans import SequentialPlan, ActionInstance
@@ -217,8 +216,11 @@ class _RantanPlanBase(Engine):
         unintialized_fluents = list(filter(lambda x: not x in initialized_fluents, fluentslist))
 
         # Object fluents have no sensible default — they must be explicitly initialized.
-        obj_fluents_missing_init = [fe for fe in unintialized_fluents
-                                    if fe.type not in task.initial_defaults]
+        # Bool/int/real (including bounded int/real) all get a computed default below.
+        obj_fluents_missing_init = [
+            fe for fe in unintialized_fluents
+            if not (fe.type.is_bool_type() or fe.type.is_int_type() or fe.type.is_real_type())
+        ]
         if obj_fluents_missing_init:
             names = [str(f) for f in obj_fluents_missing_init]
             raise UPException(
@@ -227,7 +229,7 @@ class _RantanPlanBase(Engine):
 
         real_int_fluents_to_init = []
         for fe in unintialized_fluents:
-            if fe.type == _tm.RealType() or fe.type == _tm.IntType():
+            if fe.type.is_int_type() or fe.type.is_real_type():
                 real_int_fluents_to_init.append(fe)
 
         if real_int_fluents_to_init:
@@ -236,7 +238,19 @@ class _RantanPlanBase(Engine):
             self._log_warning("         This is not semantically correct but is done in practice for planning purposes.")
 
         for fe in unintialized_fluents:
-            task.set_initial_value(fe, task.initial_defaults[fe.type])
+            tpe = fe.type
+            if tpe.is_bool_type():
+                default = _em.Bool(False)
+            else:
+                # int/real, possibly bounded: clamp the 0 default into [lb, ub]
+                # (UP rejects assigning an out-of-range value to a bounded type).
+                v = 0
+                if tpe.lower_bound is not None and v < tpe.lower_bound:
+                    v = tpe.lower_bound
+                if tpe.upper_bound is not None and v > tpe.upper_bound:
+                    v = tpe.upper_bound
+                default = _em.Int(v) if tpe.is_int_type() else _em.Real(Fraction(v))
+            task.set_initial_value(fe, default)
 
     def _compile_problem(self, problem: Problem):
         current_problem = problem
@@ -347,24 +361,8 @@ class _RantanPlanBase(Engine):
         """
         self._check_no_nested_fluents(problem)
 
-        # Strip bounded types before _initialize_fluents, which cannot handle
-        # bounded int/real types in defaults or fluent parameter enumeration.
-        pre_compilation_maps = []
-        if BoundedTypesSimplifier._has_bounded_types(problem):
-            self._log_verbose("  Stripping bounded integer/real types...")
-            bounded_simplifier = BoundedTypesSimplifier()
-            bounded_result = bounded_simplifier.compile(
-                problem, CompilationKind.BOUNDED_TYPES_REMOVING
-            )
-            problem = bounded_result.problem
-            pre_compilation_maps.append(bounded_result)
-            self._log_verbose("  Bounded types simplified.")
-
         self._initialize_fluents(problem)
         compiled_problem, compilation_result = self._compile_problem(problem)
-
-        # Prepend bounded-types maps so map_back_action_instance unwinds them last
-        compilation_result.compilation_maps = pre_compilation_maps + compilation_result.compilation_maps
 
         problem_ir = convert_problem(compiled_problem)
 

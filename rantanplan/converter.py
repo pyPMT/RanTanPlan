@@ -60,8 +60,12 @@ def _up_type_str(tpe) -> str:
         return "up:bool"
     if tpe.is_time_type():
         return "up:time"
-    if tpe.is_int_type() or tpe.is_real_type():
-        return f"up:{tpe}"
+    # Bounds live on FluentIR.lower/upper_bound; the type string stays the base
+    # name so bounded types (e.g. integer[0, 15]) resolve like plain int/real.
+    if tpe.is_int_type():
+        return "up:integer"
+    if tpe.is_real_type():
+        return "up:real"
     return str(tpe.name)
 
 
@@ -218,6 +222,12 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
         ir_fluent.name = fluent.name
         ir_fluent.value_type = _up_type_str(fluent.type)
         ir_fluent.parameters = _convert_parameters(fluent.signature)
+        ftype = fluent.type
+        if ftype.is_int_type() or ftype.is_real_type():
+            if ftype.lower_bound is not None:
+                ir_fluent.lower_bound = float(ftype.lower_bound)
+            if ftype.upper_bound is not None:
+                ir_fluent.upper_bound = float(ftype.upper_bound)
         fluents.append(ir_fluent)
     out.fluents = fluents
 

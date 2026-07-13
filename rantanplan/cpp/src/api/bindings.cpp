@@ -227,7 +227,9 @@ NB_MODULE(_rantanplan, m) {
         .def(nb::init<>())
         .def_rw("name", &ir::FluentIR::name)
         .def_rw("value_type", &ir::FluentIR::value_type)
-        .def_rw("parameters", &ir::FluentIR::parameters);
+        .def_rw("parameters", &ir::FluentIR::parameters)
+        .def_rw("lower_bound", &ir::FluentIR::lower_bound)
+        .def_rw("upper_bound", &ir::FluentIR::upper_bound);
 
     nb::class_<ir::EffectIR>(m, "EffectIR")
         .def(nb::init<>())

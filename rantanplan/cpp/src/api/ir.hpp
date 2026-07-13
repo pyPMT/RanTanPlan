@@ -64,6 +64,10 @@ struct FluentIR {
     std::string name;
     std::string value_type;
     std::vector<ParameterIR> parameters;
+    /// Declared numeric bounds for bounded int/real value types (e.g.
+    /// `integer[0, 15]`); unset for unbounded numeric or non-numeric fluents.
+    std::optional<double> lower_bound;
+    std::optional<double> upper_bound;
 };
 
 struct EffectIR {
