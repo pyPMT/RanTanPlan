@@ -15,13 +15,7 @@
 namespace rantanplan {
 
 void ActionPruningPass::apply(PreprocessedProblem& result) const {
-    bool need_rpg = opts_->rpg_enabled;
     bool need_goal_relevance = opts_->goal_relevance;
-    bool need_bounds = opts_->local_reasoning_enabled && opts_->rpg_bounds;
-
-    if (!need_rpg && !need_goal_relevance && !need_bounds) {
-        return;
-    }
 
     ScopedTimer pass_timer("pass.action-pruning.time_ms");
     auto& stats = Stats::instance();
@@ -64,16 +58,14 @@ void ActionPruningPass::apply(PreprocessedProblem& result) const {
 
         // 3. Bound tightening + conservation law discovery
         std::vector<ConservationConstraint> conservations;
-        if (need_bounds) {
-            int n = tighten_bounds_syntactically(
-                rpg_data.state_variable_bounds, result.problem);
-            conservations = discover_conservation_laws(result.problem);
-            derive_bounds_from_conservations(
-                rpg_data.state_variable_bounds, conservations);
-            if (n > 0 || !conservations.empty()) {
-                Logger::instance().info("  bounds tightened: " + std::to_string(n) +
-                    ", conservation laws: " + std::to_string(conservations.size()));
-            }
+        int n = tighten_bounds_syntactically(
+            rpg_data.state_variable_bounds, result.problem);
+        conservations = discover_conservation_laws(result.problem);
+        derive_bounds_from_conservations(
+            rpg_data.state_variable_bounds, conservations);
+        if (n > 0 || !conservations.empty()) {
+            Logger::instance().info("  bounds tightened: " + std::to_string(n) +
+                ", conservation laws: " + std::to_string(conservations.size()));
         }
 
         // 4. Forward prune: remove RPG-unreachable actions
@@ -154,13 +146,11 @@ void ActionPruningPass::apply(PreprocessedProblem& result) const {
         rpg_data.layer_count = static_cast<int>(rpg->get_layer_count());
 
         std::vector<ConservationConstraint> conservations;
-        if (need_bounds) {
-            tighten_bounds_syntactically(
-                rpg_data.state_variable_bounds, result.problem);
-            conservations = discover_conservation_laws(result.problem);
-            derive_bounds_from_conservations(
-                rpg_data.state_variable_bounds, conservations);
-        }
+        tighten_bounds_syntactically(
+            rpg_data.state_variable_bounds, result.problem);
+        conservations = discover_conservation_laws(result.problem);
+        derive_bounds_from_conservations(
+            rpg_data.state_variable_bounds, conservations);
 
         result.lower_bound = std::max(result.lower_bound,
                                        rpg->get_minimum_steps_lower_bound());

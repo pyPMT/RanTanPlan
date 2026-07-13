@@ -19,8 +19,8 @@ namespace rantanplan {
  *   - achievers: goal-relevant achiever analysis (for the CGB planner)
  *   - sdac_cost_lower_bounds: cost bounds on the FINAL action set
  *
- * Runs when any of rpg_enabled, goal_relevance, or
- * (local_reasoning_enabled && rpg_bounds) is set in the options.
+ * Always runs: RPG fixpoint bounds are unconditionally injected downstream
+ * (see InvariantOraclePass), so the RPG is always built here to produce them.
  */
 class ActionPruningPass : public Pass {
 public:

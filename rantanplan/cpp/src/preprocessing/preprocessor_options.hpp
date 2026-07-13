@@ -34,11 +34,6 @@ struct PreprocessorOptions {
     bool goal_relevance = true;      ///< Backward-prune goal-irrelevant actions
     int goal_relevance_max_iterations = 10; ///< Fixpoint limit for the prune loop
 
-    // --- Invariant oracle (local reasoning) ---
-    bool local_reasoning_enabled = true; ///< Master switch for state constraints
-    bool rpg_bounds = true;          ///< Inject RPG fixpoint bounds per timestep
-    bool mutex_discovery = true;     ///< Tier 1 syntactic mutex detection
-
     // --- The one semantic input ---
     /// Optimal/anytime search needs cost lower bounds, so the RPG and
     /// goal-relevance analysis must keep cost fluents alive.

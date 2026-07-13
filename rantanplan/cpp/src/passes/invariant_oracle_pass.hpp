@@ -3,7 +3,6 @@
 #include "pass.hpp"
 #include "h2_mutex_checker.hpp"
 #include "../analysis/numeric_relaxed_planning_graph.hpp"
-#include "../preprocessing/preprocessor_options.hpp"
 #include <vector>
 #include <unordered_set>
 
@@ -85,14 +84,12 @@ namespace rantanplan {
  */
 class InvariantOraclePass : public Pass {
 public:
-    explicit InvariantOraclePass(const PreprocessorOptions& opts) : opts_(&opts) {}
+    InvariantOraclePass() = default;
 
     void apply(PreprocessedProblem& result) const override;
     std::string name() const override { return "InvariantOracle"; }
 
 private:
-    const PreprocessorOptions* opts_;
-
     /// Collect domain constraints for object fluents from RPG value sets.
     std::vector<DomainConstraint> collect_object_domains(
         const NumericRelaxedPlanningGraph& rpg) const;

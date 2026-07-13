@@ -106,7 +106,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     rantanplan::StaticFluentPass static_fluent_pass;
     rantanplan::CnfNormalizationPass cnf_normalization_pass;
     rantanplan::ActionPruningPass action_pruning_pass(options);
-    rantanplan::InvariantOraclePass invariant_oracle_pass(options);
+    rantanplan::InvariantOraclePass invariant_oracle_pass;
     rantanplan::LandmarkAnalysisPass landmark_analysis_pass;
     rantanplan::SymmetryAnalysisPass symmetry_analysis_pass(
         original_problem ? &*original_problem : nullptr);

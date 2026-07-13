@@ -8,14 +8,12 @@
 namespace rantanplan {
 
 void InvariantOraclePass::apply(PreprocessedProblem& result) const {
-    if (!opts_->local_reasoning_enabled) return;
-
     ScopedTimer timer("pass.InvariantOracle.time_ms");
     const auto& problem = result.problem;
     StateConstraints invariants;
 
     // Phase A: Consume pre-computed bounds and conservation laws from ActionPruningPass
-    if (opts_->rpg_bounds) {
+    {
         invariants.conservations = result.conservation_laws;
 
         for (const auto& [eid, interval] : result.tightened_bounds) {
@@ -41,7 +39,7 @@ void InvariantOraclePass::apply(PreprocessedProblem& result) const {
     }
 
     // Phase B+C: Mutex candidate generation + verification
-    if (opts_->mutex_discovery) {
+    {
         auto candidates = generate_mutex_candidates(problem);
 
         // Build initial-state lookup for boolean fluents

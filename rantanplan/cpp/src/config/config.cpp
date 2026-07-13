@@ -20,7 +20,6 @@ void Config::initialize(int argc, char* argv[]) {
     symmetry = Symmetry{};
     formula_export = FormulaExport{};
     logging = Logging{};
-    local_reasoning = LocalReasoning{};
 
     CLIParser parser;
     parser.parse(*this, argc, argv);

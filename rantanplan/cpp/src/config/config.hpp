@@ -74,12 +74,6 @@ public:
         std::string log_file = "";        ///< Empty = no logging; path = solver decision log
     } logging;
 
-    struct LocalReasoning {
-        bool enabled = true;              ///< Master switch (--no-local-reasoning disables)
-        bool rpg_bounds = true;           ///< Inject RPG fixpoint bounds at each timestep
-        bool mutex_discovery = true;      ///< Tier 1 syntactic mutex detection
-    } local_reasoning;
-
     /// Re-entrant: every call rebuilds all sections from their defaults
     /// before parsing, so a second in-process run does not inherit the
     /// previous run's flags (or post-parse mutations like start_timestep).
