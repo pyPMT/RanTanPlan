@@ -247,6 +247,12 @@ NB_MODULE(_rantanplan, m) {
         .def_rw("effects", &ir::ActionIR::effects)
         .def_rw("cost", &ir::ActionIR::cost);
 
+    nb::class_<ir::AxiomIR>(m, "AxiomIR")
+        .def(nb::init<>())
+        .def_rw("parameters", &ir::AxiomIR::parameters)
+        .def_rw("head", &ir::AxiomIR::head)
+        .def_rw("body", &ir::AxiomIR::body);
+
     nb::class_<ir::AssignmentIR>(m, "AssignmentIR")
         .def(nb::init<>())
         .def_rw("fluent", &ir::AssignmentIR::fluent)
@@ -259,6 +265,7 @@ NB_MODULE(_rantanplan, m) {
         .def_rw("objects", &ir::ProblemIR::objects)
         .def_rw("fluents", &ir::ProblemIR::fluents)
         .def_rw("actions", &ir::ProblemIR::actions)
+        .def_rw("axioms", &ir::ProblemIR::axioms)
         .def_rw("initial_state", &ir::ProblemIR::initial_state)
         .def_rw("goals", &ir::ProblemIR::goals)
         .def_rw("state_invariants", &ir::ProblemIR::state_invariants)

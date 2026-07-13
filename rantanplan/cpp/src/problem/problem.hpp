@@ -37,6 +37,14 @@ enum class MetricKind { NONE, MINIMIZE_ACTION_COSTS, MINIMIZE_PLAN_LENGTH };
  * ExprPool provides query methods to check the type of an expression (ExprKind),
  * such as whether it is a fluent application, function application, or an atom.
  */
+/// A ground derived-predicate rule: the derived head atom is true iff body holds,
+/// evaluated per state as a stratified least fixpoint (never stored, never
+/// frame-axiomed). See docs/specs/axioms-derived-predicates.md.
+struct Axiom {
+    ExprID head = EXPR_NULL;  ///< derived head atom (a derived-bool state variable)
+    ExprID body = EXPR_NULL;  ///< body expression (conjunction of conditions)
+};
+
 class Problem {
     // Allow ir_io to access private members for deserialization
     friend Problem load_problem_from_ir(const ir::ProblemIR& ir_problem);
@@ -158,6 +166,11 @@ public:
     // the instance unsolvable.
     const std::vector<ExprID>& state_invariants() const { return state_invariants_; }
 
+    // Axioms (derived-predicate rules). Empty unless the problem uses derived
+    // predicates. Populated by load_problem_from_ir and carried through with_*.
+    const std::vector<Axiom>& axioms() const { return axioms_; }
+    size_t axiom_count() const { return axioms_.size(); }
+
     // Metric access
     bool has_metric() const { return metric_kind_ != MetricKind::NONE; }
     MetricKind metric_kind() const { return metric_kind_; }
@@ -240,6 +253,7 @@ private:
     std::vector<Assignment> initial_state_;
     std::vector<Goal> goals_;
     std::vector<ExprID> state_invariants_;
+    std::vector<Axiom> axioms_;
     std::shared_ptr<std::vector<Type>> types_ = std::make_shared<std::vector<Type>>();
     
     // Metric

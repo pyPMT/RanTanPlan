@@ -90,6 +90,15 @@ struct ActionIR {
     std::optional<uint32_t> cost;
 };
 
+/// A derived-predicate rule: head (a STATE_VARIABLE over a derived-bool fluent)
+/// is true iff body holds. Parameters are for lifted axioms; empty for ground
+/// (propositional) axioms, which is all the first cut handles.
+struct AxiomIR {
+    std::vector<ParameterIR> parameters;
+    uint32_t head = 0;  ///< node index of the derived head application
+    uint32_t body = 0;  ///< node index of the body (converter synthesizes the conjunction)
+};
+
 struct AssignmentIR {
     uint32_t fluent = 0;
     uint32_t value = 0;
@@ -107,6 +116,7 @@ struct ProblemIR {
     std::vector<ObjectIR> objects;
     std::vector<FluentIR> fluents;
     std::vector<ActionIR> actions;
+    std::vector<AxiomIR> axioms;  ///< derived-predicate rules (head <- body)
     std::vector<AssignmentIR> initial_state;
     std::vector<uint32_t> goals;
     std::vector<uint32_t> state_invariants;  ///< bodies of `(always f)` constraints

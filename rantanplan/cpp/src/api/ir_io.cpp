@@ -157,6 +157,7 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
     problem.types_->clear();
     problem.type_name_to_ptr_.clear();
     problem.types_->emplace_back("up:bool");
+    problem.types_->emplace_back("up:derived_bool");
     problem.types_->emplace_back("up:int");
     problem.types_->emplace_back("up:integer");
     problem.types_->emplace_back("up:real");
@@ -248,6 +249,11 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
                 action.set_cost_id(unit_cost);
             }
         }
+    }
+
+    // --- Load axioms (derived-predicate rules); before collect so bodies ground ---
+    for (const auto& ir_axiom : ir_problem.axioms) {
+        problem.axioms_.push_back(Axiom{ctx.id(ir_axiom.head), ctx.id(ir_axiom.body)});
     }
 
     problem.collect_grounded_fluents();

@@ -56,6 +56,8 @@ _OPERATOR_NAMES = {
 
 def _up_type_str(tpe) -> str:
     """Port of proto_writer.proto_type."""
+    if tpe.is_derived_bool_type():
+        return "up:derived_bool"
     if tpe.is_bool_type():
         return "up:bool"
     if tpe.is_time_type():
@@ -283,6 +285,18 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
 
     # --- Goals ---
     out.goals = [walker.walk(goal) for goal in problem.goals]
+
+    # --- Axioms (derived-predicate rules) ---
+    # axiom.head is an Effect whose .fluent is the derived head atom; axiom.body
+    # is a list of condition FNodes, conjoined like an action precondition.
+    axioms = []
+    for axiom in problem.axioms:
+        ir_axiom = _ir.AxiomIR()
+        ir_axiom.parameters = _convert_parameters(axiom.parameters)
+        ir_axiom.head = walker.walk(axiom.head.fluent)
+        ir_axiom.body = walker.precondition(axiom.body)
+        axioms.append(ir_axiom)
+    out.axioms = axioms
 
     # --- Declared state invariants: bodies of `(always f)` constraints ---
     # (The planner declares STATE_INVARIANTS support only, so UP rejects

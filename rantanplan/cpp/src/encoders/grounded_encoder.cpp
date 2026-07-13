@@ -53,8 +53,9 @@ z3::expr GroundedEncoder::convert_effect_to_z3(const EffectExpression& effect, i
 /**
  * @brief Encodes the initial state constraints at timestep 0
  * 
- * Note: The Python side takes responsibility for initializing all fluents 
- * with default values, so here we can just iterate over the initial state.
+ * Note: CWAInitialStatePass (passes/cwa_initial_state_pass.cpp) fills in default
+ * values for every grounded fluent missing from the initial state, so here we
+ * can just iterate over the initial state.
  */
 z3::expr GroundedEncoder::encode_initial_state() {
    z3::expr_vector initial_state(ctx_);

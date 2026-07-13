@@ -44,6 +44,14 @@ void Problem::collect_grounded_fluents() {
         collector.collect_from_id(goal.goal_id());
     }
 
+    // 4. Axioms: the derived head atoms and every fluent in their bodies.
+    // Both must be grounded so preconditions/goals referencing a derived atom
+    // resolve, and so the body's basic fluents get variables.
+    for (const auto& axiom : axioms_) {
+        collector.collect_from_id(axiom.head);
+        collector.collect_from_id(axiom.body);
+    }
+
     // Build the deduped list, sorted by ExprID for deterministic ordering.
     // FluentCollector uses an unordered_set, so iteration order is
     // non-deterministic; sorting ensures reproducible variable ordering
@@ -133,6 +141,7 @@ Problem Problem::clone_base() const {
     result.initial_state_ = initial_state_;
     result.goals_ = goals_;
     result.state_invariants_ = state_invariants_;
+    result.axioms_ = axioms_;
     result.metric_kind_ = metric_kind_;
     result.all_integer_ = all_integer_;
 

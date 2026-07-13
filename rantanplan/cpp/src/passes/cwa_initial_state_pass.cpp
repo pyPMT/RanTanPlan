@@ -29,6 +29,9 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
 
         const Type* type = problem.type_for_id(eid);
         if (!type) continue;
+        // Derived predicates are recomputed from basic fluents every layer and are
+        // not stored in the state, so they must not receive a default init value.
+        if (type->is_derived_bool()) continue;
 
         ExprNode constant_node;
         constant_node.kind = static_cast<int>(ExprKind::CONSTANT);
