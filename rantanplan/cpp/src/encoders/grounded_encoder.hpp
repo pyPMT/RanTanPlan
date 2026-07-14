@@ -90,6 +90,11 @@ protected:
     // where each pair represents an action that can affect the fluent at(airplane1, city1)
     std::unordered_map<ExprID, std::vector<std::pair<const Action*, const EffectExpression*>>> epc_index_;
 
+    /// Whether fluent `eid` receives frame axioms. Base: always true.
+    /// AxiomGroundedEncoder overrides this to return false for derived predicates,
+    /// which are recomputed from basic fluents each layer and never persisted.
+    virtual bool gets_frame_axiom(ExprID /*eid*/) const { return true; }
+
     void build_epc_index();
 
 public:

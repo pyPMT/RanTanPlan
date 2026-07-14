@@ -15,7 +15,7 @@ namespace rantanplan {
 
 /// SAT encoder family: Grounded (one clause set per ground action), Chained
 /// (frame-axiom chaining, reused across elsc/elsc-dt/cgb), R2E (relaxed-to-exact).
-enum class EncoderFamily { Grounded, Chained, R2E };
+enum class EncoderFamily { Grounded, Chained, R2E, AxiomGrounded };
 
 /// Parallelism semantics for the encoding: Sequential (one action per
 /// timestep), Forall (all non-interfering actions may fire), Exists (any
@@ -34,7 +34,7 @@ enum class InterferenceKind { None, EagerSyntactic, EagerSemantic, LazySyntactic
 enum class PlannerKind { Sequential, DoubleTail, BranchAndBound, CGB };
 
 /// Composable propagator module kinds.
-enum class PropagatorModuleKind { ForallEager, ForallLazy, ExistsCycle, FrameAxiom };
+enum class PropagatorModuleKind { ForallEager, ForallLazy, ExistsCycle, FrameAxiom, Axiom };
 
 using PropagatorFlags = std::set<PropagatorModuleKind>;
 

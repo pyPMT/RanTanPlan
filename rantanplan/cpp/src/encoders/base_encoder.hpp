@@ -15,6 +15,8 @@
 
 namespace rantanplan {
 
+struct AxiomInfo;  // analysis/axiom_dependency_analysis.hpp
+
 // Base class for state-space encodings to provide a common interface
 class BaseEncoder {
 public:
@@ -22,6 +24,10 @@ public:
 
     // Pipeline data (set once before search, used by encode_symmetries)
     virtual void set_symmetry_data(std::vector<SymmetryInfo> data) { symmetry_data_ = std::move(data); }
+
+    /// Axiom (derived-predicate) classification. No-op unless the encoder
+    /// supports axioms (AxiomGroundedEncoder).
+    virtual void set_axiom_info(const AxiomInfo& /*info*/) {}
 
     // Encoding steps
     virtual z3::expr encode_initial_state() = 0;

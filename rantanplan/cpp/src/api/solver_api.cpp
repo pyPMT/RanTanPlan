@@ -22,6 +22,7 @@
 #include "passes/action_pruning_pass.hpp"
 #include "passes/arithmetic_profile_pass.hpp"
 #include "passes/symmetry_analysis_pass.hpp"
+#include "passes/axiom_analysis_pass.hpp"
 #include "passes/grounding_pass.hpp"
 #include "passes/cwa_initial_state_pass.hpp"
 #include "passes/static_fluent_pass.hpp"
@@ -101,6 +102,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
         original_problem = problem;  // cheap copy (shared ExprPool)
     }
 
+    rantanplan::AxiomAnalysisPass axiom_analysis_pass;
     rantanplan::GroundingPass grounding_pass;
     rantanplan::CWAInitialStatePass cwa_pass;
     rantanplan::StaticFluentPass static_fluent_pass;
@@ -114,8 +116,20 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
 
     std::vector<const rantanplan::Pass*> passes;
 
+    // --- AXIOMS ---
+    // Before Grounding: the AxiomInfo artifact must exist regardless of
+    // Grounding's verdict (Grounding is not yet axiom-aware and would declare
+    // axiom tasks unsolvable), and the future reachability-through-axioms fix
+    // consumes it. No-op when there are no axioms.
+    passes.push_back(&axiom_analysis_pass);
+
     // --- CANONICALIZE ---
-    if (options.enable_grounding) {
+    // Skip C++ reachability grounding for axiom tasks: its reachability is not
+    // axiom-aware (same class of issue as the RPG) and would wrongly declare a
+    // derived-dependent goal unsolvable. Propositional axiom tasks are already
+    // ground; lifted-axiom grounding (milestone 9) will replace this with an
+    // axiom-aware grounder. See docs/specs/axioms-derived-predicates.md §8.
+    if (options.enable_grounding && problem.axiom_count() == 0) {
         passes.push_back(&grounding_pass);
     }
     passes.push_back(&cwa_pass);

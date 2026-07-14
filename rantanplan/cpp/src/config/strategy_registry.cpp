@@ -15,6 +15,8 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
         // Sequential
         {"seq",       {{E::Grounded, S::Sequential, I::None,             {},                       K::Sequential},
                        "Sequential encoding (baseline)"}},
+        {"seqx",      {{E::AxiomGrounded, S::Sequential, I::None,        {M::Axiom},               K::Sequential},
+                       "Sequential with axiom (derived-predicate) support"}},
 
         // Forall variants
         {"f",         {{E::Grounded, S::Forall,     I::EagerSyntactic,  {M::ForallEager},         K::Sequential},

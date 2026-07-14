@@ -175,6 +175,7 @@ z3::expr GroundedEncoder::encode_frames(int t) {
 
     // Iterate through all grounded fluents and look up in EPC index
     for (ExprID eid : problem_.grounded_fluents()) {
+        if (!gets_frame_axiom(eid)) continue;  // derived predicates: no frames
         auto epc_it = epc_index_.find(eid);
         if (epc_it == epc_index_.end()) continue;
         const auto& action_effects = epc_it->second;
@@ -494,6 +495,7 @@ void GroundedEncoder::build_epc_index() {
     // This ensures ALL grounded fluents get frame axioms, including those from
     // initial state, action effects, preconditions, and goals
     for (ExprID eid : problem_.grounded_fluents()) {
+        if (!gets_frame_axiom(eid)) continue;  // derived predicates: no frames
         epc_index_[eid] = std::vector<std::pair<const Action*, const EffectExpression*>>();
     }
 

@@ -317,6 +317,19 @@ void NumericRelaxedPlanningGraph::initialize_layer_0() {
         }
     }
 
+    // Derived predicates are computed from basic fluents by axioms, which this
+    // relaxed graph does not evaluate. Conservatively seed every derived atom as
+    // reachable-BOTH so that a derived precondition of either polarity never
+    // causes an action to be pruned or the task to be wrongly declared unsolvable.
+    // BOTH persists across layers via the frame copy; the encoder enforces the
+    // exact axiom semantics. See docs/specs/axioms-derived-predicates.md §8.
+    for (int fluent_id : boolean_fluent_ids_) {
+        const Type* t = problem_.type_for_id(problem_.grounded_fluent(fluent_id));
+        if (t && t->is_derived_bool()) {
+            initial_layer.boolean_reachability[fluent_id] = BooleanReachability::BOTH;
+        }
+    }
+
     // Store layer 0
     layer_states_.push_back(std::move(initial_layer));
     action_layers_.push_back(std::vector<const Action*>());  // No actions at layer 0

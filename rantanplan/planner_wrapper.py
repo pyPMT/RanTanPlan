@@ -174,6 +174,12 @@ class _RantanPlanBase(Engine):
     # ── Problem preparation ──────────────────────────────────────────────
 
     def _validate_plan(self, problem: Problem, plan: SequentialPlan) -> bool:
+        # UP's plan validators do not support DERIVED_FLUENTS; skip validation for
+        # axiom tasks (the C++ core enforces the axiom semantics via the encoder /
+        # propagator). Avoids a spurious "no engine supports" error.
+        if problem.kind.has_derived_fluents():
+            self._log("Plan validation: skipped (derived predicates unsupported by UP validators)")
+            return True
         try:
             with PlanValidator(problem_kind=problem.kind, plan_kind=plan.kind) as validator:
                 validation_result = validator.validate(problem, plan)  # type: ignore[attr-defined]
@@ -205,6 +211,10 @@ class _RantanPlanBase(Engine):
 
         all_fluent_expressions = []
         for fluent in task.fluents:
+            # Derived predicates are computed from basic fluents by axioms every
+            # state; they are never stored and must not be given an initial value.
+            if fluent.type.is_derived_bool_type():
+                continue
             fluent_expressions = list(get_all_fluent_exp(task, fluent))
             all_fluent_expressions.extend(fluent_expressions)
         fluentslist = all_fluent_expressions

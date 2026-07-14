@@ -107,6 +107,7 @@ add_library(rantanplan_core STATIC
     src/encoders/grounded_encoder.cpp
     src/encoders/chained_grounded_encoder.cpp
     src/encoders/r2e_grounded_encoder.cpp
+    src/encoders/axiom_grounded_encoder.cpp
     src/encoders/parallelism/sequential_semantics.cpp
     src/encoders/parallelism/forall_semantics.cpp
     src/encoders/parallelism/exists_semantics.cpp
@@ -123,6 +124,7 @@ add_library(rantanplan_core STATIC
     src/planners/propagators/modules/exists_cycle_module.cpp
     src/planners/propagators/modules/forall_mutex_module.cpp
     src/planners/propagators/modules/frame_axiom_module.cpp
+    src/planners/propagators/modules/axiom_module.cpp
     src/symmetries/smt_symmetry_checker.cpp
     src/analysis/achievers_analysis.cpp
     src/analysis/numeric_relaxed_planning_graph.cpp
@@ -133,6 +135,8 @@ add_library(rantanplan_core STATIC
     src/analysis/lazy_interference_analysis.cpp
     src/analysis/semantic_interference_analysis.cpp
     src/analysis/numeric_constraint_analyzer.cpp
+    src/analysis/axiom_dependency_analysis.cpp
+    src/passes/axiom_analysis_pass.cpp
     src/preprocessing/preprocessed_problem.cpp
     src/preprocessing/preprocessor_options.cpp
     src/passes/pipeline.cpp

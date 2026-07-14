@@ -15,7 +15,13 @@
 namespace rantanplan {
 
 void ActionPruningPass::apply(PreprocessedProblem& result) const {
-    bool need_goal_relevance = opts_->goal_relevance;
+    // Backward goal-relevance pruning walks achiever chains, which do not flow
+    // through axioms: an action producing a basic fluent that a derived goal/
+    // precondition depends on (via an axiom) would be wrongly judged irrelevant
+    // and removed. Until the achiever analysis is axiom-aware, skip relevance
+    // pruning when the task has axioms. See docs/specs/axioms-derived-predicates.md §8.
+    bool need_goal_relevance =
+        opts_->goal_relevance && result.problem.axiom_count() == 0;
 
     ScopedTimer pass_timer("pass.action-pruning.time_ms");
     auto& stats = Stats::instance();

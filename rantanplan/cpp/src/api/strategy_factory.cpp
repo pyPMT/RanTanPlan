@@ -3,6 +3,7 @@
 #include "../encoders/grounded_encoder.hpp"
 #include "../encoders/chained_grounded_encoder.hpp"
 #include "../encoders/r2e_grounded_encoder.hpp"
+#include "../encoders/axiom_grounded_encoder.hpp"
 
 #include "../encoders/parallelism/sequential_semantics.hpp"
 #include "../encoders/parallelism/forall_semantics.hpp"
@@ -21,6 +22,7 @@
 #include "../planners/propagators/modules/exists_cycle_module.hpp"
 #include "../planners/propagators/modules/forall_mutex_module.hpp"
 #include "../planners/propagators/modules/frame_axiom_module.hpp"
+#include "../planners/propagators/modules/axiom_module.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
 
@@ -80,7 +82,8 @@ void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
     // constraints, so a plan could transiently violate a declared bound. Bail
     // out rather than silently drop the bound (per-variable soundness analysis
     // and encoder demotion are left for a follow-up).
-    if (problem.has_declared_bounds() && spec.encoder != EncoderFamily::Grounded) {
+    if (problem.has_declared_bounds() && spec.encoder != EncoderFamily::Grounded &&
+        spec.encoder != EncoderFamily::AxiomGrounded) {
         throw std::invalid_argument(
             "Declared numeric bounds (bounded int/real fluent types) are only "
             "sound with the Grounded encoder; this strategy's chained/relaxed "
@@ -179,6 +182,8 @@ std::unique_ptr<BaseEncoder> StrategyFactory::create_encoder(
             return std::make_unique<ChainedGroundedEncoder>(problem, ctx, std::move(parallelism));
         case EncoderFamily::R2E:
             return std::make_unique<R2EGroundedEncoder>(problem, ctx, std::move(parallelism));
+        case EncoderFamily::AxiomGrounded:
+            return std::make_unique<AxiomGroundedEncoder>(problem, ctx, std::move(parallelism));
     }
     throw std::invalid_argument("Unknown encoder family");
 }
@@ -188,6 +193,7 @@ std::unique_ptr<BaseEncoder> StrategyFactory::create_encoder(
     auto encoder = create_encoder(spec, pre.problem, ctx);
     encoder->set_symmetry_data(pre.symmetry_data);
     encoder->set_state_constraints(std::move(pre.state_constraints));
+    encoder->set_axiom_info(pre.axiom_info);  // no-op unless AxiomGrounded
     return encoder;
 }
 
@@ -223,6 +229,10 @@ std::unique_ptr<PropagatorStrategy> StrategyFactory::create_propagator(
     // Frame axiom module (after parallelism — more expensive, skipped on conflict)
     if (mods.count(PropagatorModuleKind::FrameAxiom))
         composite->add_module(std::make_unique<FrameAxiomModule>());
+
+    // Axiom module: enforces recursive derived-predicate least fixpoints (on_final).
+    if (mods.count(PropagatorModuleKind::Axiom))
+        composite->add_module(std::make_unique<AxiomModule>());
 
     return composite;
 }

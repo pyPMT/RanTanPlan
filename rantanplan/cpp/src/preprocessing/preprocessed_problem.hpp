@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 #include "../analysis/arithmetic_profile.hpp"
+#include "../analysis/axiom_dependency_analysis.hpp"
 #include "../grounding/interval.hpp"
 #include "../problem/problem.hpp"
 #include "landmark_data.hpp"
@@ -50,6 +51,7 @@ struct PreprocessedProblem {
     std::vector<ConservationConstraint> conservation_laws; ///< Conservation laws (from ActionPruningPass)
     StateConstraints state_constraints; ///< State constraints from InvariantOraclePass
     LandmarkData landmark_data; ///< Disjunctive action landmarks (from LandmarkAnalysisPass)
+    AxiomInfo axiom_info; ///< Axiom TDG/SCC classification (from AxiomAnalysisPass); empty if no axioms
 
     // Out-of-line special members so the forward-declared artifact types
     // never need to be complete for users of this header.

@@ -26,6 +26,7 @@
 #include "api/ir.hpp"
 #include "api/ir_io.hpp"
 #include "api/solver_api.hpp"
+#include "analysis/axiom_dependency_analysis.hpp"
 #include "config/config.hpp"
 #include "config/strategy_registry.hpp"
 #include "util/logger.hpp"
@@ -190,6 +191,25 @@ std::string z3_version() {
     Z3_get_version(&major, &minor, &build, &revision);
     return std::to_string(major) + "." + std::to_string(minor) + "." +
            std::to_string(build) + "." + std::to_string(revision);
+}
+
+/// Debug: TDG/SCC classification of a problem's axioms. Bypasses the pass
+/// pipeline (so it works even while Grounding is still axiom-unaware). Returns
+/// {num_sccs, stratified, atoms:[(name, recursive, scc_id)]}.
+nb::dict debug_axiom_info(const ir::ProblemIR& problem_ir) {
+    Problem problem = load_problem_from_ir(problem_ir);
+    AxiomInfo info = analyze_axioms(problem);
+    nb::dict d;
+    d["num_sccs"] = info.num_sccs;
+    d["stratified"] = info.stratified;
+    nb::list atoms;
+    for (size_t i = 0; i < info.atoms.size(); ++i) {
+        atoms.append(nb::make_tuple(problem.pool().to_string(info.atoms[i]),
+                                    static_cast<bool>(info.recursive[i]),
+                                    info.scc_id[i]));
+    }
+    d["atoms"] = atoms;
+    return d;
 }
 
 } // namespace
@@ -358,4 +378,8 @@ NB_MODULE(_rantanplan, m) {
     m.def("z3_version", &z3_version,
           "Version of the libz3 this module is linked against (must match "
           "the z3-solver package's, or two copies are loaded).");
+
+    m.def("debug_axiom_info", &debug_axiom_info, nb::arg("problem"),
+          "Debug: TDG/SCC classification of a problem's axioms. Returns "
+          "{num_sccs, stratified, atoms:[(name, recursive, scc_id)]}.");
 }
