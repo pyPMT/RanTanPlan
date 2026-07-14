@@ -2,6 +2,7 @@
 #include "../util/logger.hpp"
 #include <algorithm>
 #include <cassert>
+#include <stdexcept>
 
 namespace rantanplan {
 
@@ -522,9 +523,17 @@ std::vector<PartialBinding> BindingMatcher::fill_unbound_parameters(
         const Parameter& param = action.parameter(pidx);
         if (!param.is_numeric()) return type_compat[pidx];
         // Bounded-int parameter: enumerate the closed interval [lb, ub].
-        // An unbounded int parameter has no finite domain and cannot be
-        // grounded — it yields no bindings (rejected upstream in practice).
-        if (!param.lower_bound() || !param.upper_bound()) return {};
+        // An unbounded/partially-bounded int parameter has no finite domain and
+        // cannot be grounded. The Python front-end rejects these before we get
+        // here (planner_wrapper._check_supported_action_parameters); throw as a
+        // loud backstop rather than silently dropping the action (which would
+        // masquerade as a proof of unsolvability).
+        if (!param.lower_bound() || !param.upper_bound()) {
+            throw std::invalid_argument(
+                "Unbounded integer action parameter '" + param.name() +
+                "' in action '" + action.name() +
+                "' cannot be grounded (needs both a lower and upper bound).");
+        }
         std::vector<int> values;
         for (int64_t v = *param.lower_bound(); v <= *param.upper_bound(); ++v)
             values.push_back(static_cast<int>(v));

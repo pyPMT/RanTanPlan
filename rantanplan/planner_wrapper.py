@@ -352,12 +352,41 @@ class _RantanPlanBase(Engine):
                     f"Goal contains nested fluent: {nested}. "
                     f"Rewrite using auxiliary parameters or boolean predicates.")
 
+    @staticmethod
+    def _check_supported_action_parameters(problem: Problem):
+        """Reject action-parameter types the grounder cannot enumerate.
+
+        Only finite-domain (fully bounded) integer parameters are supported.
+        A real parameter, or an integer parameter missing either bound, has no
+        finite domain to ground over. Rejecting here (rather than letting the
+        grounder drop the action) avoids a misleading UNSOLVABLE_PROVEN result,
+        since name-based engine selection only warns about unsupported kinds
+        instead of refusing the problem.
+        """
+        for action in problem.actions:
+            for param in action.parameters:
+                ptype = param.type
+                if ptype.is_real_type():
+                    raise UPException(
+                        f"Real-valued action parameters are not supported. "
+                        f"Action '{action.name}' parameter '{param.name}' has "
+                        f"type {ptype}.")
+                if ptype.is_int_type() and (
+                        ptype.lower_bound is None or ptype.upper_bound is None):
+                    raise UPException(
+                        f"Only bounded integer action parameters are supported "
+                        f"(the grounder enumerates their [lower, upper] "
+                        f"interval). Action '{action.name}' parameter "
+                        f"'{param.name}' has type {ptype}, which is missing a "
+                        f"lower and/or upper bound.")
+
     def _prepare_problem(self, problem: Problem):
         """Initialize fluents, compile, convert to the IR.
 
         Returns (compiled_problem, compilation_result, problem_ir).
         """
         self._check_no_nested_fluents(problem)
+        self._check_supported_action_parameters(problem)
 
         self._initialize_fluents(problem)
         compiled_problem, compilation_result = self._compile_problem(problem)
