@@ -10,6 +10,13 @@ naive instantiation: it only produces the ground actions that are actually
 *reachable* from the initial state, and it gets a plan-length lower bound
 and an unsolvability check for free in the same pass.
 
+By the time grounding runs, the two canonicalization passes ahead of it
+(`IntParameterInstantiationPass`, `QuantifierExpansionPass`) have already
+compiled away integer action parameters and every quantifier / `forall`-effect,
+so the grounder only ever sees ordinary object parameters over quantifier-free
+actions — it never has to reason about integer parameters or nested quantifiers
+(see [`preprocessing-and-strategy.md`](preprocessing-and-strategy.md)).
+
 ## Why not just enumerate every combination
 
 The naive approach — for each action schema, try every combination of

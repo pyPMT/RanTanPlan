@@ -53,10 +53,13 @@ interference is actually computed under each.
 
 ### Layer 1: Python frontend / C++ core
 
-The Python side owns everything PDDL- and UP-specific: parsing, quantifier
-removal, optional CNF compilation, and the UP `Engine` integration
-(`RantanPlanPlanner`, `RantanPlanOptimalPlanner`, `RantanPlanAnytimePlanner`
-in `planner_wrapper.py`). The C++ side owns the encoding and the search. The
+The Python side owns everything PDDL- and UP-specific: parsing, the UP→IR
+conversion, an optional UP cross-product grounding pass (`--up-grounding`), and
+the UP `Engine` integration (`RantanPlanPlanner`, `RantanPlanOptimalPlanner`,
+`RantanPlanAnytimePlanner` in `planner_wrapper.py`). Canonicalization that used
+to be Python's job — quantifier removal, integer-parameter instantiation, CNF
+normalization — now lives in the C++ pipeline. The C++ side owns the
+canonicalization, encoding, and search. The
 two communicate in-process — no subprocess, no serialization format on
 disk — through a plain-data intermediate representation (`ProblemIR`) and a
 nanobind extension module (`_rantanplan`). This replaced an earlier
@@ -84,11 +87,11 @@ contract between the two — see
 ```mermaid
 flowchart TD
     subgraph Python
-        A[PDDL / UP Problem] --> B[QuantifiersRemover<br/>+ optional CNF compiler]
+        A[PDDL / UP Problem] --> B["[optional UP grounding]<br/>(--up-grounding)"]
         B --> C["converter.py<br/>(UP Problem to ProblemIR)"]
     end
     subgraph "C++ core (_rantanplan, in-process)"
-        C -->|nanobind, GIL released| D["api::preprocess()"]
+        C -->|nanobind, GIL released| D["api::preprocess()<br/>(canonicalize: int-params,<br/>quantifiers, CNF; then ground)"]
         D --> E["PreprocessedProblem<br/>(canonical problem + verdict + artifacts)"]
         E -->|nanobind, GIL released| F["api::solve()"]
         F --> G["StrategyFactory<br/>(interference to parallelism to encoder to propagator to planner)"]

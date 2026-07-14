@@ -42,10 +42,13 @@ second `solve()` call — this is enforced at the nanobind layer too (the
 
 ```mermaid
 flowchart LR
-    P[Problem] --> A["[Grounding]<br/>(optional)"]
+    P[Problem] --> IP[Int-param instantiation]
+    IP --> QE[Quantifier expansion]
+    QE --> A["[Grounding]<br/>(optional)"]
     A --> B[CWA initial state]
     B --> C[Static fluent folding]
-    C --> D["Action pruning<br/>(RPG + goal relevance)"]
+    C --> CN["[CNF normalization]<br/>(optional)"]
+    CN --> D["Action pruning<br/>(RPG + goal relevance)"]
     D --> E[Invariant oracle<br/>local reasoning]
     E --> L[Landmark analysis]
     L --> F["[Symmetry analysis]<br/>(optional)"]
@@ -54,9 +57,20 @@ flowchart LR
 ```
 
 Passes marked optional are gated by `PreprocessorOptions` flags
-(`enable_grounding`, `enable_symmetries`). The pipeline short-circuits as
-soon as any pass sets `proven_unsolvable` — later passes don't run on a
-problem already known to have no plan.
+(`enable_grounding`, `enable_cnf_normalization`, `enable_symmetries`). The
+pipeline short-circuits as soon as any pass sets `proven_unsolvable` — later
+passes don't run on a problem already known to have no plan.
+
+The two **canonicalization** passes at the front — `IntParameterInstantiationPass`
+then `QuantifierExpansionPass` — run *before* grounding and are what let grounding
+stay a plain object grounder. The first Cartesian-expands finite-domain integer
+action parameters (`Int[lb,ub]`) into constant-valued copies and makes every
+integer range-variable bound concrete; the second rewrites all `forall`/`exists`
+conditions into AND/OR over their now-finite domains and expands `forall`-effects
+into one concrete effect per binding. Together they replace the old Python
+`QuantifiersRemover` — RantanPlan now owns all quantifier and integer-parameter
+removal in C++ (see `docs/specs/numeric-action-parameters.md`). Both are no-ops on
+a problem with no integer parameters and no quantifiers.
 
 `Pass` (`passes/pass.hpp`) is deliberately minimal: `apply(PreprocessedProblem&)`
 and `name()` (for logging). Passes are **stateless** — every pass-specific
@@ -427,8 +441,10 @@ rantanplan -d pddl/small-test/zenotravel/domain.pddl \
            --strategy elsc -v
 ```
 
-The verbose log's bracketed tags fire in exactly the pipeline diagram's
-order: `[Grounding]` → `[CWA]` → `[StaticFluent]` → `[ActionPruning]` (with
+The verbose log's bracketed tags fire in the pipeline diagram's order —
+starting at `[Grounding]` here because zenotravel has no integer parameters or
+quantifiers, so the two front canonicalization passes are silent no-ops:
+`[Grounding]` → `[CWA]` → `[StaticFluent]` → `[ActionPruning]` (with
 `[RPG.Numeric]` and `[Achievers]` inside it) → `[InvOracle]` →
 `[ArithProfile]`. Then rerun with `--no-local-reasoning`: the `[InvOracle]`
 lines vanish (no mutexes, no exactly-one groups for the encoder to assert)

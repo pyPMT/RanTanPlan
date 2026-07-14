@@ -93,6 +93,23 @@ where static-fluent folding made costs constant, so its Z3 queries use `Int`
 sorts rather than mixed sorts — this yields fewer spurious edges (still
 sound, just more precise) than building it earlier in the pipeline would.
 
+**The semantic definition lives once.** Both semantic analyzers are thin
+materializers over a single `SemanticInterferencePredicate`
+(`analysis/semantic_interference_predicate.{hpp,cpp}`), which owns the Z3
+infrastructure and the actual affects-relation check: `check1` (can a1's effects
+falsify a2's precondition?) and `check2` (do a1 and a2's effects fail to
+commute?). The lazy `SemanticInterferenceAnalysis` caches per-pair results; the
+eager `EagerSemanticInterferenceAnalysis` builds the whole graph then discards
+the predicate's Z3 state. **Change the semantic check in the predicate, not in
+either wrapper.** One subtlety worth flagging, because it was a real soundness
+bug: `check2` compares the *parallel happening* σ_h against a serialization, and
+σ_h must be the **function of compositions** (Bofill et al. 2016, Def 5) — compose
+only the per-variable assignments, so a variable an effect merely *reads* (a
+velocity fluent in `x += v·3`) stays at its pre-state value — *not* the
+composition of whole-state functions, which would let one action's write flow into
+the other's read and under-report interference on velocity/rate-style numeric
+domains. See `docs/specs/exists-step-semantic-interference-soundness.md`.
+
 **Example: where syntactic and semantic disagree.** Take two actions that
 both increase the same numeric fluent: `refuel_a` does
 `fuel(truck1) := fuel(truck1) + 5` and `refuel_b` does
