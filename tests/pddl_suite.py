@@ -63,6 +63,22 @@ QUICK_OPTIMAL_MODE_STRATEGIES = [
     "elsc",
 ]
 
+# Soundness/completeness regression guards: specific (instance, strategies) pairs
+# that exhibited a bug now fixed. They ALWAYS run (also in --quick, where the
+# instance/strategy would otherwise be filtered out), so a reintroduction is
+# caught in the fast dev loop. In full mode they are already part of the sweep
+# and are de-duplicated. Each plan is validated like any other test.
+REGRESSION_CONFIGS = [
+    # Exists-step *semantic* interference must catch numeric read/write hazards;
+    # fo-sailing previously produced a plan UP rejects on these encoders.
+    # docs/specs/exists-step-semantic-interference-soundness.md
+    ("fo-sailing", ["els", "elsc", "egs", "egsc"]),
+    # Goal-relevance pruning must keep actions that establish a conditional
+    # effect's guard; logistics-round-1-adl was UNSAT at every horizon before.
+    # docs/specs/conditional-effect-condition-pruning.md
+    ("logistics-round-1-adl", ["seq", "elsc"]),
+]
+
 
 # ---------------------------------------------------------------------------
 # Discovery
@@ -74,21 +90,39 @@ def get_strategies():
     return list(_rantanplan.list_strategies())
 
 
+def _domain_problem_in(dirpath, filenames):
+    """Pick the domain/problem .pddl pair out of one directory's files."""
+    domain = problem = None
+    for f in filenames:
+        if "domain" in f.lower() and f.endswith(".pddl"):
+            domain = Path(dirpath) / f
+        elif "problem" in f.lower() and f.endswith(".pddl"):
+            problem = Path(dirpath) / f
+    return domain, problem
+
+
 def find_problems(quick=False):
     """Return sorted list of (name, domain_path, problem_path)."""
     problems = []
     search_dirs = QUICK_TEST_DIRS if quick else ["pddl/test"]
     for search_dir in search_dirs:
         for dirpath, _, filenames in os.walk(search_dir):
-            domain = problem = None
-            for f in filenames:
-                if "domain" in f.lower() and f.endswith(".pddl"):
-                    domain = Path(dirpath) / f
-                elif "problem" in f.lower() and f.endswith(".pddl"):
-                    problem = Path(dirpath) / f
+            domain, problem = _domain_problem_in(dirpath, filenames)
             if domain and problem:
                 problems.append((Path(dirpath).name, domain, problem))
     return sorted(problems, key=lambda t: t[0])
+
+
+def find_instance(name):
+    """Locate a specific instance directory by name under pddl/test, regardless
+    of quick-mode directory filtering. Returns (name, domain, problem) or None."""
+    for dirpath, _, filenames in os.walk("pddl/test"):
+        if Path(dirpath).name != name:
+            continue
+        domain, problem = _domain_problem_in(dirpath, filenames)
+        if domain and problem:
+            return (name, domain, problem)
+    return None
 
 
 def build_test_configs(strategies, quick=False):
@@ -212,16 +246,39 @@ def run(quick=False, verbose=False, up_grounding=False, jobs=4):
         return 0, 1, [("pddl-discovery", "no problems found")]
 
     configs = build_test_configs(strategies, quick=quick)
-    total = len(problems) * len(configs)
-    print(f"{C.BOLD}PDDL suite{C.END}: {len(problems)} domains x {len(configs)} "
-          f"configs = {total} tests (jobs: {jobs})\n")
 
     work_items = []
+    seen_labels = set()
     for name, domain, problem_file in problems:
         for strategy, mode, label in configs:
             test_label = f"{name} / {label}"
+            seen_labels.add(test_label)
             work_items.append((test_label, name, domain, problem_file, strategy,
                                verbose, up_grounding, mode))
+
+    # Append the always-on regression guards, skipping any already in the sweep
+    # (full mode) or whose strategy is not registered in this build.
+    regression_count = 0
+    for inst_name, strats in REGRESSION_CONFIGS:
+        inst = find_instance(inst_name)
+        if inst is None:
+            continue
+        name, domain, problem_file = inst
+        for strategy in strats:
+            if strategy not in all_strategies:
+                continue
+            test_label = f"{name} / {strategy}"
+            if test_label in seen_labels:
+                continue
+            seen_labels.add(test_label)
+            work_items.append((test_label, name, domain, problem_file, strategy,
+                               verbose, up_grounding, None))
+            regression_count += 1
+
+    total = len(work_items)
+    extra = f" (+{regression_count} regression)" if regression_count else ""
+    print(f"{C.BOLD}PDDL suite{C.END}: {len(problems)} domains x {len(configs)} "
+          f"configs = {total} tests{extra} (jobs: {jobs})\n")
 
     if jobs == 1 or verbose:
         # Sequential: verbose needs sequential for readable output.

@@ -91,10 +91,12 @@ void AchieversAnalysis::initialize_from_rpg_data(const Problem& problem, RPGData
 void AchieversAnalysis::clear() {
     precondition_to_actions_.clear();
     action_to_preconditions_.clear();
+    action_to_effect_conditions_.clear();
     condition_to_achievers_.clear();
     action_to_achieved_conditions_.clear();
     pre_conditions_.clear();
     goal_conditions_.clear();
+    effect_conditions_.clear();
 
     // Invalidate cache
     all_conditions_cached_ = false;
@@ -108,9 +110,10 @@ void AchieversAnalysis::analyze(const Problem& problem) {
     auto& stats = Stats::instance();
     clear();
 
-    // Process all actions for precondition analysis
+    // Process all actions for precondition and conditional-effect-guard analysis
     for (const auto& action : problem.actions()) {
         process_action_preconditions(action);
+        process_action_effect_conditions(action);
     }
     stats.set("achievers_analysis.total_preconditions", precondition_to_actions_.size());
 
@@ -160,6 +163,29 @@ void AchieversAnalysis::process_action_preconditions(const Action& action) {
         precondition_to_actions_[eid].insert(action);
         action_to_preconditions_[action].insert(eid);
         pre_conditions_.insert(eid);
+    }
+}
+
+void AchieversAnalysis::process_action_effect_conditions(const Action& action) {
+    // The guard of a conditional effect `(when phi (eff))` is NOT a precondition:
+    // the action executes whether or not phi holds — only the effect is skipped.
+    // But if a plan relies on that effect to achieve a (sub)goal, phi must be
+    // establishable, so goal-relevance pruning must keep phi's achievers (e.g.
+    // drive-truck's `(when (in ?x ?veh) (at ?x to))` delivers a package only once
+    // `load` has established `in`). We record these guards separately from real
+    // preconditions so they never leak into the landmark closure / init logic,
+    // which read action_to_preconditions_ as facts required for the action to run.
+    // See docs/specs/conditional-effect-condition-pruning.md.
+    std::vector<ExprID> literals;
+    for (const auto& effect_wrapper : action.effects()) {
+        const EffectExpression& effect = effect_wrapper.effect_expression();
+        if (effect.is_conditional() && effect.condition_id().valid()) {
+            extract_cnf_literals(effect.condition_id(), literals);
+        }
+    }
+    for (ExprID eid : literals) {
+        action_to_effect_conditions_[action].insert(eid);
+        effect_conditions_.insert(eid);  // so achievers get computed for it
     }
 }
 
@@ -227,6 +253,13 @@ void AchieversAnalysis::analyze_semantic_achievers() {
     // Collect all goal conditions
     for (const auto& goal_eid : goal_conditions_) {
         all_conditions.insert(goal_eid);
+    }
+
+    // Collect conditional-effect guards so goal-relevance pruning can find the
+    // actions that establish them (they are not preconditions; see
+    // process_action_effect_conditions).
+    for (const auto& effect_cond_eid : effect_conditions_) {
+        all_conditions.insert(effect_cond_eid);
     }
 
     stats.set("achievers_analysis.conditions_to_analyze", all_conditions.size());
@@ -820,6 +853,23 @@ std::unordered_set<size_t> AchieversAnalysis::compute_goal_relevant_action_indic
         visited_conditions.insert(g);
     }
 
+    // A relevant action needs both its preconditions (required to execute) and
+    // the guards of its conditional effects (required for those effects to fire)
+    // to be establishable, so both are enqueued as sub-goals for the backward
+    // walk. (This over-approximates by enqueuing every guard of the action rather
+    // than only the effect that achieved the current condition — safe for pruning,
+    // which must never drop a needed action.)
+    auto enqueue_needed_conditions = [&](const Action& action,
+                                         std::vector<ExprID>& out) {
+        for (const auto* map : {&action_to_preconditions_, &action_to_effect_conditions_}) {
+            auto it = map->find(action);
+            if (it == map->end()) continue;
+            for (ExprID c : it->second) {
+                if (visited_conditions.insert(c).second) out.push_back(c);
+            }
+        }
+    };
+
     while (!frontier.empty()) {
         std::vector<ExprID> next_frontier;
         for (ExprID cond : frontier) {
@@ -831,15 +881,9 @@ std::unordered_set<size_t> AchieversAnalysis::compute_goal_relevant_action_indic
                 if (ptr_it == action_id_to_ptr.end()) continue;
 
                 if (relevant_actions.insert(ptr_it->second).second) {
-                    // New relevant action — add its preconditions to frontier
-                    auto prec_it = action_to_preconditions_.find(achiever);
-                    if (prec_it != action_to_preconditions_.end()) {
-                        for (ExprID prec : prec_it->second) {
-                            if (visited_conditions.insert(prec).second) {
-                                next_frontier.push_back(prec);
-                            }
-                        }
-                    }
+                    // New relevant action — enqueue its preconditions and its
+                    // conditional-effect guards.
+                    enqueue_needed_conditions(achiever, next_frontier);
                 }
             }
         }
@@ -879,39 +923,25 @@ std::unordered_set<size_t> AchieversAnalysis::compute_goal_relevant_action_indic
                         relevant_actions.insert(ptr_it->second);
                         changed = true;
 
-                        // Also add this action's precondition conditions to
-                        // the achiever BFS (its enablers are also relevant).
-                        auto prec_it = action_to_preconditions_.find(action);
-                        if (prec_it != action_to_preconditions_.end()) {
-                            std::vector<ExprID> cost_frontier;
-                            for (ExprID prec : prec_it->second) {
-                                if (visited_conditions.insert(prec).second) {
-                                    cost_frontier.push_back(prec);
-                                }
-                            }
-                            // Mini BFS for enablers of cost-relevant actions
-                            while (!cost_frontier.empty()) {
-                                std::vector<ExprID> next;
-                                for (ExprID c : cost_frontier) {
-                                    auto it = condition_to_achievers_.find(c);
-                                    if (it == condition_to_achievers_.end()) continue;
-                                    for (const Action& en : it->second) {
-                                        auto ep = action_id_to_ptr.find(en.id());
-                                        if (ep == action_id_to_ptr.end()) continue;
-                                        if (relevant_actions.insert(ep->second).second) {
-                                            auto pi = action_to_preconditions_.find(en);
-                                            if (pi != action_to_preconditions_.end()) {
-                                                for (ExprID p : pi->second) {
-                                                    if (visited_conditions.insert(p).second) {
-                                                        next.push_back(p);
-                                                    }
-                                                }
-                                            }
-                                        }
+                        // Also add this action's needed conditions to the
+                        // achiever BFS (its enablers are also relevant).
+                        std::vector<ExprID> cost_frontier;
+                        enqueue_needed_conditions(action, cost_frontier);
+                        // Mini BFS for enablers of cost-relevant actions
+                        while (!cost_frontier.empty()) {
+                            std::vector<ExprID> next;
+                            for (ExprID c : cost_frontier) {
+                                auto it = condition_to_achievers_.find(c);
+                                if (it == condition_to_achievers_.end()) continue;
+                                for (const Action& en : it->second) {
+                                    auto ep = action_id_to_ptr.find(en.id());
+                                    if (ep == action_id_to_ptr.end()) continue;
+                                    if (relevant_actions.insert(ep->second).second) {
+                                        enqueue_needed_conditions(en, next);
                                     }
                                 }
-                                cost_frontier = std::move(next);
                             }
+                            cost_frontier = std::move(next);
                         }
                         break;  // This action is now relevant, move to next
                     }

@@ -22,7 +22,9 @@
 #include "passes/action_pruning_pass.hpp"
 #include "passes/arithmetic_profile_pass.hpp"
 #include "passes/symmetry_analysis_pass.hpp"
+#include "passes/int_parameter_instantiation_pass.hpp"
 #include "passes/grounding_pass.hpp"
+#include "passes/quantifier_expansion_pass.hpp"
 #include "passes/cwa_initial_state_pass.hpp"
 #include "passes/static_fluent_pass.hpp"
 #include "passes/cnf_normalization_pass.hpp"
@@ -101,6 +103,8 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
         original_problem = problem;  // cheap copy (shared ExprPool)
     }
 
+    rantanplan::IntParameterInstantiationPass int_parameter_instantiation_pass;
+    rantanplan::QuantifierExpansionPass quantifier_expansion_pass;
     rantanplan::GroundingPass grounding_pass;
     rantanplan::CWAInitialStatePass cwa_pass;
     rantanplan::StaticFluentPass static_fluent_pass;
@@ -115,6 +119,12 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     std::vector<const rantanplan::Pass*> passes;
 
     // --- CANONICALIZE ---
+    // Compile integer parameters away (syntactic), then remove all quantifiers
+    // (conditions + forall-effects) — both before grounding. By now every range
+    // bound is a constant and no parameter is numeric, so grounding is ordinary
+    // object grounding over quantifier-free actions.
+    passes.push_back(&int_parameter_instantiation_pass);
+    passes.push_back(&quantifier_expansion_pass);
     if (options.enable_grounding) {
         passes.push_back(&grounding_pass);
     }

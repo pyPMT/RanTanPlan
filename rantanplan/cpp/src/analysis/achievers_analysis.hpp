@@ -131,6 +131,15 @@ private:
     // Map from action to set of preconditions it requires
     std::unordered_map<Action, std::unordered_set<ExprID>> action_to_preconditions_;
 
+    // Map from action to the conditions guarding its conditional effects. These
+    // are NOT preconditions: the action still executes when the guard is false
+    // (only that effect is skipped), so they are kept OUT of
+    // action_to_preconditions_ / precondition_to_actions_ / pre_conditions_,
+    // which the landmark closure and init-satisfaction read as facts required
+    // for the action to run. Consumed only by goal-relevance pruning, which must
+    // keep the achievers of a guard when a plan relies on the guarded effect.
+    std::unordered_map<Action, std::unordered_set<ExprID>> action_to_effect_conditions_;
+
     // Map from condition to set of actions that can achieve it (using semantic analysis)
     std::unordered_map<ExprID, std::unordered_set<Action>> condition_to_achievers_;
 
@@ -140,6 +149,12 @@ private:
     // Set of goal conditions (extracted from goal expressions)
     std::unordered_set<ExprID> pre_conditions_;
     std::unordered_set<ExprID> goal_conditions_;
+
+    // Conditional-effect guard conditions (see action_to_effect_conditions_).
+    // Fed into achiever computation so pruning can find their establishers, but
+    // kept out of pre_conditions_ / get_all_conditions() so the landmark, cgb
+    // and init-satisfaction consumers are unaffected.
+    std::unordered_set<ExprID> effect_conditions_;
 
     // Cached set of all conditions (computed once for performance)
     mutable std::unordered_set<ExprID> all_conditions_cache_;
@@ -185,6 +200,7 @@ private:
     // Helper methods
     void extract_cnf_literals(ExprID eid, std::vector<ExprID>& literals);
     void process_action_preconditions(const Action& action);
+    void process_action_effect_conditions(const Action& action);
     void process_goal_conditions(const Goal& goal);
     void analyze_semantic_achievers();
     std::unordered_set<ExprID> collect_fluents_in_expression(ExprID eid);

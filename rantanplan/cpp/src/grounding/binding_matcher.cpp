@@ -2,7 +2,6 @@
 #include "../util/logger.hpp"
 #include <algorithm>
 #include <cassert>
-#include <stdexcept>
 
 namespace rantanplan {
 
@@ -493,69 +492,38 @@ std::vector<PartialBinding> BindingMatcher::fill_unbound_parameters(
 {
     if (action.parameter_count() == 0) return bindings;
 
-    // Detect which parameters are unbound.
-    // All bindings have the same bound-param-set (same join path), so check first.
+    // Object parameters not bound by the join. Numeric parameters are skipped:
+    // IntParameterInstantiationPass already compiled them to constants before
+    // grounding, so they carry no binding here and are copied through by
+    // action_instantiator. (All bindings share the same bound-param set, so the
+    // first one is representative.)
     std::vector<int> unbound;
-    if (bindings.empty()) {
-        // No bindings at all — enumerate everything.
-        for (size_t i = 0; i < action.parameter_count(); ++i)
+    for (size_t i = 0; i < action.parameter_count(); ++i) {
+        if (action.parameter(i).is_numeric()) continue;
+        if (bindings.empty() ||
+            bindings.front().find(static_cast<int>(i)) == bindings.front().end())
             unbound.push_back(static_cast<int>(i));
-    } else {
-        const auto& first = bindings.front();
-        for (size_t i = 0; i < action.parameter_count(); ++i) {
-            if (first.find(static_cast<int>(i)) == first.end())
-                unbound.push_back(static_cast<int>(i));
-        }
     }
 
     if (unbound.empty()) return bindings;
 
-    // Pre-compute type-compatible object lists (once). For a bounded-int
-    // parameter this yields nothing (there are no objects of an int type) —
-    // its domain is the enumerated integer interval instead (see below).
+    // Type-compatible objects for each parameter (computed once).
     auto type_compat = get_type_compatible_objects(action);
 
-    // Domain of an unbound parameter, as the raw values stored in a
-    // PartialBinding slot: object indices for object parameters, or literal
-    // integer values for bounded-int parameters. Consumers disambiguate via
-    // Parameter::is_numeric() (see action_instantiator.cpp).
-    auto domain_of = [&](int pidx) -> std::vector<int> {
-        const Parameter& param = action.parameter(pidx);
-        if (!param.is_numeric()) return type_compat[pidx];
-        // Bounded-int parameter: enumerate the closed interval [lb, ub].
-        // An unbounded/partially-bounded int parameter has no finite domain and
-        // cannot be grounded. The Python front-end rejects these before we get
-        // here (planner_wrapper._check_supported_action_parameters); throw as a
-        // loud backstop rather than silently dropping the action (which would
-        // masquerade as a proof of unsolvability).
-        if (!param.lower_bound() || !param.upper_bound()) {
-            throw std::invalid_argument(
-                "Unbounded integer action parameter '" + param.name() +
-                "' in action '" + action.name() +
-                "' cannot be grounded (needs both a lower and upper bound).");
-        }
-        std::vector<int> values;
-        for (int64_t v = *param.lower_bound(); v <= *param.upper_bound(); ++v)
-            values.push_back(static_cast<int>(v));
-        return values;
-    };
-
-    // Cartesian-product expansion of unbound parameters.
-    const auto& start = bindings.empty()
+    // Cartesian-product expansion of the unbound object parameters.
+    std::vector<PartialBinding> result = bindings.empty()
         ? std::vector<PartialBinding>{PartialBinding{}}
         : bindings;
 
-    std::vector<PartialBinding> result = start;
-
     for (int pidx : unbound) {
-        const std::vector<int> domain = domain_of(pidx);
+        const auto& compatible = type_compat[pidx];
         std::vector<PartialBinding> expanded;
-        expanded.reserve(result.size() * domain.size());
+        expanded.reserve(result.size() * compatible.size());
 
         for (const auto& binding : result) {
-            for (int value : domain) {
+            for (int oidx : compatible) {
                 PartialBinding ext = binding;
-                ext[pidx] = value;
+                ext[pidx] = oidx;
                 expanded.push_back(std::move(ext));
             }
         }

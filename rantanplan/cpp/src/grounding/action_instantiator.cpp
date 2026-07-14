@@ -28,26 +28,11 @@ static ExprID make_object_constant(ExprPool& pool,
 }
 
 // ---------------------------------------------------------------------------
-// Helper: build an integer-constant ExprID (mirrors an int literal loaded by
-// intern_nodes() — kind CONSTANT with an int64_t payload). Used to substitute
-// a bounded-int action parameter with its chosen value during grounding.
-// ---------------------------------------------------------------------------
-
-static ExprID make_int_constant(ExprPool& pool,
-                                const Problem& problem,
-                                int64_t value) {
-    ExprNode node;
-    node.kind = static_cast<int>(ExprKind::CONSTANT);
-    const Type* int_type = problem.find_type("up:integer");
-    if (int_type) {
-        node.type_id = static_cast<int>(int_type - &problem.types()[0]);
-    }
-    node.payload = value;
-    return pool.intern(node);
-}
-
-// ---------------------------------------------------------------------------
-// Helper: build a Substitution (param_name → constant ExprID).
+// Helper: build a Substitution (param_name → object-constant ExprID).
+//
+// Only object parameters appear in a binding. Integer parameters were already
+// compiled to constants by IntParameterInstantiationPass, so they are absent
+// here and their references in the expressions are already substituted.
 // ---------------------------------------------------------------------------
 
 static Substitution build_substitution(ExprPool& pool,
@@ -55,15 +40,9 @@ static Substitution build_substitution(ExprPool& pool,
                                         const Action& lifted_action,
                                         const PartialBinding& binding) {
     Substitution subst;
-    for (const auto& [param_idx, value] : binding) {
-        const Parameter& param = lifted_action.parameter(param_idx);
-        // A binding slot holds an object index for object parameters, or a
-        // literal integer value for bounded-int parameters (see
-        // BindingMatcher::fill_unbound_parameters).
-        ExprID constant_id = param.is_numeric()
-            ? make_int_constant(pool, problem, static_cast<int64_t>(value))
-            : make_object_constant(pool, problem, value);
-        subst[param.name()] = constant_id;
+    for (const auto& [param_idx, obj_idx] : binding) {
+        subst[lifted_action.parameter(param_idx).name()] =
+            make_object_constant(pool, problem, obj_idx);
     }
     return subst;
 }
@@ -78,27 +57,24 @@ Action instantiate_action(ExprPool& pool,
                           const PartialBinding& binding) {
     Substitution subst = build_substitution(pool, problem, lifted_action, binding);
 
-    // Create ground action with base name (e.g., "board") and parameters
-    // holding the bound object names (e.g., "person2", "plane1", "city0").
-    // This ensures plan_to_ir() emits action instances the Python side can
-    // resolve against the original lifted problem.
+    // Create the ground action with the base name (e.g. "board") and parameters
+    // in the original order, so plan_to_ir() emits instances the Python side can
+    // resolve against the lifted problem.
     Action ground(lifted_action.name());
     ground.set_pool(&pool);
 
     for (size_t i = 0; i < lifted_action.parameter_count(); ++i) {
+        const Parameter& lparam = lifted_action.parameter(i);
         auto it = binding.find(static_cast<int>(i));
         if (it != binding.end()) {
-            const Parameter& lparam = lifted_action.parameter(i);
-            if (lparam.is_numeric()) {
-                // Ground bounded-int parameter: record the chosen value as the
-                // parameter name (e.g. "2") so plan_to_ir() emits it and the
-                // Python side rebuilds Int(2) against the lifted signature.
-                ground.add_parameter(
-                    Parameter(std::to_string(it->second), lparam.type()));
-            } else {
-                const Object& obj = problem.object(it->second);
-                ground.add_parameter(Parameter(obj.name(), obj.type()));
-            }
+            // Object parameter: use the bound object's name.
+            const Object& obj = problem.object(it->second);
+            ground.add_parameter(Parameter(obj.name(), obj.type()));
+        } else if (lparam.is_numeric()) {
+            // Integer parameter already compiled to a constant-named parameter
+            // (e.g. "2") by IntParameterInstantiationPass — carry it through so
+            // the Python side rebuilds Int(2) against the lifted signature.
+            ground.add_parameter(lparam);
         }
     }
 

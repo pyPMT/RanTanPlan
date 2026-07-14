@@ -131,6 +131,7 @@ add_library(rantanplan_core STATIC
     src/analysis/eager_interference_analysis.cpp
     src/analysis/eager_semantic_interference_analysis.cpp
     src/analysis/lazy_interference_analysis.cpp
+    src/analysis/semantic_interference_predicate.cpp
     src/analysis/semantic_interference_analysis.cpp
     src/analysis/numeric_constraint_analyzer.cpp
     src/preprocessing/preprocessed_problem.cpp
@@ -143,7 +144,9 @@ add_library(rantanplan_core STATIC
     src/passes/bound_tightening.cpp
     src/passes/h2_mutex_checker.cpp
     src/passes/symmetry_analysis_pass.cpp
+    src/passes/int_parameter_instantiation_pass.cpp
     src/passes/grounding_pass.cpp
+    src/passes/quantifier_expansion_pass.cpp
     src/passes/cwa_initial_state_pass.cpp
     src/passes/static_fluent_pass.cpp
     src/passes/cnf_normalization_pass.cpp

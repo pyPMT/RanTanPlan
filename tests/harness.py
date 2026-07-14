@@ -12,12 +12,17 @@ from unified_planning.shortcuts import OneshotPlanner, PlanValidator
 from unified_planning.engines import ValidationResultStatus
 
 
-def solve(problem, optimal=False):
+def solve(problem, optimal=False, strategy=None):
     """Solve with the RantanPlan engine (silent). ``optimal=True`` selects the
     separately-registered optimal engine (name-based selection ignores the
-    optimality guarantee for engine choice)."""
+    optimality guarantee for engine choice). ``strategy`` pins a specific
+    strategy (default: the engine default) — used by regression tests that must
+    exercise a particular encoder/preprocessor path."""
     name = "rantanplan-optimal" if optimal else "rantanplan"
-    with OneshotPlanner(name=name, params={"verbosity": "silent"}) as planner:
+    params = {"verbosity": "silent"}
+    if strategy is not None:
+        params["strategy"] = strategy
+    with OneshotPlanner(name=name, params=params) as planner:
         return planner.solve(problem)
 
 
