@@ -97,6 +97,7 @@ class _RantanPlanBase(Engine):
         supported_kind.set_numbers('CONTINUOUS_NUMBERS')
         supported_kind.set_numbers('DISCRETE_NUMBERS')
         supported_kind.set_numbers('BOUNDED_TYPES')
+        supported_kind.set_parameters('BOUNDED_INT_ACTION_PARAMETERS')
         supported_kind.set_fluents_type('NUMERIC_FLUENTS')
         supported_kind.set_fluents_type('REAL_FLUENTS')
         supported_kind.set_fluents_type('INT_FLUENTS')
@@ -383,11 +384,17 @@ class _RantanPlanBase(Engine):
         mapping each back through the compilation steps."""
         action_map = {a.name: a for a in compiled_problem.actions}
         object_map = {o.name: o for o in compiled_problem.all_objects}
+        em = compiled_problem.environment.expression_manager
 
         new_actions: list[ActionInstance] = []
         for instance in instances:
             action = action_map[instance.action_name]
-            params = tuple(object_map[p] for p in instance.parameters)
+            # A bounded-int parameter comes back as an integer literal string
+            # (e.g. "2"); rebuild it as Int(2) against the lifted signature.
+            # Object parameters resolve to their UP Object.
+            params = tuple(
+                em.Int(int(value)) if ap.type.is_int_type() else object_map[value]
+                for value, ap in zip(instance.parameters, action.parameters))
             mapped_ai = compilation_result.map_back_action_instance(
                 ActionInstance(action, params))
             assert mapped_ai is not None

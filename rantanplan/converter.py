@@ -192,6 +192,15 @@ def _convert_parameters(parameters):
         ir_param = _ir.ParameterIR()
         ir_param.name = param.name
         ir_param.type_name = _up_type_str(param.type)
+        # Bounded-int parameters carry their [lower, upper] interval so the C++
+        # grounder can enumerate it (the type string stays "up:integer"). Real
+        # and unbounded-int parameters are unsupported and rejected upstream.
+        ptype = param.type
+        if ptype.is_int_type():
+            if ptype.lower_bound is not None:
+                ir_param.lower_bound = int(ptype.lower_bound)
+            if ptype.upper_bound is not None:
+                ir_param.upper_bound = int(ptype.upper_bound)
         result.append(ir_param)
     return result
 

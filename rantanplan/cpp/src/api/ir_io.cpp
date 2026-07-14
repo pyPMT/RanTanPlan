@@ -119,7 +119,10 @@ static Action convert_action(IRLoadContext& ctx, const ir::ActionIR& ir_action) 
     std::vector<Parameter> params;
     for (const auto& ir_param : ir_action.parameters) {
         const Type* param_type = ctx.find_type(ir_param.type_name);
-        params.emplace_back(ir_param.name, param_type);
+        Parameter param(ir_param.name, param_type);
+        if (ir_param.lower_bound) param.set_lower_bound(*ir_param.lower_bound);
+        if (ir_param.upper_bound) param.set_upper_bound(*ir_param.upper_bound);
+        params.emplace_back(std::move(param));
     }
 
     std::vector<Effect> effects;

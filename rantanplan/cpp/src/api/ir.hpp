@@ -58,6 +58,11 @@ struct ObjectIR {
 struct ParameterIR {
     std::string name;
     std::string type_name;
+    /// Declared integer bounds for a bounded-int action parameter (e.g.
+    /// `amount: integer[1, 3]`); unset for object/bool/real parameters and for
+    /// unbounded ints. Grounding enumerates the closed interval [lower, upper].
+    std::optional<int64_t> lower_bound;
+    std::optional<int64_t> upper_bound;
 };
 
 struct FluentIR {
