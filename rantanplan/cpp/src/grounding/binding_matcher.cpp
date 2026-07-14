@@ -492,32 +492,28 @@ std::vector<PartialBinding> BindingMatcher::fill_unbound_parameters(
 {
     if (action.parameter_count() == 0) return bindings;
 
-    // Detect which parameters are unbound.
-    // All bindings have the same bound-param-set (same join path), so check first.
+    // Object parameters not bound by the join. Numeric parameters are skipped:
+    // IntParameterInstantiationPass already compiled them to constants before
+    // grounding, so they carry no binding here and are copied through by
+    // action_instantiator. (All bindings share the same bound-param set, so the
+    // first one is representative.)
     std::vector<int> unbound;
-    if (bindings.empty()) {
-        // No bindings at all — enumerate everything.
-        for (size_t i = 0; i < action.parameter_count(); ++i)
+    for (size_t i = 0; i < action.parameter_count(); ++i) {
+        if (action.parameter(i).is_numeric()) continue;
+        if (bindings.empty() ||
+            bindings.front().find(static_cast<int>(i)) == bindings.front().end())
             unbound.push_back(static_cast<int>(i));
-    } else {
-        const auto& first = bindings.front();
-        for (size_t i = 0; i < action.parameter_count(); ++i) {
-            if (first.find(static_cast<int>(i)) == first.end())
-                unbound.push_back(static_cast<int>(i));
-        }
     }
 
     if (unbound.empty()) return bindings;
 
-    // Pre-compute type-compatible object lists (once).
+    // Type-compatible objects for each parameter (computed once).
     auto type_compat = get_type_compatible_objects(action);
 
-    // Cartesian-product expansion of unbound parameters.
-    const auto& start = bindings.empty()
+    // Cartesian-product expansion of the unbound object parameters.
+    std::vector<PartialBinding> result = bindings.empty()
         ? std::vector<PartialBinding>{PartialBinding{}}
         : bindings;
-
-    std::vector<PartialBinding> result = start;
 
     for (int pidx : unbound) {
         const auto& compatible = type_compat[pidx];

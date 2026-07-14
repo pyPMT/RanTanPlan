@@ -196,10 +196,12 @@ does, if `--stats-file` was requested.
 strings, not UP objects, since the IR has no reference to the original UP
 `Problem`. `planner_wrapper.py`'s `_build_plan` rebuilds `ActionInstance`s by
 looking up the name in the *compiled* problem's action map, then maps each
-one back through whatever compilation steps ran before conversion
-(quantifier removal, optional CNF compilation) via
-`compilation_result.map_back_action_instance`. The result is validated
-against the *original* (pre-compilation) problem before being returned.
+one back through whatever compilation steps ran before conversion via
+`compilation_result.map_back_action_instance`. The only such step now is the
+optional UP cross-product grounder (`--up-grounding`); quantifier removal,
+integer-parameter instantiation, and CNF normalization all moved into the C++
+pipeline and no longer participate in the Python-side plan mapback. The result
+is validated against the *original* (pre-compilation) problem before being returned.
 
 ## Try it
 

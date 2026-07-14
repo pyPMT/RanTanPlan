@@ -1,13 +1,12 @@
 from typing import Callable, IO, Iterator, Optional
 
-import unified_planning as up
 from unified_planning.shortcuts import Fraction, PlanValidator
 from unified_planning.engines.results import PlanGenerationResult, LogMessage, LogLevel
 from unified_planning.engines.mixins import OneshotPlannerMixin
 from unified_planning.engines.mixins.oneshot_planner import OptimalityGuarantee
 from unified_planning.engines.mixins.anytime_planner import AnytimePlannerMixin, AnytimeGuarantee
 from unified_planning.engines import PlanGenerationResultStatus, Engine, CompilationKind, ValidationResultStatus
-from unified_planning.engines.compilers import Grounder, QuantifiersRemover
+from unified_planning.engines.compilers import Grounder
 from unified_planning.exceptions import UPException
 from .converter import convert_problem
 from unified_planning.model import ProblemKind, Problem
@@ -97,6 +96,8 @@ class _RantanPlanBase(Engine):
         supported_kind.set_numbers('CONTINUOUS_NUMBERS')
         supported_kind.set_numbers('DISCRETE_NUMBERS')
         supported_kind.set_numbers('BOUNDED_TYPES')
+        supported_kind.set_parameters('BOUNDED_INT_ACTION_PARAMETERS')
+        supported_kind.set_conditions_kind('RANGE_VARIABLES')
         supported_kind.set_fluents_type('NUMERIC_FLUENTS')
         supported_kind.set_fluents_type('REAL_FLUENTS')
         supported_kind.set_fluents_type('INT_FLUENTS')
@@ -230,7 +231,6 @@ class _RantanPlanBase(Engine):
                 real_int_fluents_to_init.append(fe)
 
         if real_int_fluents_to_init:
-            fluent_names = [str(f) for f in real_int_fluents_to_init]
             self._log_warning(f"WARNING: Initializing {len(real_int_fluents_to_init)} real/integer fluents to 0")
             self._log_warning("         This is not semantically correct but is done in practice for planning purposes.")
 
@@ -255,21 +255,14 @@ class _RantanPlanBase(Engine):
 
         self._log_verbose("Starting problem compilation pipeline...")
 
-        # Step 1: Remove quantifiers if present
-        quantifier_remover = QuantifiersRemover()
+        # Quantifiers (and integer parameters, and forall-effects) are compiled
+        # away entirely in the C++ pipeline: IntParameterInstantiationPass then
+        # QuantifierExpansionPass, both before grounding. The Python-side
+        # QuantifiersRemover is intentionally not used.
 
-        if quantifier_remover.supports(current_problem.kind):
-            self._log_verbose("  Applying quantifier removal...")
-            quantifier_result = quantifier_remover.compile(current_problem, CompilationKind.QUANTIFIERS_REMOVING)
-            current_problem = quantifier_result.problem
-            compilation_maps.append(quantifier_result)
-            self._log_verbose("  Quantifier removal completed.")
-        else:
-            self._log_verbose("  Quantifier removal not needed for this problem type.")
-
-        # Step 2: Ground the problem (unless C++ backend will handle it)
-        # (CNF normalization now happens in the C++ pipeline, after grounding
-        # and static-fluent folding — see passes/cnf_normalization_pass.cpp)
+        # Optionally ground on the Python side instead of in C++.
+        # (CNF normalization happens in the C++ pipeline, after grounding and
+        # static-fluent folding — see passes/cnf_normalization_pass.cpp.)
         if self._up_grounding:
             self._log_verbose("  Applying UP grounder ...")
             grounder = Grounder()
@@ -351,12 +344,41 @@ class _RantanPlanBase(Engine):
                     f"Goal contains nested fluent: {nested}. "
                     f"Rewrite using auxiliary parameters or boolean predicates.")
 
+    @staticmethod
+    def _check_supported_action_parameters(problem: Problem):
+        """Reject action-parameter types the grounder cannot enumerate.
+
+        Only finite-domain (fully bounded) integer parameters are supported.
+        A real parameter, or an integer parameter missing either bound, has no
+        finite domain to ground over. Rejecting here (rather than letting the
+        grounder drop the action) avoids a misleading UNSOLVABLE_PROVEN result,
+        since name-based engine selection only warns about unsupported kinds
+        instead of refusing the problem.
+        """
+        for action in problem.actions:
+            for param in action.parameters:
+                ptype = param.type
+                if ptype.is_real_type():
+                    raise UPException(
+                        f"Real-valued action parameters are not supported. "
+                        f"Action '{action.name}' parameter '{param.name}' has "
+                        f"type {ptype}.")
+                if ptype.is_int_type() and (
+                        ptype.lower_bound is None or ptype.upper_bound is None):
+                    raise UPException(
+                        f"Only bounded integer action parameters are supported "
+                        f"(the grounder enumerates their [lower, upper] "
+                        f"interval). Action '{action.name}' parameter "
+                        f"'{param.name}' has type {ptype}, which is missing a "
+                        f"lower and/or upper bound.")
+
     def _prepare_problem(self, problem: Problem):
         """Initialize fluents, compile, convert to the IR.
 
         Returns (compiled_problem, compilation_result, problem_ir).
         """
         self._check_no_nested_fluents(problem)
+        self._check_supported_action_parameters(problem)
 
         self._initialize_fluents(problem)
         compiled_problem, compilation_result = self._compile_problem(problem)
@@ -383,11 +405,17 @@ class _RantanPlanBase(Engine):
         mapping each back through the compilation steps."""
         action_map = {a.name: a for a in compiled_problem.actions}
         object_map = {o.name: o for o in compiled_problem.all_objects}
+        em = compiled_problem.environment.expression_manager
 
         new_actions: list[ActionInstance] = []
         for instance in instances:
             action = action_map[instance.action_name]
-            params = tuple(object_map[p] for p in instance.parameters)
+            # A bounded-int parameter comes back as an integer literal string
+            # (e.g. "2"); rebuild it as Int(2) against the lifted signature.
+            # Object parameters resolve to their UP Object.
+            params = tuple(
+                em.Int(int(value)) if ap.type.is_int_type() else object_map[value]
+                for value, ap in zip(instance.parameters, action.parameters))
             mapped_ai = compilation_result.map_back_action_instance(
                 ActionInstance(action, params))
             assert mapped_ai is not None

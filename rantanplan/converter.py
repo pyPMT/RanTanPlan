@@ -18,6 +18,7 @@ from fractions import Fraction
 from unified_planning import model
 from unified_planning.exceptions import UPException
 from unified_planning.model import InstantaneousAction
+from unified_planning.model.range_variable import RangeVariable
 from unified_planning.model.metrics import (
     MinimizeActionCosts,
     MinimizeSequentialPlanLength,
@@ -162,6 +163,14 @@ class _FNodeToIR:
         if expression.is_variable_exp():
             variable = expression.variable()
             return self._head(_VARIABLE, variable.name, _up_type_str(variable.type))
+        if expression.is_range_variable_exp():
+            # Reference to a numeric range variable in a quantifier body. Emit it
+            # as an ordinary VARIABLE node (name + integer type) -- same shape as
+            # an object-variable reference -- so the C++ QuantifierExpansionPass
+            # substitutes it by name. The [initial, last] bounds travel on the
+            # variable's *declaration* inside the enclosing forall/exists.
+            rv = expression.range_variable()
+            return self._head(_VARIABLE, rv.name, _up_type_str(rv.type))
         if expression.is_object_exp():
             obj = expression.object()
             return self._head(_CONSTANT, obj.name, _up_type_str(obj.type))
@@ -180,10 +189,31 @@ class _FNodeToIR:
         # forall/exists: declared variables precede the arguments
         if expression.is_exists() or expression.is_forall():
             for variable in expression.variables():
-                children.append(self._head(_VARIABLE, variable.name,
-                                           _up_type_str(variable.type)))
+                children.append(self._variable_declaration(variable))
         children.extend(self.walk(arg) for arg in expression.args)
         return self._add(_FUNCTION_APPLICATION, "", children=children)
+
+    def _variable_declaration(self, variable):
+        """A quantifier's bound-variable declaration. Object variables are leaf
+        VARIABLE nodes; a numeric RangeVariable additionally carries its
+        [initial, last] bounds as two child nodes (an int constant or a
+        parameter reference), so C++ grounding substitutes any parameter in a
+        bound before the QuantifierExpansionPass reads it."""
+        if isinstance(variable, RangeVariable):
+            lo = self._bound_node(variable._initial)
+            hi = self._bound_node(variable._last)
+            return self._add(_VARIABLE, _up_type_str(variable.type),
+                             symbol=variable.name, children=[lo, hi])
+        return self._head(_VARIABLE, variable.name, _up_type_str(variable.type))
+
+    def _bound_node(self, bound):
+        """A range-variable bound: an int constant or a reference to an int
+        parameter (the raw RangeVariable._initial / _last value)."""
+        if isinstance(bound, bool):
+            raise UPException(f"Unexpected boolean range bound: {bound}")
+        if isinstance(bound, int):
+            return self._add(_CONSTANT, "up:integer", int_value=bound)
+        return self._add(_PARAMETER, _up_type_str(bound.type), symbol=bound.name)
 
 
 def _convert_parameters(parameters):
@@ -192,6 +222,15 @@ def _convert_parameters(parameters):
         ir_param = _ir.ParameterIR()
         ir_param.name = param.name
         ir_param.type_name = _up_type_str(param.type)
+        # Bounded-int parameters carry their [lower, upper] interval so the C++
+        # grounder can enumerate it (the type string stays "up:integer"). Real
+        # and unbounded-int parameters are unsupported and rejected upstream.
+        ptype = param.type
+        if ptype.is_int_type():
+            if ptype.lower_bound is not None:
+                ir_param.lower_bound = int(ptype.lower_bound)
+            if ptype.upper_bound is not None:
+                ir_param.upper_bound = int(ptype.upper_bound)
         result.append(ir_param)
     return result
 

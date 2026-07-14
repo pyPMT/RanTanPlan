@@ -34,6 +34,11 @@ enum class ExprOperator {
     // Logical operators
     AND, OR, NOT, IMPLIES, IFF,
 
+    // Quantifiers. Only transiently present between the converter and the
+    // QuantifierExpansionPass (which runs right after grounding and rewrites
+    // them into AND/OR); no later pass or encoder sees them.
+    FORALL, EXISTS,
+
     // Pseudo-boolean: integer-valued count of n boolean arguments.
     // Deliberately NOT in the arithmetic/logical/comparison categories:
     // folding passes must treat it opaquely; the Z3 visitors encode it
@@ -68,6 +73,8 @@ inline ExprOperator string_to_expr_operator(const std::string& op_string) {
     if (op_string == "up:not") return ExprOperator::NOT;
     if (op_string == "up:implies") return ExprOperator::IMPLIES;
     if (op_string == "up:iff") return ExprOperator::IFF;
+    if (op_string == "up:forall") return ExprOperator::FORALL;
+    if (op_string == "up:exists") return ExprOperator::EXISTS;
     if (op_string == "up:count") return ExprOperator::COUNT;
 
     // Standard notation
@@ -89,6 +96,8 @@ inline ExprOperator string_to_expr_operator(const std::string& op_string) {
     if (op_string == "not") return ExprOperator::NOT;
     if (op_string == "=>") return ExprOperator::IMPLIES;
     if (op_string == "<=>") return ExprOperator::IFF;
+    if (op_string == "forall") return ExprOperator::FORALL;
+    if (op_string == "exists") return ExprOperator::EXISTS;
     if (op_string == "count") return ExprOperator::COUNT;
 
     return ExprOperator::UNKNOWN;
@@ -114,6 +123,8 @@ inline std::string expr_operator_to_string(ExprOperator op) {
         case ExprOperator::NOT: return "not";
         case ExprOperator::IMPLIES: return "=>";
         case ExprOperator::IFF: return "=";
+        case ExprOperator::FORALL: return "forall";
+        case ExprOperator::EXISTS: return "exists";
         case ExprOperator::COUNT: return "count";
         default: return "";
     }

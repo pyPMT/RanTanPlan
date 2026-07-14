@@ -45,5 +45,6 @@ sdist.exclude = [
     "rantanplan/cpp/build/",
     "scripts/",
     "test.py",
+    "tests/",
     "*.so",
 ]

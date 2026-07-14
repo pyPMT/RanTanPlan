@@ -11,9 +11,10 @@ A SAT/SMT-based automated planner with parallel action semantics. Combines a Pyt
 - **Interference analysis**: Syntactic (eager/lazy) and semantic (eager/lazy)
 - **Custom Z3 propagators**: Lazy interference via cycle detection, decision heuristics
 - **Numeric planning**: Full support for numeric fluents with SMT-based relaxed planning graph
+- **Bounded-integer action parameters & range variables**: finite-domain integer parameters (`Int[lb,ub]`) and integer-range quantifiers, compiled away before grounding (C++-native, no Python compiler)
 - **Declared state invariants**: PDDL `(:constraints (always φ))` asserted at every state
 - **Symmetry breaking**: Object symmetry detection and breaking
-- **Preprocessing pipeline**: Reachability grounding, RPG-based action removal, CWA completion, invariant discovery, landmark analysis
+- **Preprocessing pipeline**: Integer-parameter instantiation, quantifier expansion, reachability grounding, RPG-based action removal, CWA completion, invariant discovery, landmark analysis
 - **Unified Planning integration**: Plug-and-play with UP framework
 
 **Limitation**: Does not support PDDL actions that both delete and add the same fluent.
@@ -149,10 +150,10 @@ Python Frontend              C++ Backend (_rantanplan module)
 ┌─────────────────┐         ┌──────────────────────┐
 │ CLI / UP Engine │ ───┐    │  Preprocessing       │
 │                 │    │    │  ┌──────────────────┐ │
-│ • PDDL parsing  │    └───▶│  │ Grounding        │ │
-│ • CNF compiler  │ in-     │  │ RPG analysis     │ │
-│ • UP→IR convert │ process │  │ Symmetry detect  │ │
-│ • Plan validate │◀────┘   │  │ Interference     │ │
+│ • PDDL parsing  │    └───▶│  │ Canonicalize     │ │
+│ • opt. UP ground│ in-     │  │ Grounding        │ │
+│ • UP→IR convert │ process │  │ RPG analysis     │ │
+│ • Plan validate │◀────┘   │  │ Symmetry/Interf. │ │
 └─────────────────┘ nanobind│  └──────────────────┘ │
                             │  Solving               │
                             │  ┌──────────────────┐ │
@@ -166,7 +167,7 @@ Python Frontend              C++ Backend (_rantanplan module)
                             └──────────────────────┘
 ```
 
-The Python frontend uses Unified Planning to parse PDDL, applies optional CNF normalization, converts the problem to a flat plain-data IR, and calls the C++ backend in-process through a nanobind extension module (no subprocess, no serialization). The backend runs a preprocessing pipeline (reachability grounding, RPG-based action removal, symmetry detection, interference analysis), then encodes the problem as SMT and solves with Z3 using custom propagators.
+The Python frontend uses Unified Planning to parse PDDL, converts the problem to a flat plain-data IR, and calls the C++ backend in-process through a nanobind extension module (no subprocess, no serialization). Canonicalization that used to run in Python — quantifier removal, integer-parameter instantiation, CNF normalization — now happens in C++; the only optional Python-side compilation step is UP cross-product grounding (`--up-grounding`). The backend runs a preprocessing pipeline (integer-parameter instantiation, quantifier expansion, reachability grounding, RPG-based action removal, symmetry detection), then encodes the problem as SMT and solves with Z3 using custom propagators.
 
 ## Development
 
@@ -184,11 +185,18 @@ rm -rf build && pip install -e . --no-build-isolation
 # Debug build
 pip install -e . --no-build-isolation --config-settings=cmake.build-type=Debug
 
-# Testing
-python test.py               # All strategies, all test domains
-python test.py --quick       # Fast subset (zenotravel, rover, gripper, hydropower)
+# Testing (suites live in tests/; test.py is a thin entry point)
+python test.py               # PDDL suite (all strategies/domains) + API-only suite
+python test.py --quick       # Fast PDDL subset + API-only suite
+python test.py --api-only    # Only the API-only feature tests (e.g. int parameters)
 python test.py -v            # Verbose output
 ```
+
+The `tests/` package holds two suites: `tests.pddl_suite` (PDDL domain/problem
+files under `pddl/test/`) and `tests.api` (API-only feature tests for things with
+no PDDL syntax). To add tests for a new API-only feature, drop a
+`tests/api/<feature>.py` exposing a `CASES` list — it is discovered automatically
+(see `tests/README.md`).
 
 Experimental: scikit-build-core can rebuild the extension automatically on
 `import rantanplan` if installed with

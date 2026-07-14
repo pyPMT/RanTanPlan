@@ -150,6 +150,12 @@ public:
     bool is_implies(ExprID id) const { return op(id) == ExprOperator::IMPLIES; }
     bool is_iff(ExprID id) const { return op(id) == ExprOperator::IFF; }
     bool is_count(ExprID id) const { return op(id) == ExprOperator::COUNT; }
+    bool is_forall(ExprID id) const { return op(id) == ExprOperator::FORALL; }
+    bool is_exists(ExprID id) const { return op(id) == ExprOperator::EXISTS; }
+    /// A quantifier application: FUNCTION_APPLICATION[head, decl..., body].
+    /// The declarations are the VARIABLE children (children[1..n-2]); the body
+    /// is the single last child. See QuantifierExpansionPass.
+    bool is_quantifier(ExprID id) const { return is_forall(id) || is_exists(id); }
     bool is_equals(ExprID id) const { return op(id) == ExprOperator::EQUALS; }
     bool is_plus(ExprID id) const { return op(id) == ExprOperator::PLUS; }
     bool is_minus(ExprID id) const { return op(id) == ExprOperator::MINUS; }

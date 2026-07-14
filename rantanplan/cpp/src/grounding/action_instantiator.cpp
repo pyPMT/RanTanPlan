@@ -28,7 +28,11 @@ static ExprID make_object_constant(ExprPool& pool,
 }
 
 // ---------------------------------------------------------------------------
-// Helper: build a Substitution (param_name → constant ExprID).
+// Helper: build a Substitution (param_name → object-constant ExprID).
+//
+// Only object parameters appear in a binding. Integer parameters were already
+// compiled to constants by IntParameterInstantiationPass, so they are absent
+// here and their references in the expressions are already substituted.
 // ---------------------------------------------------------------------------
 
 static Substitution build_substitution(ExprPool& pool,
@@ -37,9 +41,8 @@ static Substitution build_substitution(ExprPool& pool,
                                         const PartialBinding& binding) {
     Substitution subst;
     for (const auto& [param_idx, obj_idx] : binding) {
-        const std::string& param_name = lifted_action.parameter(param_idx).name();
-        ExprID constant_id = make_object_constant(pool, problem, obj_idx);
-        subst[param_name] = constant_id;
+        subst[lifted_action.parameter(param_idx).name()] =
+            make_object_constant(pool, problem, obj_idx);
     }
     return subst;
 }
@@ -54,18 +57,24 @@ Action instantiate_action(ExprPool& pool,
                           const PartialBinding& binding) {
     Substitution subst = build_substitution(pool, problem, lifted_action, binding);
 
-    // Create ground action with base name (e.g., "board") and parameters
-    // holding the bound object names (e.g., "person2", "plane1", "city0").
-    // This ensures plan_to_ir() emits action instances the Python side can
-    // resolve against the original lifted problem.
+    // Create the ground action with the base name (e.g. "board") and parameters
+    // in the original order, so plan_to_ir() emits instances the Python side can
+    // resolve against the lifted problem.
     Action ground(lifted_action.name());
     ground.set_pool(&pool);
 
     for (size_t i = 0; i < lifted_action.parameter_count(); ++i) {
+        const Parameter& lparam = lifted_action.parameter(i);
         auto it = binding.find(static_cast<int>(i));
         if (it != binding.end()) {
+            // Object parameter: use the bound object's name.
             const Object& obj = problem.object(it->second);
             ground.add_parameter(Parameter(obj.name(), obj.type()));
+        } else if (lparam.is_numeric()) {
+            // Integer parameter already compiled to a constant-named parameter
+            // (e.g. "2") by IntParameterInstantiationPass — carry it through so
+            // the Python side rebuilds Int(2) against the lifted signature.
+            ground.add_parameter(lparam);
         }
     }
 
