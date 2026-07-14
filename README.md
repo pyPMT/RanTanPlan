@@ -184,11 +184,18 @@ rm -rf build && pip install -e . --no-build-isolation
 # Debug build
 pip install -e . --no-build-isolation --config-settings=cmake.build-type=Debug
 
-# Testing
-python test.py               # All strategies, all test domains
-python test.py --quick       # Fast subset (zenotravel, rover, gripper, hydropower)
+# Testing (suites live in tests/; test.py is a thin entry point)
+python test.py               # PDDL suite (all strategies/domains) + API-only suite
+python test.py --quick       # Fast PDDL subset + API-only suite
+python test.py --api-only    # Only the API-only feature tests (e.g. int parameters)
 python test.py -v            # Verbose output
 ```
+
+The `tests/` package holds two suites: `tests.pddl_suite` (PDDL domain/problem
+files under `pddl/test/`) and `tests.api` (API-only feature tests for things with
+no PDDL syntax). To add tests for a new API-only feature, drop a
+`tests/api/<feature>.py` exposing a `CASES` list — it is discovered automatically
+(see `tests/README.md`).
 
 Experimental: scikit-build-core can rebuild the extension automatically on
 `import rantanplan` if installed with
