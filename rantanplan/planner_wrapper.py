@@ -97,7 +97,7 @@ class _RantanPlanBase(Engine):
         supported_kind.set_numbers('DISCRETE_NUMBERS')
         supported_kind.set_numbers('BOUNDED_TYPES')
         supported_kind.set_parameters('BOUNDED_INT_ACTION_PARAMETERS')
-        supported_kind.set_conditions_kind('RANGE_VARIABLES')
+        supported_kind.set_conditions_kind('INT_VARIABLES')
         supported_kind.set_fluents_type('NUMERIC_FLUENTS')
         supported_kind.set_fluents_type('REAL_FLUENTS')
         supported_kind.set_fluents_type('INT_FLUENTS')
