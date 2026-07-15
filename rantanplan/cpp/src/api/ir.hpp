@@ -71,8 +71,18 @@ struct FluentIR {
     std::vector<ParameterIR> parameters;
     /// Declared numeric bounds for bounded int/real value types (e.g.
     /// `integer[0, 15]`); unset for unbounded numeric or non-numeric fluents.
+    /// For array fluents these carry the *element* type's bounds (the grounder
+    /// mints cells of that element type), same as scalar bounded fluents.
     std::optional<double> lower_bound;
     std::optional<double> upper_bound;
+    /// Array shape (from an ArrayType value, e.g. `array[3, integer[0, 15]]`);
+    /// empty `array_sizes` means this is not an array fluent. `element_type` is
+    /// the leaf scalar type string ("up:integer", ...); `array_sizes` is the
+    /// per-dimension size list; `undefined_positions` are full coordinate
+    /// tuples the grounder must never mint as cells.
+    std::string element_type;
+    std::vector<int64_t> array_sizes;
+    std::vector<std::vector<int64_t>> undefined_positions;
 };
 
 struct EffectIR {

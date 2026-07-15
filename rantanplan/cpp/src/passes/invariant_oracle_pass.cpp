@@ -209,8 +209,10 @@ void InvariantOraclePass::apply(PreprocessedProblem& result) const {
                                 // "adds_member" check.
                                 if (ee.is_assign()) {
                                     ExprID val = ee.value_id();
-                                    if (problem.pool().is_false_constant(val)) {
-                                        // Conditional delete: might fire, would need add
+                                    if (!problem.pool().is_true_constant(val)) {
+                                        // Conditional delete (constant false) or
+                                        // expression-valued assign: might fire
+                                        // and delete, would need an add
                                         deletes_member = true;
                                     }
                                     // Conditional add: don't count (might not fire)
@@ -220,7 +222,9 @@ void InvariantOraclePass::apply(PreprocessedProblem& result) const {
                             if (ee.is_assign()) {
                                 ExprID val = ee.value_id();
                                 if (problem.pool().is_true_constant(val)) adds_member = true;
-                                if (problem.pool().is_false_constant(val)) deletes_member = true;
+                                else deletes_member = true;  // constant false OR
+                                                             // expression-valued:
+                                                             // may-delete
                             }
                         }
                         if (deletes_member && !adds_member) {
@@ -500,9 +504,13 @@ bool InvariantOraclePass::syntactic_exactly_one_check(
 
             if (ee.is_assign()) {
                 ExprID val = ee.value_id();
+                // Mirror of the h² classification: only a constant-true assign is
+                // a guaranteed add. Everything else — constant-false, or an
+                // expression-valued assign like m := x that *may* evaluate false —
+                // is a may-delete that can drop the group's cardinality below one.
                 if (problem.pool().is_true_constant(val)) {
                     adds_member = true;
-                } else if (problem.pool().is_false_constant(val)) {
+                } else {
                     deletes_member = true;
                 }
             }

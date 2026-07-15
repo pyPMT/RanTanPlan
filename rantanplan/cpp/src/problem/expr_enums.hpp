@@ -45,6 +45,11 @@ enum class ExprOperator {
     // natively (atmost/atleast for comparisons with constants).
     COUNT,
 
+    // Array access `a[i]` (nested per dimension). Only transiently present
+    // between the converter and the grounder, which lowers every array
+    // access into ordinary scalar cells; no later pass or encoder sees it.
+    ARRAY_INDEX,
+
     // Unknown operator
     UNKNOWN
 };
@@ -76,6 +81,7 @@ inline ExprOperator string_to_expr_operator(const std::string& op_string) {
     if (op_string == "up:forall") return ExprOperator::FORALL;
     if (op_string == "up:exists") return ExprOperator::EXISTS;
     if (op_string == "up:count") return ExprOperator::COUNT;
+    if (op_string == "up:array_index") return ExprOperator::ARRAY_INDEX;
 
     // Standard notation
     if (op_string == "+") return ExprOperator::PLUS;
@@ -99,6 +105,7 @@ inline ExprOperator string_to_expr_operator(const std::string& op_string) {
     if (op_string == "forall") return ExprOperator::FORALL;
     if (op_string == "exists") return ExprOperator::EXISTS;
     if (op_string == "count") return ExprOperator::COUNT;
+    if (op_string == "array_index") return ExprOperator::ARRAY_INDEX;
 
     return ExprOperator::UNKNOWN;
 }
@@ -126,6 +133,7 @@ inline std::string expr_operator_to_string(ExprOperator op) {
         case ExprOperator::FORALL: return "forall";
         case ExprOperator::EXISTS: return "exists";
         case ExprOperator::COUNT: return "count";
+        case ExprOperator::ARRAY_INDEX: return "array_index";
         default: return "";
     }
 }

@@ -145,6 +145,7 @@ add_library(rantanplan_core STATIC
     src/passes/h2_mutex_checker.cpp
     src/passes/symmetry_analysis_pass.cpp
     src/passes/int_parameter_instantiation_pass.cpp
+    src/passes/array_lowering_pass.cpp
     src/passes/grounding_pass.cpp
     src/passes/quantifier_expansion_pass.cpp
     src/passes/cwa_initial_state_pass.cpp
@@ -155,6 +156,7 @@ add_library(rantanplan_core STATIC
     src/grounding/binding_matcher.cpp
     src/grounding/action_instantiator.cpp
     src/grounding/reachability_grounder.cpp
+    src/grounding/array_lowering.cpp
     src/grounding/numeric_bounds_index.cpp
     src/grounding/object_fluent_index.cpp
     src/grounding/interval_evaluator.cpp

@@ -23,6 +23,7 @@
 #include "passes/arithmetic_profile_pass.hpp"
 #include "passes/symmetry_analysis_pass.hpp"
 #include "passes/int_parameter_instantiation_pass.hpp"
+#include "passes/array_lowering_pass.hpp"
 #include "passes/grounding_pass.hpp"
 #include "passes/quantifier_expansion_pass.hpp"
 #include "passes/cwa_initial_state_pass.hpp"
@@ -31,6 +32,7 @@
 #include "passes/invariant_oracle_pass.hpp"
 #include "passes/landmark_analysis_pass.hpp"
 #include "analysis/interference_analysis.hpp"
+#include "grounding/array_lowering.hpp"
 
 #include "z3++.h"
 
@@ -63,6 +65,15 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     // in-process run so per-run stats don't leak across solves. (The CLI
     // driver runs once per process; in-process callers run many times.)
     rantanplan::Stats::instance().clear();
+
+    // Array cells minted by ArrayLoweringPass have only been validated through
+    // the native grounder's fixpoint; the UP-grounding path (--up-grounding)
+    // has never been exercised with them, so reject the combination up front.
+    if (!options.enable_grounding && rantanplan::has_array_fluents(problem)) {
+        throw std::invalid_argument(
+            "Array fluents require native grounding; --up-grounding is "
+            "unsupported for array problems.");
+    }
 
     // === PREPROCESSING PIPELINE ===
     //
@@ -105,6 +116,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
 
     rantanplan::IntParameterInstantiationPass int_parameter_instantiation_pass;
     rantanplan::QuantifierExpansionPass quantifier_expansion_pass;
+    rantanplan::ArrayLoweringPass array_lowering_pass;
     rantanplan::GroundingPass grounding_pass;
     rantanplan::CWAInitialStatePass cwa_pass;
     rantanplan::StaticFluentPass static_fluent_pass;
@@ -125,6 +137,10 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     // object grounding over quantifier-free actions.
     passes.push_back(&int_parameter_instantiation_pass);
     passes.push_back(&quantifier_expansion_pass);
+    // Array lowering must follow quantifier expansion (indices become ground
+    // constant arithmetic) and precede grounding (cells must exist before the
+    // reachability fixpoint enumerates facts). No-op without array fluents.
+    passes.push_back(&array_lowering_pass);
     if (options.enable_grounding) {
         passes.push_back(&grounding_pass);
     }

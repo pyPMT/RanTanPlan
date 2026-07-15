@@ -40,6 +40,9 @@ enum class MetricKind { NONE, MINIMIZE_ACTION_COSTS, MINIMIZE_PLAN_LENGTH };
 class Problem {
     // Allow ir_io to access private members for deserialization
     friend Problem load_problem_from_ir(const ir::ProblemIR& ir_problem);
+    // Allow the grounder's array lowering to mint cell fluents and replace
+    // actions/goals/initial-state when compiling array accesses away.
+    friend Problem lower_arrays(const Problem& problem);
 
 public:
     // Constructors

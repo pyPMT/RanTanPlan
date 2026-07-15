@@ -14,6 +14,7 @@ from unified_planning.plans import SequentialPlan, ActionInstance
 from unified_planning.shortcuts import get_environment
 from unified_planning.model.fluent import get_all_fluent_exp
 
+import itertools
 import queue
 import sys
 import threading
@@ -102,6 +103,7 @@ class _RantanPlanBase(Engine):
         supported_kind.set_fluents_type('REAL_FLUENTS')
         supported_kind.set_fluents_type('INT_FLUENTS')
         supported_kind.set_fluents_type('OBJECT_FLUENTS')
+        supported_kind.set_fluents_type('ARRAY_FLUENTS')
         supported_kind.set_initial_state('UNDEFINED_INITIAL_NUMERIC')
         supported_kind.set_conditions_kind('NEGATIVE_CONDITIONS')
         supported_kind.set_conditions_kind('DISJUNCTIVE_CONDITIONS')
@@ -113,6 +115,8 @@ class _RantanPlanBase(Engine):
         supported_kind.set_effects_kind('INCREASE_EFFECTS')
         supported_kind.set_effects_kind('DECREASE_EFFECTS')
         supported_kind.set_effects_kind('FLUENTS_IN_NUMERIC_ASSIGNMENTS')
+        supported_kind.set_effects_kind('STATIC_FLUENTS_IN_BOOLEAN_ASSIGNMENTS')
+        supported_kind.set_effects_kind('FLUENTS_IN_BOOLEAN_ASSIGNMENTS')
         supported_kind.set_effects_kind('STATIC_FLUENTS_IN_OBJECT_ASSIGNMENTS')
         supported_kind.set_effects_kind('FLUENTS_IN_OBJECT_ASSIGNMENTS')
         supported_kind.set_effects_kind('FORALL_EFFECTS')
@@ -175,6 +179,14 @@ class _RantanPlanBase(Engine):
     # ── Problem preparation ──────────────────────────────────────────────
 
     def _validate_plan(self, problem: Problem, plan: SequentialPlan) -> bool:
+        # UP ships no plan validator for array-fluent problems, so attempting
+        # validation here only raises. Skip gracefully — array plans are checked
+        # externally (against the ArrayFluentsRemover-compiled equivalent) in the
+        # test suite. Native array support is compiled to scalar cells before
+        # solving, so the underlying search is validated like any scalar problem.
+        if problem.kind.has_array_fluents():
+            self._log("Plan validation: SKIPPED (UP has no array-fluent validator)")
+            return True
         try:
             with PlanValidator(problem_kind=problem.kind, plan_kind=plan.kind) as validator:
                 validation_result = validator.validate(problem, plan)  # type: ignore[attr-defined]
@@ -206,6 +218,49 @@ class _RantanPlanBase(Engine):
 
         all_fluent_expressions = []
         for fluent in task.fluents:
+            # Array fluents are lowered to scalar cells inside the C++ grounder;
+            # their defaults expand per *defined cell* here, mirroring the scalar
+            # flow below: each cell without an explicit per-cell initial value
+            # gets the standard scalar default, undefined_positions cells are
+            # never touched, and a whole-array initial value already covers every
+            # defined cell (the converter normalises it per cell).
+            if fluent.type.is_array_type():
+                if fluent.signature:
+                    continue  # object-parameterised arrays are rejected downstream
+                fluent_exp = _em.FluentExp(fluent)
+                if fluent_exp in task.explicit_initial_values:
+                    continue  # whole-array init covers every defined cell
+                sizes = []
+                leaf = fluent.type
+                while leaf.is_array_type():
+                    sizes.append(int(leaf.size))
+                    leaf = leaf.elements_type
+                undefined = {tuple(pos) for pos in (fluent.undefined_positions or [])}
+                for coord in itertools.product(*(range(s) for s in sizes)):
+                    if coord in undefined:
+                        continue
+                    cell = fluent_exp
+                    for c in coord:
+                        cell = _em.ArrayIndex(cell, _em.Int(c))
+                    all_fluent_expressions.append(cell)
+                # UP's undefined-initial-value bookkeeping counts explicit
+                # per-cell values against a ground size that ignores array
+                # positions and only skips fluents that carry a default; record
+                # the same scalar default the loop below assigns (UP stores
+                # array defaults as scalars) so problem.kind stays computable.
+                if fluent not in task.fluents_defaults:
+                    if leaf.is_bool_type():
+                        elem_default = _em.Bool(False)
+                    else:
+                        v = 0
+                        if leaf.lower_bound is not None and v < leaf.lower_bound:
+                            v = leaf.lower_bound
+                        if leaf.upper_bound is not None and v > leaf.upper_bound:
+                            v = leaf.upper_bound
+                        elem_default = (_em.Int(v) if leaf.is_int_type()
+                                        else _em.Real(Fraction(v)))
+                    task.fluents_defaults[fluent] = elem_default
+                continue
             fluent_expressions = list(get_all_fluent_exp(task, fluent))
             all_fluent_expressions.extend(fluent_expressions)
         fluentslist = all_fluent_expressions

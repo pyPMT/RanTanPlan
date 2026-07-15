@@ -52,6 +52,7 @@ _OPERATOR_NAMES = {
     OperatorKind.COUNT: "up:count",
     OperatorKind.EXISTS: "up:exists",
     OperatorKind.FORALL: "up:forall",
+    OperatorKind.ARRAY_INDEX: "up:array_index",
 }
 
 
@@ -67,7 +68,37 @@ def _up_type_str(tpe) -> str:
         return "up:integer"
     if tpe.is_real_type():
         return "up:real"
+    if tpe.is_array_type():
+        # Mirror UP's array[size, elements_type] form, but with the element type
+        # rendered through _up_type_str so bounds stay off the string (they ride
+        # on FluentIR.lower/upper_bound, like scalar bounded types). Nested for
+        # multi-dim: array[2, array[3, up:integer]].
+        return f"array[{tpe.size}, {_up_type_str(tpe.elements_type)}]"
     return str(tpe.name)
+
+
+def _array_shape(tpe):
+    """(element_type_str, [per-dim sizes], leaf_type) for an ArrayType.
+
+    Descends nested ArrayTypes: array[2, array[3, integer[0,5]]] ->
+    ("up:integer", [2, 3], integer[0,5])."""
+    sizes = []
+    leaf = tpe
+    while leaf.is_array_type():
+        sizes.append(int(leaf.size))
+        leaf = leaf.elements_type
+    return _up_type_str(leaf), sizes, leaf
+
+
+def _index_contains_fluent(node) -> bool:
+    """True if an array-index expression reads a fluent (state variable).
+
+    Scope guard (docs/native-arrays-plan.md): array indices must be built from
+    constants, parameters, quantified variables, and arithmetic over them --
+    never fluents. `a[f]` / `a[b[i]]` would make the index state-dependent."""
+    if node.is_fluent_exp():
+        return True
+    return any(_index_contains_fluent(arg) for arg in node.args)
 
 
 class _FNodeToIR:
@@ -180,7 +211,22 @@ class _FNodeToIR:
             children = [head] + [self.walk(arg) for arg in expression.args]
             return self._add(_STATE_VARIABLE, fluent_type, children=children)
 
-        # Operator application (and/or/not/implies/iff, arithmetic, relations)
+        if expression.node_type == OperatorKind.ARRAY_CONSTANT:
+            raise UPException(
+                "Array constants outside the initial state are not supported yet.")
+        if expression.is_array_index():
+            # arg(0) is the array (a fluent / nested access); arg(1) is the index,
+            # which must not depend on state (see _index_contains_fluent).
+            index_expr = expression.arg(1)
+            if _index_contains_fluent(index_expr):
+                raise UPException(
+                    f"State-dependent array indices are not supported: index "
+                    f"'{index_expr}' reads a fluent. Array indices may only use "
+                    f"constants, parameters, quantified variables, and "
+                    f"arithmetic over them.")
+
+        # Operator application (and/or/not/implies/iff, arithmetic, relations,
+        # array_index)
         operator_name = _OPERATOR_NAMES.get(expression.node_type)
         if operator_name is None:
             raise UPException(f"Unsupported operator: {expression.node_type}")
@@ -235,6 +281,33 @@ def _convert_parameters(parameters):
     return result
 
 
+def _emit_array_cells(walker, expr_manager, array_expr, array_const,
+                      prefix, undefined, out):
+    """Normalise a whole-array initial value into one per-cell AssignmentIR.
+
+    Recurses through a (possibly nested) ARRAY_CONSTANT; for each defined leaf
+    cell it emits an assignment whose fluent target is ARRAY_INDEX(...) built
+    with constant indices (walked through the ordinary operator path, so the
+    up:array_index head is interned like any other) and whose value is the
+    scalar element. Positions in `undefined` (full coordinate tuples) are
+    skipped -- their cells are never assigned."""
+    for i, element in enumerate(array_const.constant_value()):
+        coord = prefix + (i,)
+        if element.is_array_constant():
+            _emit_array_cells(walker, expr_manager, array_expr, element,
+                              coord, undefined, out)
+            continue
+        if coord in undefined:
+            continue
+        index_expr = array_expr
+        for c in coord:
+            index_expr = expr_manager.ArrayIndex(index_expr, expr_manager.Int(c))
+        ir_assignment = _ir.AssignmentIR()
+        ir_assignment.fluent = walker.walk(index_expr)
+        ir_assignment.value = walker.walk(element)
+        out.append(ir_assignment)
+
+
 def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
     """Convert a UP Problem into the ProblemIR the C++ loader consumes.
 
@@ -267,6 +340,20 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
                 ir_fluent.lower_bound = float(ftype.lower_bound)
             if ftype.upper_bound is not None:
                 ir_fluent.upper_bound = float(ftype.upper_bound)
+        elif ftype.is_array_type():
+            element_type, sizes, leaf = _array_shape(ftype)
+            ir_fluent.element_type = element_type
+            ir_fluent.array_sizes = sizes
+            # Element bounds ride on lower/upper_bound (same convention as scalar
+            # bounded fluents); the grounder mints cells of the element type.
+            if leaf.is_int_type() or leaf.is_real_type():
+                if leaf.lower_bound is not None:
+                    ir_fluent.lower_bound = float(leaf.lower_bound)
+                if leaf.upper_bound is not None:
+                    ir_fluent.upper_bound = float(leaf.upper_bound)
+            if fluent.undefined_positions:
+                ir_fluent.undefined_positions = [
+                    [int(c) for c in pos] for pos in fluent.undefined_positions]
         fluents.append(ir_fluent)
     out.fluents = fluents
 
@@ -312,12 +399,26 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
         actions.append(ir_action)
 
     # --- Initial state ---
+    # Two shapes (see docs/native-arrays-plan.md): a whole-array ARRAY_CONSTANT
+    # value is normalised to one per-cell assignment per defined cell (avoids an
+    # ARRAY_CONSTANT node kind in the ExprPool); everything else (per-cell
+    # ARRAY_INDEX keys and scalar assignments) passes through unchanged.
+    expr_manager = problem.environment.expression_manager
     initial_state = []
     for state_var, value in problem.explicit_initial_values.items():
-        ir_assignment = _ir.AssignmentIR()
-        ir_assignment.fluent = walker.walk(state_var)
-        ir_assignment.value = walker.walk(value)
-        initial_state.append(ir_assignment)
+        if value.is_array_constant():
+            undefined = set()
+            if state_var.is_fluent_exp():
+                positions = state_var.fluent().undefined_positions
+                if positions:
+                    undefined = {tuple(p) for p in positions}
+            _emit_array_cells(walker, expr_manager, state_var, value, (),
+                              undefined, initial_state)
+        else:
+            ir_assignment = _ir.AssignmentIR()
+            ir_assignment.fluent = walker.walk(state_var)
+            ir_assignment.value = walker.walk(value)
+            initial_state.append(ir_assignment)
     out.initial_state = initial_state
 
     # --- Goals ---

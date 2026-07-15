@@ -66,8 +66,15 @@ size_t ReachabilityGrounder::collect_add_effects(const Action& ground_action,
         ExprID fluent_eid = ee.fluent_id();
         ExprID value_eid  = ee.value_id();
 
-        // We're in a delete-relaxation: only ADD effects matter (value = true).
-        if (!pool.is_true_constant(value_eid)) continue;
+        // We're in a delete-relaxation: constant-true assigns are adds and
+        // constant-false assigns are pure deletes (ignored). A NON-constant
+        // boolean value (y := x, array cell copies/swaps) may evaluate to
+        // true, so it must count as a may-add — skipping it makes the fact
+        // unreachable and "proves" solvable problems unsolvable (see
+        // tests/api/regressions.py::test_boolean_assign_from_fluent).
+        // Non-boolean assigns slip past this check but are filtered below
+        // (is_predicate), as before.
+        if (pool.is_false_constant(value_eid)) continue;
 
         // Decompose the ground fluent application to (schema_id, object_indices).
         if (!pool.is_state_variable(fluent_eid)) continue;
