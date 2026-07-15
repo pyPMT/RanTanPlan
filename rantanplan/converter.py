@@ -18,7 +18,7 @@ from fractions import Fraction
 from unified_planning import model
 from unified_planning.exceptions import UPException
 from unified_planning.model import InstantaneousAction
-from unified_planning.model.range_variable import RangeVariable
+from unified_planning.model.int_variable import IntVariable
 from unified_planning.model.metrics import (
     MinimizeActionCosts,
     MinimizeSequentialPlanLength,
@@ -163,13 +163,13 @@ class _FNodeToIR:
         if expression.is_variable_exp():
             variable = expression.variable()
             return self._head(_VARIABLE, variable.name, _up_type_str(variable.type))
-        if expression.is_range_variable_exp():
-            # Reference to a numeric range variable in a quantifier body. Emit it
+        if expression.is_int_variable_exp():
+            # Reference to a numeric int variable in a quantifier body. Emit it
             # as an ordinary VARIABLE node (name + integer type) -- same shape as
             # an object-variable reference -- so the C++ QuantifierExpansionPass
             # substitutes it by name. The [initial, last] bounds travel on the
             # variable's *declaration* inside the enclosing forall/exists.
-            rv = expression.range_variable()
+            rv = expression.int_variable()
             return self._head(_VARIABLE, rv.name, _up_type_str(rv.type))
         if expression.is_object_exp():
             obj = expression.object()
@@ -195,11 +195,11 @@ class _FNodeToIR:
 
     def _variable_declaration(self, variable):
         """A quantifier's bound-variable declaration. Object variables are leaf
-        VARIABLE nodes; a numeric RangeVariable additionally carries its
+        VARIABLE nodes; a numeric IntVariable additionally carries its
         [initial, last] bounds as two child nodes (an int constant or a
         parameter reference), so C++ grounding substitutes any parameter in a
         bound before the QuantifierExpansionPass reads it."""
-        if isinstance(variable, RangeVariable):
+        if isinstance(variable, IntVariable):
             lo = self._bound_node(variable._initial)
             hi = self._bound_node(variable._last)
             return self._add(_VARIABLE, _up_type_str(variable.type),
@@ -207,8 +207,8 @@ class _FNodeToIR:
         return self._head(_VARIABLE, variable.name, _up_type_str(variable.type))
 
     def _bound_node(self, bound):
-        """A range-variable bound: an int constant or a reference to an int
-        parameter (the raw RangeVariable._initial / _last value)."""
+        """An int-variable bound: an int constant or a reference to an int
+        parameter (the raw IntVariable._initial / _last value)."""
         if isinstance(bound, bool):
             raise UPException(f"Unexpected boolean range bound: {bound}")
         if isinstance(bound, int):

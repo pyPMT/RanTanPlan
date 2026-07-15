@@ -1,6 +1,6 @@
 """Numeric range-variable quantifiers, expanded by the C++ QuantifierExpansionPass.
 
-Range variables have no PDDL syntax, and UP has no validator for RANGE_VARIABLES
+Int variables have no PDDL syntax, and UP has no validator for INT_VARIABLES
 problems. So each case solves P (the range-var problem, via the C++ expansion
 path) and validates the produced plan against a hand-written range-var-FREE
 semantic equivalent P_ref that UP CAN validate. A wrong expansion yields a plan
@@ -12,7 +12,7 @@ from unified_planning.shortcuts import (
 )
 from unified_planning.engines import ValidationResultStatus
 from unified_planning.plans import SequentialPlan, ActionInstance
-from unified_planning.model.range_variable import RangeVariable
+from unified_planning.model.int_variable import IntVariable
 
 from ..harness import solve
 from unified_planning.shortcuts import PlanValidator
@@ -41,7 +41,7 @@ def test_forall_constant_bound_goal():
         p.set_initial_value(level, 0); p.add_action(inc); p.add_goal(goal)
         return p
 
-    i = RangeVariable("i", 1, 3)
+    i = IntVariable("i", 1, 3)
     _check(build(Forall(GE(level, i), i)), build(GE(level, 3)))
 
 
@@ -58,7 +58,7 @@ def test_forall_constant_bound_precondition():
         p.add_goal(Equals(level, 0))  # inc,inc -> fire (needs level>=2) -> 0
         return p
 
-    i = RangeVariable("i", 1, 2)
+    i = IntVariable("i", 1, 2)
     _check(build(Forall(GE(level, i), i)), build(GE(level, 2)))
 
 
@@ -77,8 +77,8 @@ def test_forall_parameter_dependent_bound():
         p.add_action(need); p.add_goal(GE(mark, 1))
         return p
 
-    _check(build(lambda n: Forall(GE(level, RangeVariable("j", 1, n)),
-                                  RangeVariable("j", 1, n))),
+    _check(build(lambda n: Forall(GE(level, IntVariable("j", 1, n)),
+                                  IntVariable("j", 1, n))),
            build(lambda n: GE(level, n)))
 
 
@@ -92,7 +92,7 @@ def test_exists_constant_bound_goal():
         p.set_initial_value(level, 0); p.add_action(inc); p.add_goal(goal)
         return p
 
-    k = RangeVariable("k", 1, 3)
+    k = IntVariable("k", 1, 3)
     _check(build(Exists(Equals(level, k), k)),
            build(Or(Equals(level, 1), Equals(level, 2), Equals(level, 3))))
 
@@ -122,7 +122,7 @@ def test_object_quantifier_in_range_problem():
         p.add_goal(And(Forall(visited(v), v), range_goal))
         return p
 
-    i = RangeVariable("i", 1, 2)
+    i = IntVariable("i", 1, 2)
     _check(build(Forall(GE(level, i), i)), build(GE(level, 2)))
 
 
