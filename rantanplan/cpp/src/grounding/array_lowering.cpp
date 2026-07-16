@@ -224,6 +224,11 @@ private:
             cell.set_declared_bounds(array_fluent.declared_lower_bound(),
                                      array_fluent.declared_upper_bound());
         }
+        // The array's single scalar default (UP stores array defaults as
+        // scalars) becomes every cell's default; CWA honours it per cell.
+        if (array_fluent.declared_default()) {
+            cell.set_declared_default(*array_fluent.declared_default());
+        }
         cell_fluents_.push_back(std::move(cell));
         cell_set_.insert(sv_id);
         return sv_id;

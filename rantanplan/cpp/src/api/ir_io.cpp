@@ -276,6 +276,13 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
             problem.fluents_.back().set_array_undefined_positions(
                 ir_fluent.undefined_positions);
         }
+        // Declared default_initial_value (constant node); consumed by the CWA
+        // pass (authoritative over the clamped-0/false fallback) and by the
+        // grounder's numeric bounds seeding.
+        if (ir_fluent.default_value) {
+            problem.fluents_.back().set_declared_default(
+                ctx.id(*ir_fluent.default_value));
+        }
     }
     problem.build_fluent_mappings();
 

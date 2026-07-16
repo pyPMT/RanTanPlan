@@ -83,6 +83,16 @@ struct FluentIR {
     std::string element_type;
     std::vector<int64_t> array_sizes;
     std::vector<std::vector<int64_t>> undefined_positions;
+    /// Declared default_initial_value (UP `fluents_defaults`), as an index into
+    /// ProblemIR::nodes pointing to a CONSTANT node; unset when the fluent
+    /// declares no default. The CWA pass treats it as authoritative for cells
+    /// missing an explicit initial value (else it falls back to clamped-0 /
+    /// false). Array fluents carry one scalar default (UP stores array defaults
+    /// as scalars); the lowering stamps it onto every cell. Only numeric and
+    /// boolean-`false` defaults are carried — a boolean-`true` default is
+    /// rejected at conversion, and object defaults are ignored (object fluents
+    /// require explicit initialization).
+    std::optional<uint32_t> default_value;
 };
 
 struct EffectIR {

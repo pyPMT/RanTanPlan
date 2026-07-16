@@ -14,7 +14,6 @@ from unified_planning.plans import SequentialPlan, ActionInstance
 from unified_planning.shortcuts import get_environment
 from unified_planning.model.fluent import get_all_fluent_exp
 
-import itertools
 import queue
 import sys
 import threading
@@ -188,6 +187,7 @@ class _RantanPlanBase(Engine):
             self._log("Plan validation: SKIPPED (UP has no array-fluent validator)")
             return True
         try:
+            self._materialize_numeric_for_validator(problem)
             with PlanValidator(problem_kind=problem.kind, plan_kind=plan.kind) as validator:
                 validation_result = validator.validate(problem, plan)  # type: ignore[attr-defined]
 
@@ -208,101 +208,61 @@ class _RantanPlanBase(Engine):
             self._log_error(f"Plan validation failed with error: {e}")
             return False
 
-    def _initialize_fluents(self, task: Problem):
-        _env = get_environment()
-        _tm = _env.type_manager
-        _em = _env.expression_manager
-        task.initial_defaults.update({_tm.RealType():_em.Real(Fraction(0))})
-        task.initial_defaults.update({_tm.IntType() :_em.Int(0)})
-        task.initial_defaults.update({_tm.BoolType() :_em.Bool(False)})
+    def _materialize_numeric_for_validator(self, problem: Problem):
+        """Make every numeric fluent's initial value explicit for UP's validator.
 
-        all_fluent_expressions = []
-        for fluent in task.fluents:
-            # Array fluents are lowered to scalar cells inside the C++ grounder;
-            # their defaults expand per *defined cell* here, mirroring the scalar
-            # flow below: each cell without an explicit per-cell initial value
-            # gets the standard scalar default, undefined_positions cells are
-            # never touched, and a whole-array initial value already covers every
-            # defined cell (the converter normalises it per cell).
-            if fluent.type.is_array_type():
-                if fluent.signature:
-                    continue  # object-parameterised arrays are rejected downstream
-                fluent_exp = _em.FluentExp(fluent)
-                if fluent_exp in task.explicit_initial_values:
-                    continue  # whole-array init covers every defined cell
-                sizes = []
-                leaf = fluent.type
-                while leaf.is_array_type():
-                    sizes.append(int(leaf.size))
-                    leaf = leaf.elements_type
-                undefined = {tuple(pos) for pos in (fluent.undefined_positions or [])}
-                for coord in itertools.product(*(range(s) for s in sizes)):
-                    if coord in undefined:
-                        continue
-                    cell = fluent_exp
-                    for c in coord:
-                        cell = _em.ArrayIndex(cell, _em.Int(c))
-                    all_fluent_expressions.append(cell)
-                # UP's undefined-initial-value bookkeeping counts explicit
-                # per-cell values against a ground size that ignores array
-                # positions and only skips fluents that carry a default; record
-                # the same scalar default the loop below assigns (UP stores
-                # array defaults as scalars) so problem.kind stays computable.
-                if fluent not in task.fluents_defaults:
-                    if leaf.is_bool_type():
-                        elem_default = _em.Bool(False)
-                    else:
-                        v = 0
-                        if leaf.lower_bound is not None and v < leaf.lower_bound:
-                            v = leaf.lower_bound
-                        if leaf.upper_bound is not None and v > leaf.upper_bound:
-                            v = leaf.upper_bound
-                        elem_default = (_em.Int(v) if leaf.is_int_type()
-                                        else _em.Real(Fraction(v)))
-                    task.fluents_defaults[fluent] = elem_default
+        UP's PlanValidator leaves a numeric fluent without an explicit initial
+        value *undefined* during simulation (UNDEFINED_INITIAL_NUMERIC) rather
+        than applying initial_defaults, then reports "fluents with undefined
+        values". The solver initialises them in the C++ CWA pass; this mirrors
+        that same rule (a declared default_initial_value, else 0 clamped into the
+        declared bounds) so the validator checks the plan against the state the
+        solver actually used. It runs *after* IR conversion, only on the
+        non-array validation path, so it never feeds the (sparse) IR.
+
+        (This enumerates via ``get_all_fluent_exp``, not ``problem.initial_values``:
+        the latter returns only explicitly-set values -- UP does not default
+        numeric fluents at all -- so it cannot supply the un-init instances that
+        are exactly the ones the validator leaves undefined.)"""
+        _em = get_environment().expression_manager
+        for fluent in problem.fluents:
+            tpe = fluent.type
+            if not (tpe.is_int_type() or tpe.is_real_type()):
                 continue
-            fluent_expressions = list(get_all_fluent_exp(task, fluent))
-            all_fluent_expressions.extend(fluent_expressions)
-        fluentslist = all_fluent_expressions
-
-        initialized_fluents  = list(task.explicit_initial_values.keys())
-        unintialized_fluents = list(filter(lambda x: not x in initialized_fluents, fluentslist))
-
-        # Object fluents have no sensible default — they must be explicitly initialized.
-        # Bool/int/real (including bounded int/real) all get a computed default below.
-        obj_fluents_missing_init = [
-            fe for fe in unintialized_fluents
-            if not (fe.type.is_bool_type() or fe.type.is_int_type() or fe.type.is_real_type())
-        ]
-        if obj_fluents_missing_init:
-            names = [str(f) for f in obj_fluents_missing_init]
-            raise UPException(
-                f"Object fluent(s) missing initial value (no default exists): {', '.join(names)}. "
-                "All object fluents must be explicitly initialized in the problem's :init block.")
-
-        real_int_fluents_to_init = []
-        for fe in unintialized_fluents:
-            if fe.type.is_int_type() or fe.type.is_real_type():
-                real_int_fluents_to_init.append(fe)
-
-        if real_int_fluents_to_init:
-            self._log_warning(f"WARNING: Initializing {len(real_int_fluents_to_init)} real/integer fluents to 0")
-            self._log_warning("         This is not semantically correct but is done in practice for planning purposes.")
-
-        for fe in unintialized_fluents:
-            tpe = fe.type
-            if tpe.is_bool_type():
-                default = _em.Bool(False)
-            else:
-                # int/real, possibly bounded: clamp the 0 default into [lb, ub]
-                # (UP rejects assigning an out-of-range value to a bounded type).
+            declared = problem.fluents_defaults.get(fluent)
+            for fe in get_all_fluent_exp(problem, fluent):
+                if fe in problem.explicit_initial_values:
+                    continue
+                if declared is not None:
+                    problem.set_initial_value(fe, declared)
+                    continue
                 v = 0
                 if tpe.lower_bound is not None and v < tpe.lower_bound:
                     v = tpe.lower_bound
                 if tpe.upper_bound is not None and v > tpe.upper_bound:
                     v = tpe.upper_bound
-                default = _em.Int(v) if tpe.is_int_type() else _em.Real(Fraction(v))
-            task.set_initial_value(fe, default)
+                problem.set_initial_value(
+                    fe, _em.Int(v) if tpe.is_int_type() else _em.Real(Fraction(v)))
+
+    def _set_validator_defaults(self, task: Problem):
+        """Declare the type-level defaults UP's *external* PlanValidator needs.
+
+        Solver-side initialization now lives entirely in C++: the CWA pass
+        materialises defaults over the reachable grounded fluents (closed-world
+        false for booleans; a declared default_initial_value, else 0 clamped
+        into the declared bounds, for numerics; a hard error for uninitialised
+        object fluents). Array cells inherit those rules after lowering.
+
+        This method does NOT feed the IR. It only lets UP's PlanValidator fill
+        unspecified fluents when it checks a returned plan on the non-array path
+        (array-fluent problems skip UP validation -- UP ships no validator for
+        them). Without it, the validator raises on any closed-world boolean."""
+        _env = get_environment()
+        _tm = _env.type_manager
+        _em = _env.expression_manager
+        task.initial_defaults.update({_tm.RealType(): _em.Real(Fraction(0))})
+        task.initial_defaults.update({_tm.IntType():  _em.Int(0)})
+        task.initial_defaults.update({_tm.BoolType(): _em.Bool(False)})
 
     def _compile_problem(self, problem: Problem):
         current_problem = problem
@@ -435,7 +395,7 @@ class _RantanPlanBase(Engine):
         self._check_no_nested_fluents(problem)
         self._check_supported_action_parameters(problem)
 
-        self._initialize_fluents(problem)
+        self._set_validator_defaults(problem)
         compiled_problem, compilation_result = self._compile_problem(problem)
 
         problem_ir = convert_problem(compiled_problem)

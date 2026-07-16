@@ -302,6 +302,31 @@ def test_boolean_array_cwa_without_default():
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
 
 
+def test_nonzero_default_honoured_and_grounding_sound():
+    """A non-zero array default must be honoured at t=0 *and* seen by the
+    grounder's numeric pruning. a[1] defaults to 5 (no explicit value, no
+    writer); `use` needs a[1] >= 5 and is the only writer of the goal `done`.
+    Two failure modes are ruled out at once: if CWA dropped the default, a[1]
+    would be 0 and `use`'s precondition would fail at solve time; if the grounder
+    seeded the absent cell at [0,0] instead of [5,5], it would prune `use`
+    before solving. Solvability with `use` in the plan pins both."""
+    em = _em()
+    a = Fluent("nzdflt", ArrayType(2, IntType(0, 9)))
+    done = Fluent("nz_done", BoolType())
+    p = Problem("nzdefault")
+    p.add_fluent(a, default_initial_value=5)
+    p.add_fluent(done, default_initial_value=False)
+    p.set_initial_value(em.ArrayIndex(a(), Int(0)), 0)   # a[1] defaults to 5
+    use = InstantaneousAction("use")
+    use.add_precondition(GE(em.ArrayIndex(a(), Int(1)), 5))
+    use.add_effect(done(), True)
+    p.add_action(use)
+    p.add_goal(done())
+    r = solve(p)
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert r.plan is not None and len(r.plan.actions) == 1, r.plan
+
+
 def test_boolean_cell_copy():
     """Expression-valued BOOLEAN cell assignment (`a[1] := a[0]`) with a
     dynamic source: the copied value must chain through both the reachability

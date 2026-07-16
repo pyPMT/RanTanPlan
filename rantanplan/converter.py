@@ -355,7 +355,9 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
                 ir_fluent.undefined_positions = [
                     [int(c) for c in pos] for pos in fluent.undefined_positions]
         fluents.append(ir_fluent)
-    out.fluents = fluents
+    # out.fluents assigned last (with out.actions/out.nodes): nanobind copies
+    # vector fields on assignment, and the declared-defaults loop below still
+    # mutates these FluentIR entries.
 
     # --- Objects ---
     objects = []
@@ -452,7 +454,37 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
             break
     out.metric_kind = metric_kind
 
+    # --- Declared fluent defaults (UP fluents_defaults) ---
+    # Walked last, after every other expression, so existing node ordering --
+    # and thus plan determinism (pitfall #7) -- is unperturbed: a re-walked
+    # constant dedups to its existing id, a genuinely new one appends. A
+    # declared default is authoritative for instances/cells left uninitialised
+    # (the C++ CWA pass materialises it). UP stores an array's default as one
+    # scalar, so one value covers every cell. Only numeric and boolean-false
+    # defaults are carried: a boolean-true default would invert the closed-world
+    # assumption unsoundly (the grounder assumes false), and object fluents must
+    # be initialised explicitly (the CWA pass errors otherwise).
+    for fluent, ir_fluent in zip(problem.fluents, fluents):
+        default = problem.fluents_defaults.get(fluent)
+        if default is None:
+            continue
+        leaf = fluent.type
+        while leaf.is_array_type():
+            leaf = leaf.elements_type
+        if leaf.is_bool_type():
+            if default.is_bool_constant() and default.bool_constant_value():
+                raise UPException(
+                    f"Boolean fluent '{fluent.name}' declares "
+                    f"default_initial_value=True, which is not supported "
+                    f"(it inverts the closed-world assumption).")
+            ir_fluent.default_value = walker.walk(default)
+        elif leaf.is_int_type() or leaf.is_real_type():
+            ir_fluent.default_value = walker.walk(default)
+        # Object/other declared defaults are ignored: object fluents require an
+        # explicit initial value.
+
     # Vector fields copy on assignment, so these land after all mutation
+    out.fluents = fluents
     out.actions = actions
     out.nodes = walker.nodes
     return out

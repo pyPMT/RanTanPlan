@@ -234,7 +234,8 @@ NB_MODULE(_rantanplan, m) {
         .def_rw("upper_bound", &ir::FluentIR::upper_bound)
         .def_rw("element_type", &ir::FluentIR::element_type)
         .def_rw("array_sizes", &ir::FluentIR::array_sizes)
-        .def_rw("undefined_positions", &ir::FluentIR::undefined_positions);
+        .def_rw("undefined_positions", &ir::FluentIR::undefined_positions)
+        .def_rw("default_value", &ir::FluentIR::default_value);
 
     nb::class_<ir::EffectIR>(m, "EffectIR")
         .def(nb::init<>())

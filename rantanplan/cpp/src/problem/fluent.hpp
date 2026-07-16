@@ -6,6 +6,7 @@
 #include <optional>
 #include "parameter.hpp"
 #include "type.hpp"
+#include "expr_pool.hpp"  // ExprID (declared_default_ references a pool constant)
 
 namespace rantanplan {
 
@@ -49,6 +50,13 @@ public:
     bool has_declared_bounds() const {
         return lower_bound_.has_value() || upper_bound_.has_value();
     }
+
+    // Declared default_initial_value (UP `fluents_defaults`), as a CONSTANT
+    // ExprID in the problem's pool. Authoritative for cells/fluents missing an
+    // explicit initial value; the CWA pass falls back to clamped-0/false when
+    // it is unset. Array cells inherit their array fluent's default.
+    void set_declared_default(ExprID value) { declared_default_ = value; }
+    std::optional<ExprID> declared_default() const { return declared_default_; }
 
     // Array fluents carry a first-class array value type (see Type::is_array);
     // the per-dimension sizes and the leaf element type are derived from it.
@@ -113,6 +121,7 @@ private:
     std::vector<Parameter> parameters_;
     std::optional<double> lower_bound_;
     std::optional<double> upper_bound_;
+    std::optional<ExprID> declared_default_;
     std::vector<std::vector<int64_t>> array_undefined_positions_;
 };
 
