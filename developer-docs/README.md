@@ -20,9 +20,9 @@ Concepts first, plumbing last — each doc leans only on the ones before it.
    robot problem. Everything after this doc exists to build or exploit
    that formula.
 3. [`preprocessing-and-strategy.md`](preprocessing-and-strategy.md) — the
-   pass pipeline, the `PreprocessedProblem` contract, invariant and
-   symmetry discovery, and the strategy registry/factory that assembles a
-   backend.
+   pass pipeline and a taxonomy of its passes, the `PreprocessedProblem`
+   contract, invariant and symmetry discovery, and the strategy
+   registry/factory that assembles a backend.
 4. [`grounding.md`](grounding.md) — how lifted actions become ground ones,
    restricted to what's reachable, via join-based matching instead of a
    naive cross product.
@@ -60,6 +60,12 @@ for when you meet one out of order.
 - **Anytime** — search mode that reports every improving plan as it's
   found, converging toward optimal. Runs on the branch-and-bound planner
   ([`encoders-and-planners.md`](encoders-and-planners.md)).
+- **Array fluent / cell** — a fixed-size, array-valued state variable from
+  the high-level language (no PDDL syntax; arrives via Unified Planning's
+  `ARRAY_FLUENTS` kind). Before grounding, `ArrayLoweringPass` compiles each
+  array into one ordinary scalar **cell** fluent per defined position and
+  rewrites every constant-index access to its cell, so no downstream pass or
+  encoder ever sees array structure ([`grounding.md`](grounding.md)).
 - **CWA (closed-world assumption)** — anything not stated true in the
   initial state is false. A preprocessing pass makes this explicit so the
   encoder can assert a value for *every* fluent at timestep 0

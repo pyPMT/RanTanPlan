@@ -10,12 +10,75 @@ naive instantiation: it only produces the ground actions that are actually
 *reachable* from the initial state, and it gets a plan-length lower bound
 and an unsolvability check for free in the same pass.
 
-By the time grounding runs, the two canonicalization passes ahead of it
-(`IntParameterInstantiationPass`, `QuantifierExpansionPass`) have already
-compiled away integer action parameters and every quantifier / `forall`-effect,
-so the grounder only ever sees ordinary object parameters over quantifier-free
-actions — it never has to reason about integer parameters or nested quantifiers
-(see [`preprocessing-and-strategy.md`](preprocessing-and-strategy.md)).
+By the time grounding runs, the canonicalization passes ahead of it
+(`IntParameterInstantiationPass`, `QuantifierExpansionPass`, and — when the
+problem has array fluents — `ArrayLoweringPass`) have already compiled away
+integer action parameters, every quantifier / `forall`-effect, and every
+constant-index array access, so the grounder only ever sees ordinary object
+parameters over quantifier-free, array-free actions — it never has to reason
+about integer parameters, nested quantifiers, or array structure (see
+[`preprocessing-and-strategy.md`](preprocessing-and-strategy.md)). The array
+lowering is described in [Array lowering](#array-lowering-before-grounding)
+below.
+
+## Array lowering (before grounding)
+
+Some problems carry **array fluents** — fixed-size, array-valued state
+variables from the high-level modelling language (they have no PDDL surface
+syntax; they arrive through Unified Planning's `ARRAY_FLUENTS` kind). A fluent
+`board : int[3]` is one variable holding three integers; `grid : int[2][3]` is
+a 2-D array. An access is the structured operator `ARRAY_INDEX(array, index)`,
+nested per dimension (`grid[r][c]`).
+
+RantanPlan does **not** carry array structure into the encoder. `ArrayLoweringPass`
+(`passes/array_lowering_pass.{hpp,cpp}`, implementation in
+`grounding/array_lowering.{hpp,cpp}`) runs immediately before the grounder and
+compiles arrays into ordinary scalar fluents:
+
+- Each array fluent becomes **one scalar cell fluent per defined position**,
+  minted in row-major order (`board` → `board[0]`, `board[1]`, `board[2]`);
+  the array fluent schema itself is dropped. Cell minting order is
+  load-bearing (the ExprPool-ordering pitfall applies), and positions listed
+  as `undefined` are never minted.
+- Each **constant-index access** `a[c]` — in a precondition, effect target,
+  effect value, cost, goal, invariant, or initial-state entry — is rewritten
+  to its cell (rules L1/L3). A cell of an array whose element type is bounded
+  (`int[0,9]`) inherits those bounds and the array's scalar default.
+
+Why lower *before* grounding, on the lifted problem? Because by that point the
+two earlier canonicalization passes have turned every index into ground
+constant arithmetic (object-parameterised array fluents like `grid(P)[r][c]`
+are rejected in Phase 1, so no index depends on an object parameter), and
+constant index arithmetic folds — `a[1-1]` becomes `a[0]`. The pass ends by
+asserting no `ARRAY_INDEX` node survives, so nothing downstream ever has to
+know arrays existed.
+
+**Strict-⊥ inapplicability.** An out-of-bounds or undefined-position access
+*inside an action* discards that ground instance — exactly as int-parameter
+instantiation discards an infeasible binding; after instantiation a literal
+`a[7]` and an `a[i]` folded to `i = 7` are indistinguishable. The same access
+in a goal or the initial state is a hard error (the model is ill-formed). An
+intra-action collision where two effects fold onto the *same* cell also
+discards the instance (the chained encoder keeps only the first write per
+cell); if *every* instance of a schema collides, that's an unconditionally
+broken model and a hard error.
+
+**Why this needs no downstream changes.** A cell is an ordinary scalar
+grounded fluent, so with constant indices the lowered problem is bit-for-bit
+what a hand-written scalar model would produce — every pass, analysis, and
+encoder is already sound for it. (The one shape arrays newly make common,
+`a[1] := a[0]` — a *non-constant* boolean/expression assign — needed the
+reachability and mutex analyses to treat such an assign as a *may-add* rather
+than "neither add nor delete"; that fix is general, not array-specific.)
+Whole-array operations (`eq(a,b)`, whole-array assignment) and array constants
+outside the initial state are rejected in Phase 1.
+
+> **Phase 2 (not yet implemented)** will keep a genuine decision/quantified
+> index *symbolic* — a symbolic read becomes a bounded read-result variable
+> plus an element constraint, a symbolic write becomes per-cell conditional
+> effects — and, because a symbolic access can touch any cell, the lowering
+> will then have to interleave with the reachability fixpoint below rather
+> than run entirely ahead of it.
 
 ## Why not just enumerate every combination
 

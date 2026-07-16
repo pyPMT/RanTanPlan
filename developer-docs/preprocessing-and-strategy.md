@@ -44,7 +44,8 @@ second `solve()` call — this is enforced at the nanobind layer too (the
 flowchart LR
     P[Problem] --> IP[Int-param instantiation]
     IP --> QE[Quantifier expansion]
-    QE --> A["[Grounding]<br/>(optional)"]
+    QE --> AL["[Array lowering]<br/>(arrays only)"]
+    AL --> A["[Grounding]<br/>(optional)"]
     A --> B[CWA initial state]
     B --> C[Static fluent folding]
     C --> CN["[CNF normalization]<br/>(optional)"]
@@ -72,6 +73,12 @@ into one concrete effect per binding. Together they replace the old Python
 removal in C++ (see `docs/specs/numeric-action-parameters.md`). Both are no-ops on
 a problem with no integer parameters and no quantifiers.
 
+A third pre-grounding pass, `ArrayLoweringPass`, runs only when the problem has
+array fluents: it compiles constant-index array accesses into ordinary scalar
+cell fluents, so grounding stays array-free just as it stays quantifier-free
+(see [`grounding.md`](grounding.md)). It is a no-op — and leaves the ExprPool
+node order untouched — on a problem with no arrays.
+
 `Pass` (`passes/pass.hpp`) is deliberately minimal: `apply(PreprocessedProblem&)`
 and `name()` (for logging). Passes are **stateless** — every pass-specific
 knob is constructor-injected from `PreprocessorOptions`, not read from a
@@ -80,6 +87,67 @@ insert it at the right point in this list (the ordering constraints are
 documented inline at the insertion site in `solver_api.cpp` — for example,
 static fluent folding must run before the invariant oracle, or invariants
 would be computed over fluents the encoding won't emit).
+
+### A taxonomy of the passes
+
+The passes look uniform behind `apply(PreprocessedProblem&)`, but they do
+different *kinds* of work, along two orthogonal axes.
+
+**Mechanism** — what a pass does to the `PreprocessedProblem`:
+
+- **Transformers** rewrite `result.problem` (grounding, folding, pruning).
+- **Analyzers** leave the problem alone and write the verdict or artifact
+  fields.
+
+The `Pass` interface deliberately erases this distinction; the contract
+fields reveal it — `problem` is the transformers' output, everything else
+is the analyzers'.
+
+**Purpose** — why a pass exists:
+
+- **Shaping**: required for downstream ingestion; skipping one breaks a
+  later stage (the grounder can't handle int parameters or free effect
+  variables; downstream assumes every fluent has an initial value).
+- **Performance by rewriting**: the problem gets smaller or simpler, the
+  plan set is preserved; skipping only costs speed.
+- **Performance by annotation**: the problem is untouched; artifacts hint
+  the backend (mutexes, symmetries, landmarks, achievers).
+- **Deduction (verdict)**: partial solving — unsolvability proofs and
+  horizon lower bounds. Its consumer is the *driver* (`lower_bound` →
+  `start_timestep`), not the encoder, and it can end the run outright via
+  the short-circuit.
+- **Backend configuration**: classification that decides how the backend
+  must encode — `ArithmeticProfilePass`'s `all_integer` flag drives Int vs
+  Real sort selection, so it is soundness-relevant, not an optimization.
+- **Analysis-enabling rewriting**: `CnfNormalizationPass` rewrites
+  conditions not for the encoder (which translates arbitrary formulas) but
+  to give the achiever/landmark machinery clause-level granularity.
+
+Note that purpose attaches to *effects*, not passes: several passes do
+work in more than one category, which is why the table below has
+multi-entry rows.
+
+| Pass | Mechanism | Purpose |
+|---|---|---|
+| `IntParameterInstantiationPass` | transformer | shaping |
+| `QuantifierExpansionPass` | transformer | shaping |
+| `ArrayLoweringPass` | transformer | shaping (no-op without arrays) |
+| `GroundingPass` (optional) | transformer | shaping + rewriting + verdict — reachability grounding *is* pruning, and it sets `lower_bound`/`proven_unsolvable` |
+| `CWAInitialStatePass` | transformer | shaping (sole materialiser of default initial values) |
+| `StaticFluentPass` | transformer | performance by rewriting (also tightens later RPG bounds) |
+| `CnfNormalizationPass` (optional) | transformer | analysis-enabling rewriting |
+| `ActionPruningPass` | transformer + analyzer | rewriting + annotation + verdict — prunes, proves bounds/unsolvability, and publishes achievers, SDAC cost bounds, and the bounds/conservations the invariant oracle consumes |
+| `InvariantOraclePass` | analyzer | performance by annotation |
+| `LandmarkAnalysisPass` | analyzer | annotation + verdict (contributes to `lower_bound`) |
+| `SymmetryAnalysisPass` (optional) | analyzer | performance by annotation |
+| `ArithmeticProfilePass` | analyzer (mutates the problem's `all_integer` flag) | backend configuration — must run last |
+
+`passes/` also holds two non-`Pass` helpers: `bound_tightening.{hpp,cpp}`
+(syntactic bound tightening and conservation-law discovery, used by
+`ActionPruningPass`) and `h2_mutex_checker.{hpp,cpp}` (the h² pairwise
+reachability fixpoint, used by `InvariantOraclePass`). They are analyses
+in the same sense as `analysis/`'s `NumericRelaxedPlanningGraph` or
+`AchieversAnalysis`, just colocated with their only consumers.
 
 ## Where the state constraints come from: `InvariantOraclePass`
 

@@ -95,6 +95,34 @@ switching to a `DagWalker` that produces an *equally valid* set of
 first, because it changes iteration order in those maps. If you ever touch
 `converter.py`'s traversal, this is the invariant to preserve.
 
+### Fluent declarations and array fluents
+
+Alongside the node pool, `ProblemIR.fluents` carries the fluent *declarations*
+as `FluentIR` structs: name, parameters, the `value_type` string, optional
+numeric `lower_bound`/`upper_bound` (for a bounded `integer[0,15]`), and an
+optional `default_value` (a node index for a declared `default_initial_value`,
+which the C++ CWA pass treats as authoritative when materialising the initial
+state).
+
+**Array fluents** add a structured shape instead of encoding it in a string:
+`element_type` (the leaf scalar type, e.g. `"up:integer"`), `array_sizes` (one
+size per dimension), and `undefined_positions` (coordinate tuples with no cell).
+The **canonical array type name is generated on the C++ side** from that shape
+(`ir_io.cpp`'s single renderer), so the converter deliberately does *not* author
+a redundant `value_type` string for an array fluent's declaration — the nested
+structure is the one source of truth. (Array-fluent *expression* head symbols do
+still reference the type by name; `_up_type_str` builds that name from the same
+UP structure, and a disagreement with the C++ renderer surfaces as a hard
+"could not find type" at load, not a silent mismatch.)
+
+The converter also keeps `ARRAY_CONSTANT` out of the node pool entirely: a
+whole-array initial value (`set_initial_value(a, [1,2,3])`) is normalised into
+one per-cell assignment at conversion time, and an array constant anywhere else
+is rejected (Phase 1). So by the time the pool crosses the boundary, arrays are
+just ordinary fluent declarations with a shape plus per-cell scalar
+assignments — everything else about them is compiled away in the C++ grounder
+(see [`grounding.md`](grounding.md)).
+
 ## The two calls: `preprocess` and `solve`
 
 The nanobind module (`api/bindings.cpp`) mirrors the C++ two-layer API
