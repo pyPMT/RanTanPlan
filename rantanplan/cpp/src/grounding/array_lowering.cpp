@@ -206,18 +206,8 @@ private:
         std::string cell_name = array_fluent.name();
         for (int64_t c : coord) cell_name += "[" + std::to_string(c) + "]";
 
-        // Head fluent symbol (matches converter/ir_io state-variable layout).
-        ExprNode head;
-        head.kind = static_cast<int>(ExprKind::FLUENT_SYMBOL);
-        head.type_id = elem_type_id;
-        head.payload = cell_name;
-        ExprID head_id = pool_.intern(std::move(head));
-
-        ExprNode sv;
-        sv.kind = static_cast<int>(ExprKind::STATE_VARIABLE);
-        sv.type_id = elem_type_id;
-        sv.children = {head_id};
-        ExprID sv_id = pool_.intern(std::move(sv));
+        // A cell is a nullary scalar state variable of the leaf element type.
+        ExprID sv_id = pool_.intern_state_variable(cell_name, elem_type_id);
 
         Fluent cell(cell_name, elem_type);
         if (array_fluent.has_declared_bounds()) {
@@ -494,17 +484,18 @@ Problem lower_arrays(const Problem& problem) {
     }
     for (const Fluent& c : lowerer.cell_fluents()) new_fluents.push_back(c);
     result.fluents_ = std::move(new_fluents);
-    result.build_fluent_mappings();
 
     result.actions_ = std::move(new_actions);
     for (size_t i = 0; i < result.actions_.size(); ++i)
         result.actions_[i].set_id(static_cast<int>(i));
-    result.build_action_mappings();
 
     result.goals_ = std::move(new_goals);
     result.initial_state_ = std::move(new_initial);
     result.state_invariants_ = std::move(new_invariants);
-    result.collect_grounded_fluents();
+
+    // One canonical finalisation over the replaced components (fluent id/name
+    // maps, action name map, grounded-fluent collection).
+    result.rebuild_derived_indices();
 
     Logger::instance().component(VerbosityLevel::INFO, "ArrayLowering", {
         {"cells", std::to_string(lowerer.cell_fluents().size())},

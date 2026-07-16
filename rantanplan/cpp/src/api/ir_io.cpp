@@ -153,14 +153,35 @@ static Action convert_action(IRLoadContext& ctx, const ir::ActionIR& ir_action) 
 // Array type registration (two-phase; see load_problem_from_ir)
 // ============================================================================
 
+/// The single renderer for an array type's table name, from one dimension's
+/// element name + size. C++ is the sole source of truth for these names: the
+/// converter sends only the structured shape (element_type + array_sizes), and
+/// both type registration below and per-fluent value-type resolution generate
+/// the name through this one function — so there is no cross-language string to
+/// keep in agreement.
+static std::string array_type_name(const std::string& element, int64_t size) {
+    return "array[" + std::to_string(size) + ", " + element + "]";
+}
+
+/// The whole-fluent (outermost) array type name, built innermost-first from the
+/// structured shape. Matches the outer name minted in register_array_type_names
+/// by construction (same renderer, same fields).
+static std::string array_value_type_name(const ir::FluentIR& ir_fluent) {
+    std::string element = ir_fluent.element_type;
+    for (auto it = ir_fluent.array_sizes.rbegin();
+         it != ir_fluent.array_sizes.rend(); ++it) {
+        element = array_type_name(element, *it);
+    }
+    return element;
+}
+
 /// One first-class array type per dimension. Array types are entries in the
-/// problem's type table, named exactly as the converter renders them
-/// ("array[<size>, <element>]") and nested innermost-first. Registration is
-/// two-phase because the table is a `std::vector<Type>`: every name must be
-/// emplaced *before* any pointer into the table is taken (phase 1), and element
-/// links are wired only once those pointers are stable (phase 2). Each entry
-/// keeps the *index* of its type — indices survive vector growth, pointers do
-/// not — plus the element name to resolve against the map in phase 2.
+/// problem's type table, named via array_type_name and nested innermost-first.
+/// Registration is two-phase because the table is a `std::vector<Type>`: every
+/// name must be emplaced *before* any pointer into the table is taken (phase 1),
+/// and element links are wired only once those pointers are stable (phase 2).
+/// Each entry keeps the *index* of its type — indices survive vector growth,
+/// pointers do not — plus the element name to resolve against the map in phase 2.
 struct ArrayTypeEntry {
     size_t type_index;
     std::string element_name;
@@ -179,19 +200,12 @@ static std::vector<ArrayTypeEntry> register_array_type_names(
         std::string element = ir_fluent.element_type;
         for (auto it = ir_fluent.array_sizes.rbegin();
              it != ir_fluent.array_sizes.rend(); ++it) {
-            std::string tname =
-                "array[" + std::to_string(*it) + ", " + element + "]";
+            std::string tname = array_type_name(element, *it);
             if (seen.insert(tname).second) {
                 types.emplace_back(tname);
                 array_types.push_back({types.size() - 1, element, *it});
             }
             element = std::move(tname);
-        }
-        if (element != ir_fluent.value_type) {
-            Logger::instance().error(
-                "Array type name mismatch for fluent '" + ir_fluent.name +
-                "': reconstructed '" + element + "' vs declared '" +
-                ir_fluent.value_type + "'");
         }
     }
     return array_types;
@@ -260,9 +274,15 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
             const Type* param_type = ctx.find_type(ir_param.type_name);
             params.emplace_back(ir_param.name, param_type);
         }
-        const Type* value_type = ctx.find_type(ir_fluent.value_type);
+        // An array fluent carries no value_type string; its type is the
+        // generated (registered) array type name derived from its structured
+        // shape. Scalar fluents resolve by their value_type string as before.
+        const std::string value_type_name = ir_fluent.array_sizes.empty()
+            ? ir_fluent.value_type
+            : array_value_type_name(ir_fluent);
+        const Type* value_type = ctx.find_type(value_type_name);
         if (!value_type) {
-            Logger::instance().error("Could not find type '" + ir_fluent.value_type +
+            Logger::instance().error("Could not find type '" + value_type_name +
                                      "' for fluent '" + ir_fluent.name + "'");
         }
         problem.fluents_.emplace_back(ir_fluent.name, value_type, params);

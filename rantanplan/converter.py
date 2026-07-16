@@ -69,10 +69,14 @@ def _up_type_str(tpe) -> str:
     if tpe.is_real_type():
         return "up:real"
     if tpe.is_array_type():
-        # Mirror UP's array[size, elements_type] form, but with the element type
-        # rendered through _up_type_str so bounds stay off the string (they ride
-        # on FluentIR.lower/upper_bound, like scalar bounded types). Nested for
-        # multi-dim: array[2, array[3, up:integer]].
+        # Array type name, constructed from the nested structure (size +
+        # element). Needed as the type-reference key for array-fluent
+        # *expression* head symbols (a bare FLUENT_EXP inside ARRAY_INDEX); it
+        # must match the name the C++ loader generates from the same structured
+        # shape (ir_io.cpp array_type_name), and a mismatch surfaces as a hard
+        # "could not find type" at load. The fluent *declaration* no longer
+        # carries this string -- C++ derives the fluent's value type from
+        # element_type + array_sizes.
         return f"array[{tpe.size}, {_up_type_str(tpe.elements_type)}]"
     return str(tpe.name)
 
@@ -332,15 +336,13 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
     for fluent in problem.fluents:
         ir_fluent = _ir.FluentIR()
         ir_fluent.name = fluent.name
-        ir_fluent.value_type = _up_type_str(fluent.type)
         ir_fluent.parameters = _convert_parameters(fluent.signature)
         ftype = fluent.type
-        if ftype.is_int_type() or ftype.is_real_type():
-            if ftype.lower_bound is not None:
-                ir_fluent.lower_bound = float(ftype.lower_bound)
-            if ftype.upper_bound is not None:
-                ir_fluent.upper_bound = float(ftype.upper_bound)
-        elif ftype.is_array_type():
+        if ftype.is_array_type():
+            # An array fluent sends only its structured shape; the C++ loader
+            # generates the canonical array type name from element_type +
+            # array_sizes (the single renderer -- ir_io.cpp). value_type is left
+            # empty, so there is no second, hand-rendered string to keep in sync.
             element_type, sizes, leaf = _array_shape(ftype)
             ir_fluent.element_type = element_type
             ir_fluent.array_sizes = sizes
@@ -354,6 +356,13 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
             if fluent.undefined_positions:
                 ir_fluent.undefined_positions = [
                     [int(c) for c in pos] for pos in fluent.undefined_positions]
+        else:
+            ir_fluent.value_type = _up_type_str(ftype)
+            if ftype.is_int_type() or ftype.is_real_type():
+                if ftype.lower_bound is not None:
+                    ir_fluent.lower_bound = float(ftype.lower_bound)
+                if ftype.upper_bound is not None:
+                    ir_fluent.upper_bound = float(ftype.upper_bound)
         fluents.append(ir_fluent)
     # out.fluents assigned last (with out.actions/out.nodes): nanobind copies
     # vector fields on assignment, and the declared-defaults loop below still
@@ -468,9 +477,9 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
         default = problem.fluents_defaults.get(fluent)
         if default is None:
             continue
-        leaf = fluent.type
-        while leaf.is_array_type():
-            leaf = leaf.elements_type
+        # _array_shape returns leaf == fluent.type for a scalar fluent, so this
+        # covers scalar and array defaults with one descent.
+        _, _, leaf = _array_shape(fluent.type)
         if leaf.is_bool_type():
             if default.is_bool_constant() and default.bool_constant_value():
                 raise UPException(

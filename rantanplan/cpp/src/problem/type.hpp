@@ -31,6 +31,17 @@ public:
     bool is_real() const { return name_ == "real" || name_ == "up:real"; }
     bool is_object() const { return !is_bool() && !is_int() && !is_real() && !is_array(); }
 
+    // Numeric bounds are deliberately NOT part of the type. A bounded integer
+    // (UP's IntType(lb, ub), e.g. integer[0, 15]) is the base `int` type here,
+    // with the bounds carried as variable-level data (Fluent::declared_bounds,
+    // range-variable domains). Considered and rejected: promoting bounded ints
+    // to a first-class Type to mirror UP — it would multiply the type table
+    // (one entry per distinct [lb, ub]) and ripple through every is_int() check
+    // and the numeric machinery that already threads bounds as data, for no
+    // real gain. Arrays *are* a type (below) because an array value has
+    // structure the grounder must destructure into cells; a bounded int is a
+    // scalar carrying metadata, which belongs on the variable.
+
     // Array types (name "array[N, <element>]", nested per dimension) are
     // first-class entries in the problem's type table, registered at IR load
     // from each array fluent's element type + per-dimension sizes. The element
