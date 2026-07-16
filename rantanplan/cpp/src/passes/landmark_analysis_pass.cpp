@@ -2,7 +2,6 @@
 #include "../analysis/achievers_analysis.hpp"
 #include "../preprocessing/landmark_data.hpp"
 #include "../util/logger.hpp"
-#include "../util/scoped_timer.hpp"
 #include "../util/stats.hpp"
 #include <cmath>
 #include <functional>
@@ -199,7 +198,6 @@ std::optional<double> linear_contribution(const ExprPool& pool,
 } // namespace
 
 void LandmarkAnalysisPass::apply(PreprocessedProblem& result) const {
-    ScopedTimer timer("pass.landmark_analysis.time_ms");
     if (!result.achievers) {
         Logger::instance().info("[Landmarks     ]  skipped (no achievers analysis)");
         return;

@@ -245,7 +245,7 @@ static ExprID simplify_expr(ExprPool& pool, ExprID expr,
 // ============================================================================
 
 void StaticFluentPass::apply(PreprocessedProblem& result) const {
-    ScopedTimer timer("static_fluent.time_ms");
+    ScopedTimer timer;  // measuring-only; the pipeline records the stats key
     const auto& problem = result.problem;
     ExprPool& pool = *problem.pool_ptr();
 

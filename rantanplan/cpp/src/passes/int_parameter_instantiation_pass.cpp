@@ -88,7 +88,7 @@ void expand_action(const Action& action, ExprPool& pool,
 }  // namespace
 
 void IntParameterInstantiationPass::apply(PreprocessedProblem& result) const {
-    ScopedTimer timer("int_parameter_instantiation.time_ms");
+    ScopedTimer timer;  // measuring-only; the pipeline records the stats key
     const auto& problem = result.problem;
     ExprPool& pool = *problem.pool_ptr();
 

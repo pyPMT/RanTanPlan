@@ -10,7 +10,7 @@ void ArrayLoweringPass::apply(PreprocessedProblem& result) const {
         return;
     }
 
-    ScopedTimer timer("array_lowering.time_ms");
+    ScopedTimer timer;  // measuring-only; the pipeline records the stats key
 
     result.problem = lower_arrays(result.problem);
 

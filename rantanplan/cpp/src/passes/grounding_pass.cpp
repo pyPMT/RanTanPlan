@@ -7,7 +7,7 @@
 namespace rantanplan {
 
 void GroundingPass::apply(PreprocessedProblem& result) const {
-    ScopedTimer timer("grounding.time_ms");
+    ScopedTimer timer;  // measuring-only; the pipeline records the stats key
 
     Logger::instance().component(VerbosityLevel::INFO, "Grounding", {{"status", "starting"}});
 

@@ -10,17 +10,21 @@ namespace rantanplan {
  *
  * Runs a fixpoint loop that alternates forward pruning (RPG-unreachable
  * actions) and backward pruning (goal-irrelevant actions via achiever
- * analysis). The RPG always runs to fixpoint for tightest possible bounds.
+ * analysis). The RPG always runs to fixpoint for tightest possible bounds;
+ * the final RPG stays local to the pass.
  *
  * Produces:
- *   - fixpoint_rpg: final RPG on the pruned problem
- *   - tightened_bounds: numeric bounds (RPG + syntactic + conservation-derived)
- *   - conservation_laws: discovered f + g == C invariants
- *   - achievers: goal-relevant achiever analysis (for the CGB planner)
+ *   - state_constraints.bounds: numeric bounds (RPG + syntactic +
+ *     conservation-derived), encoder-ready
+ *   - state_constraints.conservations: discovered f + g == C invariants
+ *   - state_constraints.domains: reachable object-fluent value sets
+ *     (MutexAnalysisPass later adds state_constraints.mutexes)
+ *   - achievers: goal-relevant achiever analysis (for the CGB planner and
+ *     LandmarkAnalysisPass)
  *   - sdac_cost_lower_bounds: cost bounds on the FINAL action set
  *
- * Always runs: RPG fixpoint bounds are unconditionally injected downstream
- * (see InvariantOraclePass), so the RPG is always built here to produce them.
+ * Always runs: the published bounds/domains are unconditionally injected at
+ * every timestep downstream, so the RPG is always built here to produce them.
  */
 class ActionPruningPass : public Pass {
 public:

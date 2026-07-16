@@ -7,7 +7,7 @@
 namespace rantanplan {
 
 void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
-    ScopedTimer timer("cwa.time_ms");
+    ScopedTimer timer;  // measuring-only; the pipeline records the stats key
 
     auto& problem = result.problem;
     auto pool = problem.pool_ptr();

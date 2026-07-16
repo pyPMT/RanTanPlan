@@ -251,7 +251,7 @@ move_b_a_0 → (¬at_b_1 ∧ at_a_1)
 ; parallelism (sequential)
 AtMost(move_a_b_0, move_b_a_0; 1)
 
-; state constraint (invariant oracle: robot is in at most one room)
+; state constraint (mutex analysis: robot is in at most one room)
 AtMost(at_a_0, at_b_0; 1)
 AtMost(at_a_1, at_b_1; 1)
 

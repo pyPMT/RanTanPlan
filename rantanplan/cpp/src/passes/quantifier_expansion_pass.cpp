@@ -227,7 +227,7 @@ private:
 }  // namespace
 
 void QuantifierExpansionPass::apply(PreprocessedProblem& result) const {
-    ScopedTimer timer("quantifier_expansion.time_ms");
+    ScopedTimer timer;  // measuring-only; the pipeline records the stats key
     const auto& problem = result.problem;
     ExprPool& pool = *problem.pool_ptr();
     QuantifierExpander expander(problem, pool);

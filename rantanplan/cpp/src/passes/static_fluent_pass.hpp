@@ -20,7 +20,7 @@ namespace rantanplan {
 class StaticFluentPass : public Pass {
 public:
     void apply(PreprocessedProblem& result) const override;
-    std::string name() const override { return "StaticFluent"; }
+    std::string name() const override { return "static-fluent"; }
 };
 
 } // namespace rantanplan

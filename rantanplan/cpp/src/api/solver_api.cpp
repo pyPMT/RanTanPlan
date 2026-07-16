@@ -29,7 +29,7 @@
 #include "passes/cwa_initial_state_pass.hpp"
 #include "passes/static_fluent_pass.hpp"
 #include "passes/cnf_normalization_pass.hpp"
-#include "passes/invariant_oracle_pass.hpp"
+#include "passes/mutex_analysis_pass.hpp"
 #include "passes/landmark_analysis_pass.hpp"
 #include "analysis/interference_analysis.hpp"
 #include "grounding/array_lowering.hpp"
@@ -81,16 +81,17 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     //
     //   CANONICALIZE → lifted problem → clean ground problem
     //   PRUNE       → remove unreachable/irrelevant actions via RPG + achievers
-    //   DISCOVER    → find state invariants (mutex groups, bounds, conservation laws)
+    //   DISCOVER    → find state invariants (mutex groups) and landmarks
     //   PROFILE     → symmetry data + numeric constraint classification
     //
     // Data flow between phases:
     //
     //   CANON    produces: grounded problem with complete initial state, simplified expressions
-    //   PRUNE    produces: pruned problem, fixpoint_rpg, tightened_bounds,
-    //                      conservation_laws, achievers, sdac_cost_lower_bounds
-    //   DISCOVER consumes tightened_bounds + conservation_laws from PRUNE (no re-derivation),
-    //            reads object domains from fixpoint_rpg, produces state_constraints
+    //   PRUNE    produces: pruned problem, achievers, sdac_cost_lower_bounds, and
+    //                      the bounds/conservations/domains part of state_constraints
+    //                      (the fixpoint RPG stays local to the pass)
+    //   DISCOVER appends mutex groups to state_constraints (MutexAnalysis) and
+    //            extracts landmark_data from achievers (LandmarkAnalysis)
     //   PROFILE  produces: symmetry_data (using the pre-grounding snapshot for
     //                      detection), arithmetic_profile + all_integer flag
     //
@@ -100,7 +101,9 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     //   - StaticFluent before CnfNormalization (folding first collapses disjunctions
     //     over static predicates; distributing before folding can blow up)
     //   - StaticFluent before ActionPruning (simpler expressions → tighter RPG bounds)
-    //   - ActionPruning before InvariantOracle (produces bounds + conservation laws it consumes)
+    //   - MutexAnalysis after ActionPruning (runs on the pruned action set)
+    //   - LandmarkAnalysis after ActionPruning (consumes its achievers artifact;
+    //     gated on goal_relevance because achievers only exist with it)
     //   - SymmetryAnalysis after all pruning (runs on smallest action set)
     //   - ArithmeticProfile last (reads final expressions, sets all_integer for
     //     every downstream Z3 translation)
@@ -122,7 +125,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     rantanplan::StaticFluentPass static_fluent_pass;
     rantanplan::CnfNormalizationPass cnf_normalization_pass;
     rantanplan::ActionPruningPass action_pruning_pass(options);
-    rantanplan::InvariantOraclePass invariant_oracle_pass;
+    rantanplan::MutexAnalysisPass mutex_analysis_pass;
     rantanplan::LandmarkAnalysisPass landmark_analysis_pass;
     rantanplan::SymmetryAnalysisPass symmetry_analysis_pass(
         original_problem ? &*original_problem : nullptr);
@@ -154,8 +157,12 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     passes.push_back(&action_pruning_pass);
 
     // --- DISCOVER ---
-    passes.push_back(&invariant_oracle_pass);
-    passes.push_back(&landmark_analysis_pass);
+    passes.push_back(&mutex_analysis_pass);
+    // Landmark extraction runs over the achievers artifact, which
+    // ActionPruningPass only builds when goal-relevance analysis is on.
+    if (options.goal_relevance) {
+        passes.push_back(&landmark_analysis_pass);
+    }
 
     // --- PROFILE ---
     if (options.enable_symmetries) {

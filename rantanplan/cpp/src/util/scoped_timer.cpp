@@ -8,9 +8,15 @@ ScopedTimer::ScopedTimer(const std::string& stats_key)
     , start_(std::chrono::high_resolution_clock::now()) {
 }
 
+ScopedTimer::ScopedTimer()
+    : start_(std::chrono::high_resolution_clock::now()) {
+}
+
 ScopedTimer::~ScopedTimer() {
-    // Record elapsed time to Stats singleton
-    Stats::instance().set(stats_key_, elapsed_ms());
+    // Record elapsed time to Stats singleton (measuring-only timers skip this)
+    if (!stats_key_.empty()) {
+        Stats::instance().set(stats_key_, elapsed_ms());
+    }
 }
 
 double ScopedTimer::elapsed_ms() const {

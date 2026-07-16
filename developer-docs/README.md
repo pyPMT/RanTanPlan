@@ -93,7 +93,8 @@ for when you meet one out of order.
 - **Mutex / invariant / conservation law** — facts provably true in every
   reachable state: at most one of a fluent group holds (mutex), a numeric
   bound always holds, a sum of fluents stays constant (conservation law).
-  Discovered by the invariant oracle, asserted at every timestep
+  Discovered by the preprocessor (mutexes by mutex analysis, bounds and
+  conservation laws by action pruning), asserted at every timestep
   ([`preprocessing-and-strategy.md`](preprocessing-and-strategy.md)).
 - **Propagator (user propagator)** — Z3's extension point for injecting
   custom reasoning *during* search via callbacks; RantanPlan hosts one and

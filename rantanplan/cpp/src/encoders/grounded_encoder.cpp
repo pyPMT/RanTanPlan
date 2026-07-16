@@ -364,8 +364,9 @@ z3::expr GroundedEncoder::encode_symmetries(int t) {
 // what actually distinguishes them is ONE bit: may the constraint be
 // skipped?
 //
-//  - state_constraints_: DERIVED by the InvariantOraclePass (mutex groups,
-//    RPG bounds, domains, conservation laws).  Proven redundant, so
+//  - state_constraints_: DERIVED by the preprocessor (RPG bounds, domains,
+//    and conservation laws from ActionPruningPass; mutex groups from
+//    MutexAnalysisPass).  Proven redundant, so
 //    skipping them anywhere is sound (options off, final state uncovered,
 //    R2E's no-op override) — they only ever cost speed.
 //  - problem_.state_invariants(): DECLARED by the user via

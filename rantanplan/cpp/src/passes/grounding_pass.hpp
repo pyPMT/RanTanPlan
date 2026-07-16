@@ -9,10 +9,9 @@ namespace rantanplan {
  *
  * Runs the delete-relaxation fixpoint grounder on a lifted problem,
  * producing a ground problem where every action is fully instantiated.
- *
- * This pass SUBSUMES the Boolean RPG: it performs the same reachability
- * analysis but also grounds actions simultaneously.  When this pass runs,
- * the BooleanRPGPass should be skipped.
+ * Because the fixpoint is a reachability analysis, grounding doubles as
+ * pruning (only reachable instantiations are emitted) and as a deduction
+ * step (layer depth, goal reachability).
  *
  * Results:
  *   - problem is replaced with the grounded version
