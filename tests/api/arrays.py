@@ -384,6 +384,84 @@ def test_size1_array_degenerates_to_scalar():
     _ar_check(p)
 
 
+# ═══════════════════════ whole-array literals (AR oracle) ════════════════════
+
+def test_whole_array_goal_equality_literal():
+    """Whole-array equality against a 2-D literal in the GOAL — n_puzzle's
+    `Equals(puzzle, goal_blocks)`. The converter expands it element-wise into
+    per-cell equalities; UP's ArrayFluentsRemover expands the same literal, so
+    the native solve and the AR oracle agree."""
+    em = _em()
+    g = Fluent("wg", ArrayType(2, ArrayType(2, IntType(0, 9))))
+
+    def cell(r, c):
+        return em.ArrayIndex(em.ArrayIndex(g(), Int(r)), Int(c))
+
+    p = Problem("wholegoal")
+    p.add_fluent(g, default_initial_value=0)
+    p.set_initial_value(g, [[1, 2], [3, 4]])
+    act = InstantaneousAction("seta")
+    act.add_effect(cell(0, 0), 5)
+    act.add_effect(cell(1, 1), 6)
+    p.add_action(act)
+    p.add_goal(Equals(g(), [[5, 2], [3, 6]]))   # whole-array literal goal
+    r = _ar_check(p)
+    assert [ai.action.name for ai in r.plan.actions] == ["seta"]
+
+
+def test_whole_array_goal_disequality_literal():
+    """`Not(Equals(array, literal))` in the goal: the whole-array equality
+    expands element-wise and the surrounding Not turns it into a disjunction of
+    per-cell disequalities. Initially the array *equals* the literal (goal
+    false), so an action must perturb a cell — proving the expansion is
+    load-bearing, not vacuously satisfied by the empty plan."""
+    em = _em()
+    a = Fluent("wd", ArrayType(2, IntType(0, 9)))
+    p = Problem("wholediseq")
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(a, [1, 2])
+    bump = InstantaneousAction("bump")
+    bump.add_effect(em.ArrayIndex(a(), Int(0)), 7)
+    p.add_action(bump)
+    p.add_goal(Not(Equals(a(), [1, 2])))        # must differ from [1, 2]
+    r = _ar_check(p)
+    assert [ai.action.name for ai in r.plan.actions] == ["bump"]
+
+
+def test_whole_array_assignment_effect_literal():
+    """A whole-array assignment effect from a literal (`a := [3, 4]`) expands to
+    one per-cell assignment sharing the effect's kind/condition/forall. Validated
+    against a hand-written scalar reference: UP's ArrayFluentsRemover leaves a
+    whole-array assignment effect un-expanded (it only rewrites init/goal/reads),
+    so it is not a valid oracle for this construct — the reference is."""
+    em = _em()
+    a = Fluent("wae", ArrayType(2, IntType(0, 9)))
+    p = Problem("wholeassign")
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(a, [0, 0])
+    setall = InstantaneousAction("setall")
+    # A bare list value would be flattened by add_effect's auto_promote; wrap it
+    # in an explicit ARRAY_CONSTANT (em.Array) so it reaches the converter whole.
+    setall.add_effect(a(), em.Array([3, 4]))    # whole-array literal assignment
+    p.add_action(setall)
+    p.add_goal(And(Equals(em.ArrayIndex(a(), Int(0)), 3),
+                   Equals(em.ArrayIndex(a(), Int(1)), 4)))
+
+    a0, a1 = (Fluent(n, IntType(0, 9)) for n in ("wae0", "wae1"))
+    ref = Problem("wholeassignref")
+    for f in (a0, a1):
+        ref.add_fluent(f, default_initial_value=0)
+        ref.set_initial_value(f, 0)
+    rset = InstantaneousAction("setall")
+    rset.add_effect(a0(), 3)
+    rset.add_effect(a1(), 4)
+    ref.add_action(rset)
+    ref.add_goal(And(Equals(a0(), 3), Equals(a1(), 4)))
+
+    r = _ref_check(p, ref)
+    assert [ai.action.name for ai in r.plan.actions] == ["setall"]
+
+
 # ═══════════════ int-parameter / range-variable indices (reference) ══════════
 
 def test_index_arithmetic_int_param():
@@ -1011,23 +1089,6 @@ def test_converter_rejects_fluent_index():
     _assert_rejected(build)
 
 
-def test_converter_rejects_array_constant_in_goal():
-    """An ARRAY_CONSTANT outside the initial state (here: a goal comparing a
-    whole array to a literal list) is rejected by the converter."""
-    def build():
-        em = _em()
-        a = Fluent("aconst_a", ArrayType(2, IntType(0, 9)))
-        p = Problem("aconstgoal")
-        p.add_fluent(a, default_initial_value=0)
-        p.set_initial_value(a, [1, 2])
-        w = InstantaneousAction("w")
-        w.add_effect(em.ArrayIndex(a(), Int(0)), 1)
-        p.add_action(w)
-        p.add_goal(Equals(a(), [1, 2]))  # list auto-promotes to ARRAY_CONSTANT
-        return p
-    _assert_rejected(build)
-
-
 def test_up_grounding_flag_rejected():
     """`--up-grounding` disables the native grounder, where the array lowering
     lives; the preprocess() guard must reject array problems with that flag
@@ -1114,6 +1175,10 @@ CASES = [
     test_boolean_cell_copy,
     test_boolean_cell_swap,
     test_size1_array_degenerates_to_scalar,
+    # whole-array literals (AR oracle)
+    test_whole_array_goal_equality_literal,
+    test_whole_array_goal_disequality_literal,
+    test_whole_array_assignment_effect_literal,
     # int-parameter / range-variable indices (scalar reference)
     test_index_arithmetic_int_param,
     test_forall_effect_range_variable_reverse,
@@ -1142,7 +1207,6 @@ CASES = [
     test_oob_initial_state_assignment_dropped,
     test_whole_array_assignment_rejected,
     test_converter_rejects_fluent_index,
-    test_converter_rejects_array_constant_in_goal,
     test_up_grounding_flag_rejected,
     # mini end-to-end
     test_sliding_puzzle_2x2,

@@ -229,6 +229,21 @@ class _FNodeToIR:
                     f"constants, parameters, quantified variables, and "
                     f"arithmetic over them.")
 
+        # Whole-array equality against a literal (an ARRAY_CONSTANT operand,
+        # e.g. n_puzzle's `Equals(puzzle, goal_blocks)` goal). Expand it
+        # element-wise into a conjunction of scalar per-cell equalities, which
+        # the constant-index array lowering already handles. Handled only when
+        # exactly one side is the literal (the other is the array term to index).
+        if expression.is_equals():
+            a, b = expression.arg(0), expression.arg(1)
+            a_arr, b_arr = a.is_array_constant(), b.is_array_constant()
+            if a_arr != b_arr:
+                em = expression.environment.expression_manager
+                term, const = (b, a) if a_arr else (a, b)
+                conjuncts = [em.Equals(t, v)
+                             for t, v in _array_literal_cells(em, term, const)]
+                return self.walk(em.And(*conjuncts))
+
         # Operator application (and/or/not/implies/iff, arithmetic, relations,
         # array_index)
         operator_name = _OPERATOR_NAMES.get(expression.node_type)
@@ -289,6 +304,23 @@ def _convert_parameters(parameters):
                 ir_param.upper_bound = int(ptype.upper_bound)
         result.append(ir_param)
     return result
+
+
+def _array_literal_cells(expr_manager, term, array_const):
+    """Yield (indexed_term, scalar_element) for every leaf of an array constant.
+
+    Pairs each leaf of a (possibly nested) ARRAY_CONSTANT with the corresponding
+    constant-index ARRAY_INDEX access into `term`, in row-major order. Used to
+    expand a whole-array literal appearing in a goal/precondition equality or an
+    assignment effect into per-cell scalar operations (the same shape the C++
+    array lowering already handles). Unlike `_emit_array_cells` there is no
+    undefined-position handling: a literal in an expression is fully defined."""
+    for i, element in enumerate(array_const.constant_value()):
+        cell_term = expr_manager.ArrayIndex(term, expr_manager.Int(i))
+        if element.is_array_constant():
+            yield from _array_literal_cells(expr_manager, cell_term, element)
+        else:
+            yield cell_term, element
 
 
 def _emit_array_cells(walker, expr_manager, array_expr, array_const,
@@ -384,6 +416,7 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
     out.objects = objects
 
     # --- Actions ---
+    expr_manager = problem.environment.expression_manager
     actions = []
     for action in problem.actions:
         if not isinstance(action, InstantaneousAction):
@@ -397,25 +430,46 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
 
         effects = []
         for effect in action.effects:
-            ir_effect = _ir.EffectIR()
             if effect.is_assignment():
-                ir_effect.kind = 0
+                kind = 0
             elif effect.is_increase():
-                ir_effect.kind = 1
+                kind = 1
             elif effect.is_decrease():
-                ir_effect.kind = 2
+                kind = 2
             else:
                 raise UPException(f"Unsupported effect: {effect}")
-            ir_effect.fluent = walker.walk(effect.fluent)
-            ir_effect.value = walker.walk(effect.value)
-            ir_effect.condition = walker.walk(effect.condition)
+
             # Emit each forall variable as a *declaration* (an IntVariable carries
             # its [initial, last] bounds as children) -- the same node a quantifier
             # condition uses -- so the QuantifierExpansionPass enumerates a range
             # variable's integer interval. A bare walk() reference would drop the
             # bounds, leaving C++ to misread the range variable as an (object-less)
             # object variable and silently expand the effect to nothing.
-            ir_effect.forall = [walker._variable_declaration(v) for v in effect.forall]
+            forall = [walker._variable_declaration(v) for v in effect.forall]
+            condition = walker.walk(effect.condition)
+
+            # Whole-array assignment from a literal (e.g. `puzzle := goal_blocks`):
+            # expand into one per-cell effect, sharing kind/condition/forall. The
+            # per-cell target is a constant-index access the array lowering
+            # handles like any scalar cell.
+            if effect.value.is_array_constant():
+                for cell_fluent, cell_value in _array_literal_cells(
+                        expr_manager, effect.fluent, effect.value):
+                    ir_effect = _ir.EffectIR()
+                    ir_effect.kind = kind
+                    ir_effect.fluent = walker.walk(cell_fluent)
+                    ir_effect.value = walker.walk(cell_value)
+                    ir_effect.condition = condition
+                    ir_effect.forall = forall
+                    effects.append(ir_effect)
+                continue
+
+            ir_effect = _ir.EffectIR()
+            ir_effect.kind = kind
+            ir_effect.fluent = walker.walk(effect.fluent)
+            ir_effect.value = walker.walk(effect.value)
+            ir_effect.condition = condition
+            ir_effect.forall = forall
             effects.append(ir_effect)
         ir_action.effects = effects
         actions.append(ir_action)
@@ -425,7 +479,6 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
     # value is normalised to one per-cell assignment per defined cell (avoids an
     # ARRAY_CONSTANT node kind in the ExprPool); everything else (per-cell
     # ARRAY_INDEX keys and scalar assignments) passes through unchanged.
-    expr_manager = problem.environment.expression_manager
     initial_state = []
     for state_var, value in problem.explicit_initial_values.items():
         if value.is_array_constant():

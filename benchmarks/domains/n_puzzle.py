@@ -24,6 +24,15 @@ from unified_planning.shortcuts import (
 from .base import Domain
 
 INSTANCES: Dict[str, list[int]] = {
+    # 3x3 (8-puzzle) instances, scrambled 3/5/7/9/11 moves from the goal so they
+    # are guaranteed solvable and land within the SAT horizon (the korf 4x4
+    # instances below are the hardest known 15-puzzles and are SAT-hard, like
+    # rush_hour/sokoban). Row-major, blank = 0.
+    "puzzle8_1": [3,1,2,6,4,5,7,0,8],
+    "puzzle8_2": [3,1,2,6,4,0,7,8,5],
+    "puzzle8_3": [3,0,1,6,4,2,7,8,5],
+    "puzzle8_4": [3,0,5,4,2,8,6,1,7],
+    "puzzle8_5": [3,1,5,6,2,0,7,8,4],
     "korf1": [14,13,15,7,11,12,9,5,6,0,2,1,4,8,10,3],
     "korf2": [13,5,4,10,9,12,8,14,2,3,7,1,0,15,11,6],
     "korf3": [14,7,8,2,13,11,10,4,9,12,5,0,3,6,1,15],
