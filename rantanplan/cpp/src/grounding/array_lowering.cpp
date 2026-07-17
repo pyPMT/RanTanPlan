@@ -24,7 +24,7 @@ namespace {
 struct ArrayInfo {
     std::vector<int64_t> sizes;                       // per-dimension size
     std::set<std::vector<int64_t>> undefined;         // full coordinate tuples
-    std::map<std::vector<int64_t>, std::string> cell_names;  // defined coords -> cell fluent name
+    std::map<std::vector<int64_t>, ExprID> cell_heads;  // defined coords -> cell FLUENT_SYMBOL id
     int elem_type_id = -1;                            // cell value (element) type
     bool parameterized = false;                       // cells keep the array's object params
 };
@@ -170,10 +170,8 @@ public:
 
     /// True if `eid` is one of the minted cell state variables.
     bool is_cell(ExprID eid) const {
-        if (!pool_.is_state_variable(eid)) return false;
-        ExprID head = pool_.head_symbol_id(eid);
-        return pool_.is_fluent_symbol(head) &&
-               cell_fluent_names_.count(pool_.payload_string(head)) > 0;
+        return pool_.is_state_variable(eid) &&
+               cell_head_ids_.count(pool_.head_symbol_id(eid)) > 0;
     }
 
 private:
@@ -182,8 +180,8 @@ private:
     const Problem& problem_;
     ExprPool& pool_;
     std::vector<Fluent> cell_fluents_;
-    std::unordered_map<std::string, ArrayInfo> arrays_;   // array fluent name -> info
-    std::unordered_set<std::string> cell_fluent_names_;   // names of all minted cell fluents
+    std::unordered_map<int, ArrayInfo> arrays_;           // array fluent id -> info
+    std::unordered_set<ExprID> cell_head_ids_;            // FLUENT_SYMBOL ids of all minted cells
 
     /// Mint one scalar cell fluent + state variable per defined array position,
     /// in fluent-declaration order and row-major position order.
@@ -216,7 +214,7 @@ private:
             bool done = ndim == 0;
             while (!done) {
                 if (!info.undefined.count(coord)) {
-                    info.cell_names.emplace(coord,
+                    info.cell_heads.emplace(coord,
                                             mint_cell(f, coord, elem_type, elem_type_id));
                 }
                 // Row-major odometer: last dimension varies fastest.
@@ -228,20 +226,17 @@ private:
                     if (d == 0) { done = true; }
                 }
             }
-            arrays_.emplace(f.name(), std::move(info));
+            arrays_.emplace(f.id(), std::move(info));
         }
     }
 
-    std::string mint_cell(const Fluent& array_fluent, const std::vector<int64_t>& coord,
-                          const Type* elem_type, int elem_type_id) {
+    ExprID mint_cell(const Fluent& array_fluent, const std::vector<int64_t>& coord,
+                     const Type* elem_type, int elem_type_id) {
         std::string cell_name = array_fluent.name();
         for (int64_t c : coord) cell_name += "[" + std::to_string(c) + "]";
 
         // A cell is a scalar fluent of the leaf element type, keeping the array
-        // fluent's object parameters (empty for a nullary array). For a nullary
-        // array, pre-intern the state variable so its ExprID is assigned in
-        // mint order (load-bearing for downstream iteration determinism);
-        // resolve_access rebuilds the identical id via intern dedup.
+        // fluent's object parameters (empty for a nullary array).
         Fluent cell(cell_name, elem_type, array_fluent.parameters());
         if (array_fluent.has_declared_bounds()) {
             cell.set_declared_bounds(array_fluent.declared_lower_bound(),
@@ -253,41 +248,52 @@ private:
             cell.set_declared_default(*array_fluent.declared_default());
         }
         cell_fluents_.push_back(std::move(cell));
-        cell_fluent_names_.insert(cell_name);
+
+        // The cell's FLUENT_SYMBOL head identifies it across accesses (resolve
+        // builds a state variable from it plus the access's object args). For a
+        // nullary array, also pre-intern the full state variable so its ExprID
+        // is assigned in mint order (load-bearing for downstream iteration
+        // determinism); resolve_access rebuilds the identical id via dedup.
+        ExprNode head;
+        head.kind = static_cast<int>(ExprKind::FLUENT_SYMBOL);
+        head.type_id = elem_type_id;
+        head.payload = cell_name;
+        ExprID head_id = pool_.intern(std::move(head));
+        cell_head_ids_.insert(head_id);
         if (array_fluent.parameter_count() == 0)
             pool_.intern_state_variable(cell_name, elem_type_id);
-        return cell_name;
+        return head_id;
     }
 
     /// Resolve a (possibly nested) ARRAY_INDEX access to its cell.
     AccessResult resolve_access(ExprID eid, ExprID& out_cell,
                                 const std::string& context) {
-        std::string base_name;
+        const Fluent* base = nullptr;
         std::vector<int64_t> coords_rev;
         std::vector<ExprID> base_args;  // object args on the base fluent (grid(p)[..])
-        if (!collect_access(eid, base_name, coords_rev, base_args, context)) {
+        if (!collect_access(eid, base, coords_rev, base_args, context)) {
             throw std::runtime_error(
                 "Malformed array access in " + context + " (" +
                 pool_.to_string(eid) + ")");
         }
         std::vector<int64_t> coords(coords_rev.rbegin(), coords_rev.rend());
 
-        auto it = arrays_.find(base_name);
+        auto it = arrays_.find(base->id());
         if (it == arrays_.end()) {
             throw std::runtime_error("Array access on unknown array fluent '" +
-                                     base_name + "' in " + context);
+                                     base->name() + "' in " + context);
         }
         const ArrayInfo& info = it->second;
 
         if (coords.size() < info.sizes.size()) {
             throw std::runtime_error(
-                "Partial indexing of array fluent '" + base_name +
+                "Partial indexing of array fluent '" + base->name() +
                 "' (whole-row/slice access) is not supported; appeared in " +
                 context);
         }
         if (coords.size() > info.sizes.size()) {
             throw std::runtime_error(
-                "Array fluent '" + base_name + "' has " +
+                "Array fluent '" + base->name() + "' has " +
                 std::to_string(info.sizes.size()) + " dimension(s) but was "
                 "accessed with " + std::to_string(coords.size()) +
                 " indices; appeared in " + context);
@@ -301,23 +307,30 @@ private:
 
         // A defined, in-bounds coordinate always has a minted cell (mint_cells
         // is exhaustive); guard against a future minting/validation mismatch.
-        auto cit = info.cell_names.find(coords);
-        if (cit == info.cell_names.end()) {
+        auto cit = info.cell_heads.find(coords);
+        if (cit == info.cell_heads.end()) {
             throw std::runtime_error("Internal error: no cell minted for a "
-                                     "defined position of array '" + base_name +
+                                     "defined position of array '" + base->name() +
                                      "' in " + context);
         }
-        // Build the cell state variable, applying the base fluent's object args
-        // (empty for a nullary array -> dedups to the pre-interned cell).
-        out_cell = pool_.intern_state_variable(cit->second, info.elem_type_id, base_args);
+        // Build the cell state variable from its FLUENT_SYMBOL head plus the base
+        // fluent's object args (empty for a nullary array -> dedups to the
+        // pre-interned cell). Mirrors ExprPool::intern_state_variable's layout.
+        ExprNode sv;
+        sv.kind = static_cast<int>(ExprKind::STATE_VARIABLE);
+        sv.type_id = info.elem_type_id;
+        sv.children.reserve(1 + base_args.size());
+        sv.children.push_back(cit->second);
+        for (ExprID a : base_args) sv.children.push_back(a);
+        out_cell = pool_.intern(std::move(sv));
         return AccessResult::Ok;
     }
 
-    /// Walk the ARRAY_INDEX chain, collecting the base array fluent name, the
-    /// folded index per dimension (outermost first, i.e. reversed dim order),
-    /// and the base fluent's object arguments. Returns false if `eid` is not an
-    /// array access.
-    bool collect_access(ExprID eid, std::string& base_name,
+    /// Walk the ARRAY_INDEX chain, collecting the base array fluent, the folded
+    /// index per dimension (outermost first, i.e. reversed dim order), and the
+    /// base fluent's object arguments. Returns false if `eid` is not an array
+    /// access.
+    bool collect_access(ExprID eid, const Fluent*& base_fluent,
                         std::vector<int64_t>& coords_rev,
                         std::vector<ExprID>& base_args,
                         const std::string& context) {
@@ -333,13 +346,12 @@ private:
                     "); symbolic indices are not supported in Phase 1.");
             }
             coords_rev.push_back(*c);
-            return collect_access(arr, base_name, coords_rev, base_args, context);
+            return collect_access(arr, base_fluent, coords_rev, base_args, context);
         }
         if (pool_.is_state_variable(eid)) {
             ExprID head = pool_.head_symbol_id(eid);
             if (!pool_.is_fluent_symbol(head)) return false;
-            const std::string& name = pool_.payload_string(head);
-            const Fluent* f = problem_.find_fluent(name);
+            const Fluent* f = problem_.find_fluent(pool_.payload_string(head));
             if (!f || !f->is_array()) return false;
             // Keep the base fluent's object arguments (e.g. p in grid(p)[r][c]);
             // resolve_access re-applies them to the minted cell fluent.
@@ -347,7 +359,7 @@ private:
             base_args.reserve(nargs);
             for (size_t i = 0; i < nargs; ++i)
                 base_args.push_back(pool_.argument(eid, i));
-            base_name = name;
+            base_fluent = f;
             return true;
         }
         return false;
@@ -505,7 +517,8 @@ Problem lower_arrays(const Problem& problem) {
         }
     }
 
-    // Goals, invariants, initial state (ill-formed access = hard error).
+    // Goals and invariants: an out-of-bounds access is a hard error (an
+    // ill-formed goal is a modelling mistake, not a runtime-guarded access).
     bool ignore = false;
     std::vector<Goal> new_goals;
     new_goals.reserve(problem.goals().size());
@@ -520,12 +533,22 @@ Problem lower_arrays(const Problem& problem) {
         new_invariants.push_back(lowerer.rewrite(inv, false, ignore, "state invariant"));
     }
 
+    // Initial state: an out-of-bounds / undefined-position assignment is
+    // permissively dropped (paper Def. 9 — undefinedness detected at compile
+    // time is simply removed), with a warning, since a defaulted array cell that
+    // does not exist cannot be assigned. Matches the fork's permissive AR.
     std::vector<Assignment> new_initial;
     new_initial.reserve(problem.initial_state().size());
     for (const Assignment& asn : problem.initial_state()) {
-        ExprID fluent = lowerer.rewrite(asn.fluent_id(), false, ignore, "initial state");
-        ExprID value = lowerer.rewrite(asn.value_id(), false, ignore, "initial state");
-        new_initial.emplace_back(fluent, value, &pool);
+        std::optional<ExprID> fluent = lowerer.rewrite_permissive(asn.fluent_id(), "initial state");
+        std::optional<ExprID> value = lowerer.rewrite_permissive(asn.value_id(), "initial state");
+        if (!fluent || !value) {
+            Logger::instance().info(
+                "Warning: dropping out-of-bounds/undefined initial-state assignment "
+                + pool.to_string(asn.fluent_id()) + " := " + pool.to_string(asn.value_id()));
+            continue;
+        }
+        new_initial.emplace_back(*fluent, *value, &pool);
     }
 
     // Assemble the lowered problem: drop array fluent schemas, append cells.

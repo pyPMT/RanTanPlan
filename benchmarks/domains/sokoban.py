@@ -6,7 +6,6 @@ It is intended to be executed via `run.py`.
 Example:
   python run.py --domain sokoban --compilation up --solving fast-downward
 """
-import os
 from typing import Dict, Optional
 from unified_planning.model import Action, Expression, Object, IntVariable, Variable
 from unified_planning.shortcuts import (
@@ -21,9 +20,253 @@ from unified_planning.shortcuts import (
 
 from .base import Domain
 
-PROBS_DIR = os.path.join(os.path.dirname(__file__), 'sokoban/probs')
+# Embedded Sokoban instance grids (ASCII), vendored from the fork so the module
+# is self-contained (no external data files). Legend: #=wall, @=player, $=box,
+# .=goal, *=box-on-goal, space=empty. Parsed by _parse_lines().
+GRIDS: dict[str, list[str]] = {
+    "i_1": [
+        '  ########',
+        '  #  # . #',
+        '  #   .*.#',
+        '  #  # * #',
+        '####$##.##',
+        '#      $ #',
+        '# $ ## $ #',
+        '#   @#   #',
+        '##########',
+    ],
+    "i_2": [
+        '       #####',
+        '########   #',
+        '#.   .  @#.#',
+        '#  ###     #',
+        '## $  #    #',
+        ' # $   #####',
+        ' # $#  #',
+        ' ## #  #',
+        '  #   ##',
+        '  #####',
+    ],
+    "i_3": [
+        ' ###########',
+        '##.......  #',
+        '# $$$$$$$@ #',
+        '#   # # # ##',
+        '# # #     #',
+        '#   #######',
+        '#####',
+    ],
+    "i_4": [
+        ' #######',
+        '##     ##',
+        '#  $ $  #',
+        '# $ $ $ #',
+        '## ### ####',
+        ' #@  .....#',
+        ' ##     ###',
+        '  #######',
+    ],
+    "i_5": [
+        ' ########',
+        ' #      #',
+        ' #@   $ #',
+        '## ###$ #',
+        '# .....###',
+        '# $ $ $  #',
+        '###### # #',
+        '     #   #',
+        '     #####',
+    ],
+    "i_6": [
+        ' #####',
+        '##   ##',
+        '#  $  ##',
+        '# $ $  ##',
+        '###$# . ##',
+        '  # # .  #',
+        ' ## ##.  #',
+        ' # @  . ##',
+        ' #   #  #',
+        ' ########',
+    ],
+    "i_7": [
+        ' ####',
+        '##  #',
+        '#. $#',
+        '#.$ #',
+        '#.$ #',
+        '#.$ #',
+        '#. $##',
+        '#   @#',
+        '##   #',
+        ' #####',
+    ],
+    "i_8": [
+        '######',
+        '#    ###',
+        '#  # $ #',
+        '#  $ @ #',
+        '## ## #####',
+        '#  #......#',
+        '# $ $ $ $ #',
+        '##   ######',
+        ' #####',
+    ],
+    "i_9": [
+        ' ############################',
+        ' #                          #',
+        ' # ######################## #',
+        ' # #                      # #',
+        ' # # #################### # #',
+        ' # # #                  # # #',
+        ' # # # ################ # # #',
+        ' # # # #              # # # #',
+        ' # # # # ############ # # # #',
+        ' # # # # #            # # # #',
+        ' # # # # # ############ # # #',
+        ' # # # # #              # # #',
+        ' # # # # ################ # #',
+        ' # # # #                  # #',
+        '##$# # #################### #',
+        '#. @ #                      #',
+        '#############################',
+    ],
+    "i_10": [
+        '       ####',
+        '      ##  ###',
+        '####  #  $  #',
+        '#  #### $ $ #',
+        '#   ..# #$  #',
+        '#  #   @  ###',
+        '## #..# ###',
+        ' # ## # #',
+        ' #      #',
+        ' ########',
+    ],
+    "i_11": [
+        '########',
+        '#      #',
+        '# $ $$ ########',
+        '##### @##. .  #',
+        '    #$  # .   #',
+        '    #   #. . ##',
+        '    #$# ## # #',
+        '    #        #',
+        '    #  ###  ##',
+        '    #  # ####',
+        '    ####',
+    ],
+    "i_12": [
+        '     ####',
+        ' #####  #',
+        ' #     $#######',
+        '## ## ..#  ...#',
+        '# $ $$#$  @   #',
+        '#        ###  #',
+        '#######  # ####',
+        '      ####',
+    ],
+    "i_13": [
+        ' #### ####',
+        '##  ###  ##',
+        '#   # #   #',
+        '#  *. .*  #',
+        '###$   $###',
+        ' #   @   #',
+        '###$   $###',
+        '#  *. .*  #',
+        '#   # #   #',
+        '##  ###  ##',
+        ' #### ####',
+    ],
+    "i_14": [
+        ' ######',
+        ' # .  #',
+        '##$.# #',
+        '#  *  #',
+        '# ..###',
+        '##$ # #####',
+        '## ## #   #',
+        '#  #### # #',
+        '#   @ $ $ #',
+        '##  #     #',
+        ' ##########',
+    ],
+    "i_15": [
+        '######## #####',
+        '#  #   ###   #',
+        '#      ## $  #',
+        '#.# @ ## $  ##',
+        '#.#   # $  ##',
+        '#.#    $  ##',
+        '#. ## #####',
+        '##    #',
+        ' ######',
+    ],
+    "i_16": [
+        '   #####',
+        '   # @ #',
+        '  ##   ##',
+        '###.$$$.###',
+        '#  $...$  #',
+        '#  $.#.$  #',
+        '#  $...$  #',
+        '###.$$$.###',
+        '  ##   ##',
+        '   #   #',
+        '   #####',
+    ],
+    "i_17": [
+        ' #### ####',
+        ' #  ###  ##',
+        ' #      @ #',
+        '##..###   #',
+        '#      #  #',
+        '#...#$  # #',
+        '# ## $$ $ #',
+        '#  $    ###',
+        '####  ###',
+        '   ####',
+    ],
+    "i_18": [
+        '  #######',
+        '# #     #',
+        '# # # # #',
+        '  # @ $ #',
+        '### ### #',
+        '#   ### #',
+        '# $  ##.#',
+        '## $  #.#',
+        ' ## $  .#',
+        '# ## $#.#',
+        '## ## #.#',
+        '### #   #',
+        '### #####',
+    ],
+    "i_19": [
+        ' #######',
+        ' #  . .###',
+        ' # . . . #',
+        '### #### #',
+        '#  @$  $ #',
+        '#  $$  $ #',
+        '####   ###',
+        '   #####',
+    ],
+    "i_20": [
+        ' #######',
+        '##  .  ##',
+        '# .$$$. #',
+        '# $. .$ #',
+        '#.$ @ $.#',
+        '# $. .$ #',
+        '# .$$$. #',
+        '##  .  ##',
+        ' #######',
+    ],
+}
 
-INSTANCES: list[str] = [f"i_{i}" for i in range(1, 21)]
+INSTANCES: list[str] = list(GRIDS)
 
 class SokobanDomain(Domain):
     def __init__(self) -> None:
@@ -32,10 +275,7 @@ class SokobanDomain(Domain):
     def list_instances(self) -> dict[str, dict]:
         return {k: {} for k in self._instances}
 
-    def _parse_instance(self, filepath: str) -> dict:
-        with open(filepath, 'r') as f:
-            lines = f.readlines()
-
+    def _parse_lines(self, lines: list[str]) -> dict:
         matrix = [list(line.rstrip('\n')) for line in lines]
         initial_state = {}
         defined_positions = []
@@ -107,9 +347,8 @@ class SokobanDomain(Domain):
         }
 
     def get_instance(self, instance: Optional[str] = None) -> dict:
-        if instance and instance in self._instances:
-            path = os.path.join(PROBS_DIR, f"{instance}.txt")
-            return self._parse_instance(path)
+        if instance and instance in GRIDS:
+            return self._parse_lines(GRIDS[instance])
         raise ValueError(f"Instance '{instance}' not found!")
 
     def build_problem(self, instance: str | None = None) -> "Problem":

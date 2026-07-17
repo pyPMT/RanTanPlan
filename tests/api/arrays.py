@@ -950,21 +950,26 @@ def test_all_instances_collide_hard_error():
     _assert_rejected(build)
 
 
-def test_oob_initial_state_error():
-    """A per-cell initial-state assignment targeting an out-of-bounds position
-    is a hard error (the model itself is ill-formed)."""
-    def build():
-        em = _em()
-        a = Fluent("oobinit_a", ArrayType(2, IntType(0, 9)))
-        p = Problem("oobinit")
-        p.add_fluent(a, default_initial_value=0)
-        p.set_initial_value(em.ArrayIndex(a(), Int(5)), 1)  # size 2 -> OOB
-        w = InstantaneousAction("w")
-        w.add_effect(em.ArrayIndex(a(), Int(0)), 1)
-        p.add_action(w)
-        p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 1))
-        return p
-    _assert_rejected(build)
+def test_oob_initial_state_assignment_dropped():
+    """A per-cell initial-state assignment targeting an out-of-bounds/undefined
+    position is permissively dropped, not a hard error (paper Def. 9:
+    compile-time undefinedness is simply removed; the fork's permissive AR does
+    the same, with a warning). The non-existent cell keeps no value and the rest
+    of the problem still solves. This is what lets domains that unconditionally
+    seed a corner cell (e.g. sokoban's `grid(P)[0][0]`) work on irregular grids
+    where that corner is an undefined hole."""
+    em = _em()
+    a = Fluent("oobinit_a", ArrayType(2, IntType(0, 9)))
+    p = Problem("oobinit")
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(em.ArrayIndex(a(), Int(5)), 1)  # size 2 -> OOB, dropped
+    w = InstantaneousAction("w")
+    w.add_effect(em.ArrayIndex(a(), Int(0)), 1)
+    p.add_action(w)
+    p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 1))
+    r = solve(p)
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert [ai.action.name for ai in r.plan.actions] == ["w"]
 
 
 def test_whole_array_assignment_rejected():
@@ -1134,7 +1139,7 @@ CASES = [
     test_same_cell_collision_unconditional_error,
     test_whole_array_equality_rejected,
     test_all_instances_collide_hard_error,
-    test_oob_initial_state_error,
+    test_oob_initial_state_assignment_dropped,
     test_whole_array_assignment_rejected,
     test_converter_rejects_fluent_index,
     test_converter_rejects_array_constant_in_goal,
