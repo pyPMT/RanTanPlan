@@ -24,7 +24,9 @@ namespace {
 struct ArrayInfo {
     std::vector<int64_t> sizes;                       // per-dimension size
     std::set<std::vector<int64_t>> undefined;         // full coordinate tuples
-    std::map<std::vector<int64_t>, ExprID> cells;     // defined coords -> cell state var
+    std::map<std::vector<int64_t>, std::string> cell_names;  // defined coords -> cell fluent name
+    int elem_type_id = -1;                            // cell value (element) type
+    bool parameterized = false;                       // cells keep the array's object params
 };
 
 /// The recursive worker: mints cells, resolves accesses, and rewrites
@@ -167,7 +169,12 @@ public:
     }
 
     /// True if `eid` is one of the minted cell state variables.
-    bool is_cell(ExprID eid) const { return cell_set_.count(eid) > 0; }
+    bool is_cell(ExprID eid) const {
+        if (!pool_.is_state_variable(eid)) return false;
+        ExprID head = pool_.head_symbol_id(eid);
+        return pool_.is_fluent_symbol(head) &&
+               cell_fluent_names_.count(pool_.payload_string(head)) > 0;
+    }
 
 private:
     enum class AccessResult { Ok, OutOfBounds };
@@ -176,7 +183,7 @@ private:
     ExprPool& pool_;
     std::vector<Fluent> cell_fluents_;
     std::unordered_map<std::string, ArrayInfo> arrays_;   // array fluent name -> info
-    std::unordered_set<ExprID> cell_set_;                 // all minted cell state vars
+    std::unordered_set<std::string> cell_fluent_names_;   // names of all minted cell fluents
 
     /// Mint one scalar cell fluent + state variable per defined array position,
     /// in fluent-declaration order and row-major position order.
@@ -184,12 +191,6 @@ private:
         const auto& types = problem_.types();
         for (const Fluent& f : problem_.fluents()) {
             if (!f.is_array()) continue;
-
-            if (f.parameter_count() > 0) {
-                throw std::runtime_error(
-                    "Array fluent '" + f.name() + "' has signature parameters; "
-                    "object-parameterised array fluents are not yet supported.");
-            }
 
             const Type* elem_type = f.array_leaf_element_type();
             if (!elem_type) {
@@ -200,6 +201,12 @@ private:
 
             ArrayInfo info;
             info.sizes = f.array_sizes();
+            info.elem_type_id = elem_type_id;
+            // Object-parameterised array fluents (e.g. grid(p)[r][c]) mint cell
+            // fluents that keep the array's object parameters: grid[r][c](p),
+            // resolved to a state variable with the access's object args and
+            // grounded like any parameterised fluent.
+            info.parameterized = f.parameter_count() > 0;
             for (const auto& pos : f.array_undefined_positions()) {
                 info.undefined.insert(pos);
             }
@@ -209,8 +216,8 @@ private:
             bool done = ndim == 0;
             while (!done) {
                 if (!info.undefined.count(coord)) {
-                    ExprID cell = mint_cell(f, coord, elem_type, elem_type_id);
-                    info.cells.emplace(coord, cell);
+                    info.cell_names.emplace(coord,
+                                            mint_cell(f, coord, elem_type, elem_type_id));
                 }
                 // Row-major odometer: last dimension varies fastest.
                 size_t d = ndim;
@@ -225,15 +232,17 @@ private:
         }
     }
 
-    ExprID mint_cell(const Fluent& array_fluent, const std::vector<int64_t>& coord,
-                     const Type* elem_type, int elem_type_id) {
+    std::string mint_cell(const Fluent& array_fluent, const std::vector<int64_t>& coord,
+                          const Type* elem_type, int elem_type_id) {
         std::string cell_name = array_fluent.name();
         for (int64_t c : coord) cell_name += "[" + std::to_string(c) + "]";
 
-        // A cell is a nullary scalar state variable of the leaf element type.
-        ExprID sv_id = pool_.intern_state_variable(cell_name, elem_type_id);
-
-        Fluent cell(cell_name, elem_type);
+        // A cell is a scalar fluent of the leaf element type, keeping the array
+        // fluent's object parameters (empty for a nullary array). For a nullary
+        // array, pre-intern the state variable so its ExprID is assigned in
+        // mint order (load-bearing for downstream iteration determinism);
+        // resolve_access rebuilds the identical id via intern dedup.
+        Fluent cell(cell_name, elem_type, array_fluent.parameters());
         if (array_fluent.has_declared_bounds()) {
             cell.set_declared_bounds(array_fluent.declared_lower_bound(),
                                      array_fluent.declared_upper_bound());
@@ -244,8 +253,10 @@ private:
             cell.set_declared_default(*array_fluent.declared_default());
         }
         cell_fluents_.push_back(std::move(cell));
-        cell_set_.insert(sv_id);
-        return sv_id;
+        cell_fluent_names_.insert(cell_name);
+        if (array_fluent.parameter_count() == 0)
+            pool_.intern_state_variable(cell_name, elem_type_id);
+        return cell_name;
     }
 
     /// Resolve a (possibly nested) ARRAY_INDEX access to its cell.
@@ -253,7 +264,8 @@ private:
                                 const std::string& context) {
         std::string base_name;
         std::vector<int64_t> coords_rev;
-        if (!collect_access(eid, base_name, coords_rev, context)) {
+        std::vector<ExprID> base_args;  // object args on the base fluent (grid(p)[..])
+        if (!collect_access(eid, base_name, coords_rev, base_args, context)) {
             throw std::runtime_error(
                 "Malformed array access in " + context + " (" +
                 pool_.to_string(eid) + ")");
@@ -289,21 +301,25 @@ private:
 
         // A defined, in-bounds coordinate always has a minted cell (mint_cells
         // is exhaustive); guard against a future minting/validation mismatch.
-        auto cit = info.cells.find(coords);
-        if (cit == info.cells.end()) {
+        auto cit = info.cell_names.find(coords);
+        if (cit == info.cell_names.end()) {
             throw std::runtime_error("Internal error: no cell minted for a "
                                      "defined position of array '" + base_name +
                                      "' in " + context);
         }
-        out_cell = cit->second;
+        // Build the cell state variable, applying the base fluent's object args
+        // (empty for a nullary array -> dedups to the pre-interned cell).
+        out_cell = pool_.intern_state_variable(cit->second, info.elem_type_id, base_args);
         return AccessResult::Ok;
     }
 
-    /// Walk the ARRAY_INDEX chain, collecting the base array fluent name and
-    /// the folded index per dimension (outermost first, i.e. reversed dim
-    /// order). Returns false if `eid` is not an array access.
+    /// Walk the ARRAY_INDEX chain, collecting the base array fluent name, the
+    /// folded index per dimension (outermost first, i.e. reversed dim order),
+    /// and the base fluent's object arguments. Returns false if `eid` is not an
+    /// array access.
     bool collect_access(ExprID eid, std::string& base_name,
                         std::vector<int64_t>& coords_rev,
+                        std::vector<ExprID>& base_args,
                         const std::string& context) {
         if (pool_.is_function_application(eid) &&
             pool_.op(eid) == ExprOperator::ARRAY_INDEX) {
@@ -317,7 +333,7 @@ private:
                     "); symbolic indices are not supported in Phase 1.");
             }
             coords_rev.push_back(*c);
-            return collect_access(arr, base_name, coords_rev, context);
+            return collect_access(arr, base_name, coords_rev, base_args, context);
         }
         if (pool_.is_state_variable(eid)) {
             ExprID head = pool_.head_symbol_id(eid);
@@ -325,11 +341,12 @@ private:
             const std::string& name = pool_.payload_string(head);
             const Fluent* f = problem_.find_fluent(name);
             if (!f || !f->is_array()) return false;
-            if (pool_.argument_count(eid) != 0) {
-                throw std::runtime_error(
-                    "Array fluent '" + name + "' has arguments; "
-                    "object-parameterised array fluents are not yet supported.");
-            }
+            // Keep the base fluent's object arguments (e.g. p in grid(p)[r][c]);
+            // resolve_access re-applies them to the minted cell fluent.
+            size_t nargs = pool_.argument_count(eid);
+            base_args.reserve(nargs);
+            for (size_t i = 0; i < nargs; ++i)
+                base_args.push_back(pool_.argument(eid, i));
             base_name = name;
             return true;
         }

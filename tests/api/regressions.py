@@ -213,6 +213,35 @@ def test_boolean_assign_from_fluent():
     assert_valid(p, r.plan)
 
 
+def test_axioms_rejected_as_unsupported():
+    """RantanPlan has no axiom / derived-predicate support and must reject such a
+    problem cleanly (UNSUPPORTED_PROBLEM naming DERIVED_FLUENTS) rather than
+    crashing deep in conversion (historically an `AttributeError: '_DerivedBoolType'
+    object has no attribute 'name'`). supported_kind() omits DERIVED_FLUENTS, so
+    the deny-list gate in the wrapper rejects before conversion."""
+    from unified_planning.shortcuts import DerivedBoolType
+    from unified_planning.model import Axiom
+
+    flag = Fluent("flag", BoolType())
+    derived = Fluent("derived", DerivedBoolType())
+    p = Problem("has_axiom")
+    p.add_fluent(flag, default_initial_value=False)
+    p.add_fluent(derived, default_initial_value=False)
+    ax = Axiom("ax")
+    ax.set_head(derived)
+    ax.add_body_condition(flag)
+    p.add_axiom(ax)
+    setf = InstantaneousAction("setf")
+    setf.add_effect(flag, True)
+    p.add_action(setf)
+    p.add_goal(derived)
+
+    r = solve(p)
+    assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, r.status
+    assert any("DERIVED_FLUENTS" in m.message for m in (r.log_messages or [])), \
+        "the rejection should name the unsupported DERIVED_FLUENTS feature"
+
+
 def test_object_fluent_default_initial_value():
     """An object (UserType) fluent's ``default_initial_value`` must be honoured
     for instances the initial state leaves unset — and be visible to the
@@ -260,4 +289,5 @@ CASES = [
     test_goal_relevance_numeric_rhs_chaining,
     test_boolean_assign_from_fluent,
     test_object_fluent_default_initial_value,
+    test_axioms_rejected_as_unsupported,
 ]

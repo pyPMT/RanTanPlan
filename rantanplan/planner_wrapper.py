@@ -24,6 +24,14 @@ except ImportError:  # extension module not built yet
     _rantanplan = None
 
 
+# Problem-kind features RantanPlan cannot handle at all: a problem declaring any
+# of these is rejected up front with UNSUPPORTED_PROBLEM (see _solve_in_process).
+# supported_kind() already omits them; this is the enforcement deny-list.
+_UNSUPPORTED_FEATURES = frozenset({
+    "DERIVED_FLUENTS",  # axioms / derived predicates — no encoder support
+})
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Shared base class
 # ═══════════════════════════════════════════════════════════════════════
@@ -511,6 +519,23 @@ class _RantanPlanBase(Engine):
             raise UPException(
                 "The _rantanplan extension module is not built. Run "
                 "'pip install -e . --no-build-isolation' first.")
+
+        # Reject problems using features RantanPlan cannot handle (and does not
+        # advertise in supported_kind()) up front, rather than crashing deep in
+        # conversion. Calling an engine by name bypasses UP's own supports()
+        # gate, so we enforce it here. A curated deny-list is used rather than a
+        # strict `supports()` subset check because supported_kind() is not a
+        # complete allow-list (e.g. it omits STATIC_FLUENTS_IN_NUMERIC_ASSIGNMENTS
+        # that zenotravel needs), so strict subset gating would reject working
+        # problems.
+        unsupported = problem.kind.features & _UNSUPPORTED_FEATURES
+        if unsupported:
+            return PlanGenerationResult(
+                PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, None, self.name,
+                log_messages=[LogMessage(
+                    LogLevel.ERROR,
+                    "RantanPlan does not support these problem features: "
+                    + ", ".join(sorted(unsupported)))])
 
         # The C++ log sink is installed for the duration of the call, on this
         # thread (the one that runs preprocess/solve -- the module requires
