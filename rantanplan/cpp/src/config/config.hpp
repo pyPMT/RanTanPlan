@@ -52,7 +52,7 @@ public:
     } rpg;
     
     struct Planner {
-        std::string strategy = "seq";  ///< Strategy name (looked up in StrategyRegistry)
+        std::string strategy = "els";  ///< Strategy name (looked up in StrategyRegistry)
         std::string mode = "satisficing";  ///< Search mode: satisficing, optimal, anytime
         std::string output_plan = "plan.txt";  ///< Plan output file path (IPC format)
         int max_steps = 500;

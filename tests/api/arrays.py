@@ -21,7 +21,7 @@ simulator (the paper's running example). See docs/native-arrays-plan.md.
 """
 from unified_planning.shortcuts import (
     Fluent, InstantaneousAction, Problem, IntType, BoolType, UserType, Object,
-    ArrayType, Compiler, PlanValidator, And, Or, Not, Equals, GE, Plus, Minus, Int,
+    ArrayType, Compiler, PlanValidator, And, Or, Not, Equals, GE, LT, Plus, Minus, Int,
 )
 from unified_planning.engines import (
     CompilationKind, ValidationResultStatus, PlanGenerationResultStatus,
@@ -417,6 +417,113 @@ def test_index_arithmetic_int_param():
             for ai in r.plan.actions] == [0]
 
 
+def test_forall_effect_range_variable_reverse():
+    """Regression: a forall EFFECT over a range variable (`forall b in [0,2]:
+    a[b] := a[2-b]`, an in-place reverse) must fire. The effect-forall variable
+    used to reach C++ as a bare leaf without its [lo,hi] bounds, so the
+    QuantifierExpansionPass read it as an object variable, enumerated an empty
+    domain, and silently dropped the whole effect — turning the action into a
+    no-op and 'proving' this solvable problem UNSOLVABLE."""
+    em = _em()
+    a = Fluent("a", ArrayType(3, IntType(0, 2)))
+    p = Problem("reverse")
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(a, [2, 1, 0])
+    rev = InstantaneousAction("rev")
+    b = IntVariable("b", 0, 2)
+    rev.add_effect(em.ArrayIndex(a(), b), em.ArrayIndex(a(), Minus(Int(2), b)), forall=[b])
+    p.add_action(rev)
+    p.add_goal(And(Equals(em.ArrayIndex(a(), Int(0)), 0),
+                   Equals(em.ArrayIndex(a(), Int(1)), 1),
+                   Equals(em.ArrayIndex(a(), Int(2)), 2)))
+
+    a0, a1, a2 = (Fluent(n, IntType(0, 2)) for n in ("a0", "a1", "a2"))
+    ref = Problem("reverseref")
+    for f, v in ((a0, 2), (a1, 1), (a2, 0)):
+        ref.add_fluent(f, default_initial_value=0)
+        ref.set_initial_value(f, v)
+    rrev = InstantaneousAction("rev")
+    rrev.add_effect(a0(), a2())  # b=0: a[0]:=a[2]
+    rrev.add_effect(a1(), a1())  # b=1: a[1]:=a[1]
+    rrev.add_effect(a2(), a0())  # b=2: a[2]:=a[0]
+    ref.add_action(rrev)
+    ref.add_goal(And(Equals(a0(), 0), Equals(a1(), 1), Equals(a2(), 2)))
+
+    r = _ref_check(p, ref)
+    assert [ai.action.name for ai in r.plan.actions] == ["rev"]
+
+
+def test_forall_effect_parameter_dependent_bound():
+    """Regression companion: a forall EFFECT whose bound depends on an int
+    action parameter (`flip(f): forall b in [0,f]: a[b] := a[f-b]`, the pancake
+    flip). Instantiation must fix f, then expand b over [0,f]. Solve the two-cell
+    case where flip(1) swaps the pair."""
+    em = _em()
+    a = Fluent("a", ArrayType(2, IntType(0, 1)))
+    p = Problem("flip2")
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(a, [1, 0])
+    flip = InstantaneousAction("flip", f=IntType(1, 1))
+    f = flip.parameter("f")
+    b = IntVariable("b", 0, f)
+    flip.add_effect(em.ArrayIndex(a(), b), em.ArrayIndex(a(), Minus(f, b)), forall=[b])
+    p.add_action(flip)
+    p.add_goal(And(Equals(em.ArrayIndex(a(), Int(0)), 0),
+                   Equals(em.ArrayIndex(a(), Int(1)), 1)))
+
+    a0, a1 = (Fluent(n, IntType(0, 1)) for n in ("a0", "a1"))
+    ref = Problem("flip2ref")
+    for fl, v in ((a0, 1), (a1, 0)):
+        ref.add_fluent(fl, default_initial_value=0)
+        ref.set_initial_value(fl, v)
+    rflip = InstantaneousAction("flip", f=IntType(1, 1))
+    rflip.add_effect(a0(), a1())  # f=1, b=0: a[0]:=a[1]
+    rflip.add_effect(a1(), a0())  # f=1, b=1: a[1]:=a[0]
+    ref.add_action(rflip)
+    ref.add_goal(And(Equals(a0(), 0), Equals(a1(), 1)))
+
+    _ref_check(p, ref)
+
+
+def test_forall_effect_arithmetic_range_bound():
+    """Regression: a range-variable bound that is *arithmetic* over an int
+    parameter (`forall b in [0, r-1]: a[b] := 9`). The bound `r-1` reaches the
+    converter as an FNode (not a bare int or parameter), so `_bound_node` must
+    walk it as an expression; C++ `eval_bound` must then fold the
+    parameter-substituted constant arithmetic (`(- 3 1)` -> 2). Previously the
+    converter crashed with `'FNode' object has no attribute 'name'`."""
+    em = _em()
+    a = Fluent("a", ArrayType(3, IntType(0, 9)))
+    p = Problem("arith")
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(a, [0, 0, 0])
+    fill = InstantaneousAction("fill", r=IntType(1, 3))
+    r = fill.parameter("r")
+    b = IntVariable("b", 0, Minus(r, 1))
+    fill.add_effect(em.ArrayIndex(a(), b), 9, forall=[b])
+    p.add_action(fill)
+    p.add_goal(And(Equals(em.ArrayIndex(a(), Int(0)), 9),
+                   Equals(em.ArrayIndex(a(), Int(1)), 9),
+                   Equals(em.ArrayIndex(a(), Int(2)), 9)))  # forces r=3
+
+    a0, a1, a2 = (Fluent(n, IntType(0, 9)) for n in ("a0", "a1", "a2"))
+    ref = Problem("arithref")
+    for f in (a0, a1, a2):
+        ref.add_fluent(f, default_initial_value=0)
+        ref.set_initial_value(f, 0)
+    rf = InstantaneousAction("fill", r=IntType(1, 3))
+    rr = rf.parameter("r")
+    rf.add_effect(a0(), 9, condition=GE(rr, 1))  # cell i is filled iff i <= r-1
+    rf.add_effect(a1(), 9, condition=GE(rr, 2))
+    rf.add_effect(a2(), 9, condition=GE(rr, 3))
+    ref.add_action(rf)
+    ref.add_goal(And(Equals(a0(), 9), Equals(a1(), 9), Equals(a2(), 9)))
+
+    r_res = _ref_check(p, ref)
+    assert [ai.actual_parameters[0].int_constant_value()
+            for ai in r_res.plan.actions] == [3]
+
+
 def test_quantified_forall_goal_index():
     """forall i in 0..2: a[i] == 0 (range var used as index) — expanded by the
     C++ QuantifierExpansionPass into three constant-index cell goals."""
@@ -569,6 +676,45 @@ def test_oob_effect_rhs_read_discard():
     for ai in r.plan.actions:
         assert ai.actual_parameters[0].int_constant_value() == 2, \
             "only k=2 copies the value 3"
+
+
+def test_guarded_oob_permissive_survives():
+    """Permissive undefinedness (paper Def. 9): a *guarded* out-of-bounds access
+    must not discard the whole action — the boundary instance survives with the
+    offending part removed. This is the plotting `shoot` pattern.
+
+        a : array[2] of int[0,9], init [0, 0]
+        step(k), k in 0..1:
+          pre : Or(k == 1, a[k+1] >= 0)         # k=1: a[2] is OOB, but the OR's
+                                                 #   other disjunct is true → kept
+          eff : a[k+1] := 5  WHEN k < 1          # k=1: OOB target, guard false → dropped
+          eff : a[k] := 5                        # unconditional, always in-bounds
+        goal : a[1] == 5 AND a[0] == 0
+
+    Only ``step(1)`` reaches the goal (``step(0)`` also writes ``a[0]``). Before
+    permissive lowering, ``step(1)``'s OOB accesses (in the OR-precondition and
+    the guarded conditional effect) discarded the entire instance, leaving the
+    problem UNSOLVABLE. Now the OR drops the undefined disjunct and the guarded
+    conditional effect is dropped, so ``step(1)`` survives and solves it."""
+    em = _em()
+    a = Fluent("guard_a", ArrayType(2, IntType(0, 9)))
+    p = Problem("guardoob")
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(a, [0, 0])
+    step = InstantaneousAction("step", k=IntType(0, 1))
+    k = step.parameter("k")
+    step.add_precondition(Or(Equals(k, 1),
+                             GE(em.ArrayIndex(a(), Plus(k, 1)), Int(0))))
+    step.add_effect(em.ArrayIndex(a(), Plus(k, 1)), 5, condition=LT(k, Int(1)))
+    step.add_effect(em.ArrayIndex(a(), k), 5)
+    p.add_action(step)
+    p.add_goal(And(Equals(em.ArrayIndex(a(), Int(1)), 5),
+                   Equals(em.ArrayIndex(a(), Int(0)), 0)))
+
+    r = solve(p)
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert [ai.actual_parameters[0].int_constant_value() for ai in r.plan.actions] == [1], \
+        "only the guarded-OOB boundary instance step(1) reaches the goal"
 
 
 def test_state_invariant_with_cell_read():
@@ -965,6 +1111,9 @@ CASES = [
     test_size1_array_degenerates_to_scalar,
     # int-parameter / range-variable indices (scalar reference)
     test_index_arithmetic_int_param,
+    test_forall_effect_range_variable_reverse,
+    test_forall_effect_parameter_dependent_bound,
+    test_forall_effect_arithmetic_range_bound,
     test_quantified_forall_goal_index,
     test_quantified_exists_goal_index,
     # edge cases
@@ -972,6 +1121,7 @@ CASES = [
     test_undefined_positions_discard_and_neighbours,
     test_oob_precondition_read_discard,
     test_oob_effect_rhs_read_discard,
+    test_guarded_oob_permissive_survives,
     test_state_invariant_with_cell_read,
     test_action_cost_with_cell_read,
     test_same_cell_collision_instance_dependent,

@@ -40,6 +40,8 @@ public:
 
     /// Seed from initial state: for each assignment where the fluent is an
     /// object fluent and the value is a CONSTANT (object name), add the value.
+    /// Then apply declared object-fluent defaults to any ground instance the
+    /// initial state left unset (see seed_declared_defaults).
     void initialize_from_initial_state();
 
     /// Add a reachable value for a ground object fluent instance.
@@ -105,6 +107,14 @@ private:
     /// Resolve a value ExprID to an object index.
     /// The value must be a CONSTANT with a string payload (object name).
     bool resolve_value_object(ExprID value_eid, int& out_obj_index) const;
+
+    /// Apply each object fluent's declared default_initial_value to the ground
+    /// instances (cross-product of parameter-type object universes; the single
+    /// empty tuple for a nullary fluent) that the initial state left unset. The
+    /// CWA pass materialises these defaults only *after* grounding, so without
+    /// this the grounder would not see them and would prune every action guarded
+    /// by a defaulted object fluent.
+    void seed_declared_defaults();
 };
 
 } // namespace rantanplan

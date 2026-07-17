@@ -35,6 +35,46 @@ void ObjectFluentIndex::initialize_from_initial_state() {
 
         add_value(schema_id, arg_indices, value_obj);
     }
+
+    seed_declared_defaults();
+}
+
+void ObjectFluentIndex::seed_declared_defaults() {
+    for (const Fluent& f : problem_.fluents()) {
+        if (!f.is_object_fluent()) continue;
+        std::optional<ExprID> def = f.declared_default();
+        if (!def) continue;
+
+        int value_obj = -1;
+        if (!resolve_value_object(*def, value_obj)) continue;
+
+        const int schema_id = f.id();
+
+        // Enumerate ground argument tuples: the cross-product of each parameter
+        // type's object universe. A nullary fluent yields the single empty tuple.
+        std::vector<std::vector<int>> domains;
+        domains.reserve(f.parameter_count());
+        for (size_t i = 0; i < f.parameter_count(); ++i)
+            domains.push_back(problem_.objects_of_type(f.parameter(i).type()));
+
+        std::vector<int> args;
+        args.reserve(domains.size());
+        std::function<void(size_t)> enumerate = [&](size_t dim) {
+            if (dim == domains.size()) {
+                // Only fill instances the initial state left unset — an explicit
+                // value always wins over the declared default.
+                if (get_values(schema_id, args).empty())
+                    add_value(schema_id, args, value_obj);
+                return;
+            }
+            for (int obj : domains[dim]) {
+                args.push_back(obj);
+                enumerate(dim + 1);
+                args.pop_back();
+            }
+        };
+        enumerate(0);
+    }
 }
 
 bool ObjectFluentIndex::add_value(int fluent_schema_id,

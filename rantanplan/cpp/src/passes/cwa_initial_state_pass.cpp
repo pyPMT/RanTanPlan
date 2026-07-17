@@ -20,9 +20,11 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
 
     // Fill every grounded fluent missing from the initial state. This is the
     // sole materialiser of default initial values (the Python wrapper no longer
-    // does it): a declared default_initial_value is authoritative; otherwise a
-    // boolean is closed-world false and a numeric is 0 clamped into its declared
-    // bounds. An object fluent has no sensible default and is a hard error.
+    // does it): a declared default_initial_value is authoritative (including an
+    // object/UserType default, which the ObjectFluentIndex has already seeded
+    // for the grounder); otherwise a boolean is closed-world false and a numeric
+    // is 0 clamped into its declared bounds. An object fluent with neither an
+    // explicit value nor a declared default is a hard error.
     std::vector<Assignment> defaults;
     for (ExprID eid : problem.grounded_fluents()) {
         if (assigned.count(eid)) continue;
@@ -43,8 +45,9 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
             }
         }
 
-        // A declared default_initial_value is authoritative (a numeric value or
-        // boolean false; boolean true and object defaults never reach here).
+        // A declared default_initial_value is authoritative (a numeric value,
+        // boolean false, or an object constant; boolean-true defaults are
+        // rejected upstream and never reach here).
         if (fluent && fluent->declared_default()) {
             defaults.emplace_back(eid, *fluent->declared_default(), &problem.pool());
             continue;

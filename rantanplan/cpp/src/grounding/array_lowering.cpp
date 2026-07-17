@@ -1,5 +1,6 @@
 #include "array_lowering.hpp"
 
+#include "../problem/const_fold.hpp"
 #include "../problem/expr_enums.hpp"
 #include "../util/logger.hpp"
 
@@ -25,51 +26,6 @@ struct ArrayInfo {
     std::set<std::vector<int64_t>> undefined;         // full coordinate tuples
     std::map<std::vector<int64_t>, ExprID> cells;     // defined coords -> cell state var
 };
-
-/// Fold a constant-integer index subtree to its value. Returns nullopt if the
-/// subtree is not a compile-time integer constant (a symbolic index, which is
-/// Phase 2 territory). Handles the arithmetic operators an index may carry
-/// (e.g. `c + 1` after parameter substitution).
-std::optional<int64_t> fold_const_int(ExprID eid, const ExprPool& pool) {
-    if (!eid.valid()) return std::nullopt;
-
-    if (pool.is_constant(eid)) {
-        if (pool.payload_is_int(eid)) return pool.payload_int(eid);
-        if (pool.payload_is_double(eid)) {
-            double d = pool.payload_double(eid);
-            int64_t i = static_cast<int64_t>(d);
-            if (static_cast<double>(i) == d) return i;
-        }
-        return std::nullopt;
-    }
-
-    if (!pool.is_function_application(eid)) return std::nullopt;
-
-    ExprOperator op = pool.op(eid);
-    size_t nargs = pool.argument_count(eid);
-
-    if (op == ExprOperator::ABSOLUTE && nargs == 1) {
-        auto a = fold_const_int(pool.argument(eid, 0), pool);
-        if (!a) return std::nullopt;
-        return *a < 0 ? -*a : *a;
-    }
-
-    if (nargs != 2) return std::nullopt;
-    auto a = fold_const_int(pool.argument(eid, 0), pool);
-    auto b = fold_const_int(pool.argument(eid, 1), pool);
-    if (!a || !b) return std::nullopt;
-
-    switch (op) {
-        case ExprOperator::PLUS:     return *a + *b;
-        case ExprOperator::MINUS:    return *a - *b;
-        case ExprOperator::MULTIPLY: return *a * *b;
-        case ExprOperator::DIVIDE:   return *b != 0 ? std::optional<int64_t>(*a / *b) : std::nullopt;
-        case ExprOperator::MODULO:   return *b != 0 ? std::optional<int64_t>(*a % *b) : std::nullopt;
-        case ExprOperator::MAXIMUM:  return std::max(*a, *b);
-        case ExprOperator::MINIMUM:  return std::min(*a, *b);
-        default:                     return std::nullopt;
-    }
-}
 
 /// The recursive worker: mints cells, resolves accesses, and rewrites
 /// expression trees. Constructed once over the (const) source problem, whose
@@ -137,6 +93,74 @@ public:
         }
         if (!changed) return eid;
 
+        ExprNode node = pool_.get(eid);
+        node.children = std::move(new_kids);
+        return pool_.intern(std::move(node));
+    }
+
+    /// Permissive lowering (for action preconditions/effects): an out-of-bounds
+    /// or undefined-position array access becomes UNDEFINED (nullopt), which
+    /// then propagates by the paper's Def. 9 (Davesa et al.) — strict for every
+    /// operator (undefined if any operand is undefined) except OR and COUNT,
+    /// which ignore undefined operands and are undefined only when *all* are.
+    /// Callers decide what an undefined precondition / effect part means (a
+    /// discarded action or a dropped conditional effect). Contrast rewrite(),
+    /// which is strict-⊥ for goals/invariants/initial-state (a hard error).
+    std::optional<ExprID> rewrite_permissive(ExprID eid, const std::string& context) {
+        if (!eid.valid()) return eid;
+
+        // An array access node — lower to its cell, or UNDEFINED if the (folded)
+        // index is out of bounds / an undefined position.
+        if (pool_.is_function_application(eid) &&
+            pool_.op(eid) == ExprOperator::ARRAY_INDEX) {
+            ExprID cell;
+            if (resolve_access(eid, cell, context) == AccessResult::OutOfBounds)
+                return std::nullopt;
+            return cell;
+        }
+
+        // A bare (un-indexed) reference to an array fluent — a whole-array
+        // operation, unsupported (same hard error as the strict rewrite).
+        if (pool_.is_state_variable(eid)) {
+            ExprID head = pool_.head_symbol_id(eid);
+            if (pool_.is_fluent_symbol(head)) {
+                const Fluent* f = problem_.find_fluent(pool_.payload_string(head));
+                if (f && f->is_array())
+                    throw std::runtime_error(
+                        "Whole-array operation on array fluent '" + f->name() +
+                        "' is not supported (only per-cell constant-index access "
+                        "is lowered); appeared in " + context);
+            }
+        }
+
+        // Leaf (constant, parameter, nullary state variable) rewrites to itself.
+        if (!pool_.has_head_and_arguments(eid)) return eid;
+
+        // Head+arguments node (a function application or an object state
+        // variable): recurse the arguments and propagate undefinedness.
+        const bool or_like = pool_.is_function_application(eid) &&
+                             (pool_.is_or(eid) || pool_.is_count(eid));
+        const ExprID head = pool_.head_symbol_id(eid);
+        const size_t n = pool_.argument_count(eid);
+
+        std::vector<ExprID> kept;
+        kept.reserve(n);
+        for (size_t i = 0; i < n; ++i) {
+            std::optional<ExprID> a = rewrite_permissive(pool_.argument(eid, i), context);
+            if (!a) {
+                if (or_like) continue;      // OR/COUNT ignore undefined operands
+                return std::nullopt;        // strict: any undefined operand ⇒ undefined
+            }
+            kept.push_back(*a);
+        }
+
+        if (or_like && kept.empty()) return std::nullopt;   // all operands undefined
+        if (pool_.is_or(eid) && kept.size() == 1) return kept.front();  // degenerate OR
+
+        std::vector<ExprID> new_kids;
+        new_kids.reserve(kept.size() + 1);
+        new_kids.push_back(head);
+        for (ExprID a : kept) new_kids.push_back(a);
         ExprNode node = pool_.get(eid);
         node.children = std::move(new_kids);
         return pool_.intern(std::move(node));
@@ -320,16 +344,17 @@ private:
 /// Why an action instance was discarded during lowering.
 enum class DiscardReason { OutOfBounds, Collision };
 
-/// Lower one action; returns nullopt (with `out_reason` set) if the whole
-/// instance is discarded: an out-of-bounds/undefined access (strict-⊥
-/// inapplicability), or an intra-action same-cell write collision (e.g.
-/// `a[i]:=x; a[j]:=y` instantiated at i=j). Whether a schema whose EVERY
-/// instance collides is an unconditionally broken model is decided by the
-/// caller, which sees all instances.
+/// Lower one action under permissive undefinedness (paper Def. 9). Returns
+/// nullopt (with `out_reason` set) if the whole instance is discarded — the
+/// precondition or cost evaluates to ⊥ (undefined ⇒ never applicable), an
+/// *unconditional* effect writes/reads an out-of-bounds cell, or an intra-action
+/// same-cell write collision (`a[i]:=x; a[j]:=y` at i=j). A *conditional* effect
+/// whose condition, target, or RHS is ⊥ is instead dropped (it can never validly
+/// fire), leaving the rest of the action intact — this is what lets a guarded
+/// out-of-bounds access (`a[i+1]:=v WHEN i<last`) survive at the boundary.
 std::optional<Action> lower_action(const Action& action, ArrayLowerer& lowerer,
                                     ExprPool& pool, DiscardReason& out_reason) {
     const std::string ctx = "action '" + action.name() + "'";
-    bool discard = false;
     out_reason = DiscardReason::OutOfBounds;
 
     Action out(action.name());
@@ -337,14 +362,14 @@ std::optional<Action> lower_action(const Action& action, ArrayLowerer& lowerer,
     out.set_parameters(action.parameters());
 
     if (action.has_precondition()) {
-        ExprID pre = lowerer.rewrite(action.precondition_id(), true, discard, ctx);
-        if (discard) return std::nullopt;
-        out.set_precondition_id(pre);
+        std::optional<ExprID> pre = lowerer.rewrite_permissive(action.precondition_id(), ctx);
+        if (!pre) return std::nullopt;  // undefined precondition ⇒ never applicable
+        out.set_precondition_id(*pre);
     }
     if (action.has_explicit_cost()) {
-        ExprID cost = lowerer.rewrite(action.cost_id(), true, discard, ctx);
-        if (discard) return std::nullopt;
-        out.set_cost_id(cost);
+        std::optional<ExprID> cost = lowerer.rewrite_permissive(action.cost_id(), ctx);
+        if (!cost) return std::nullopt;  // undefined cost ⇒ ill-formed instance
+        out.set_cost_id(*cost);
     }
 
     std::vector<ExprID> cell_targets;
@@ -357,17 +382,28 @@ std::optional<Action> lower_action(const Action& action, ArrayLowerer& lowerer,
                 "Array lowering ran on an unexpanded forall-effect in " + ctx +
                 " — QuantifierExpansionPass must run before grounding.");
         }
-        ExprID fluent = lowerer.rewrite(ee.fluent_id(), true, discard, ctx);
-        if (discard) return std::nullopt;
-        ExprID value = lowerer.rewrite(ee.value_id(), true, discard, ctx);
-        if (discard) return std::nullopt;
-        ExprID cond = ee.is_conditional()
-            ? lowerer.rewrite(ee.condition_id(), true, discard, ctx)
-            : EXPR_NULL;
-        if (discard) return std::nullopt;
+        const bool conditional = ee.is_conditional();
 
-        out.add_effect(Effect(EffectExpression(ee.kind(), fluent, value, cond, &pool)));
-        if (lowerer.is_cell(fluent)) cell_targets.push_back(fluent);
+        // A conditional effect with an undefined condition can never fire — drop it.
+        ExprID cond = EXPR_NULL;
+        if (conditional) {
+            std::optional<ExprID> c = lowerer.rewrite_permissive(ee.condition_id(), ctx);
+            if (!c) continue;
+            cond = *c;
+        }
+
+        std::optional<ExprID> fluent = lowerer.rewrite_permissive(ee.fluent_id(), ctx);
+        std::optional<ExprID> value  = lowerer.rewrite_permissive(ee.value_id(), ctx);
+        if (!fluent || !value) {
+            // Out-of-bounds write target or RHS: a conditional effect is dropped
+            // (guarded, cannot validly fire); an unconditional one makes the
+            // whole action inapplicable.
+            if (conditional) continue;
+            return std::nullopt;
+        }
+
+        out.add_effect(Effect(EffectExpression(ee.kind(), *fluent, *value, cond, &pool)));
+        if (lowerer.is_cell(*fluent)) cell_targets.push_back(*fluent);
     }
 
     // Intra-action same-cell write collision (the chained encoder keeps only

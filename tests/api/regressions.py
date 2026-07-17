@@ -213,9 +213,51 @@ def test_boolean_assign_from_fluent():
     assert_valid(p, r.plan)
 
 
+def test_object_fluent_default_initial_value():
+    """An object (UserType) fluent's ``default_initial_value`` must be honoured
+    for instances the initial state leaves unset — and be visible to the
+    *grounder*, not only the encoder.
+
+        hand : Colour, default_initial_value = W   (no explicit initial value)
+        paint : precondition hand == W;  effect hand := R
+        goal  : hand == R                          (solvable: paint)
+
+    Two historical faults, both here:
+      * the converter dropped object-fluent defaults entirely, so CWA raised
+        "object fluents have no default"; and
+      * once carried, the default was materialised only by the CWA pass, which
+        runs *after* grounding — so the reachability grounder never saw
+        ``hand == W``, pruned ``paint`` (its precondition unmatched), and
+        "proved" the problem unsolvable (UNSOLVABLE_PROVEN).
+
+    Fixes: the converter carries the object default onto the fluent's declared
+    default, and the ObjectFluentIndex seeds declared object-fluent defaults for
+    every ground instance the initial state leaves unset, before the grounding
+    fixpoint runs."""
+    Colour = UserType("Colour")
+    R, W = Object("R", Colour), Object("W", Colour)
+    hand = Fluent("hand", Colour)
+    p = Problem("object_fluent_default")
+    p.add_fluent(hand, default_initial_value=W)  # object default, no explicit init
+    p.add_object(R)
+    p.add_object(W)
+    paint = InstantaneousAction("paint")
+    paint.add_precondition(Equals(hand(), W))
+    paint.add_effect(hand(), R)
+    p.add_action(paint)
+    p.add_goal(Equals(hand(), R))
+
+    r = solve(p)
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+        f"expected SOLVED, got {r.status} (object-fluent default mishandled again)"
+    assert [ai.action.name for ai in r.plan.actions] == ["paint"]
+    assert_valid(p, r.plan)
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_goal_relevance_numeric_value_chaining,
     test_goal_relevance_numeric_rhs_chaining,
     test_boolean_assign_from_fluent,
+    test_object_fluent_default_initial_value,
 ]

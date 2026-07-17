@@ -257,13 +257,19 @@ class _FNodeToIR:
         return self._head(_VARIABLE, variable.name, _up_type_str(variable.type))
 
     def _bound_node(self, bound):
-        """An int-variable bound: an int constant or a reference to an int
-        parameter (the raw IntVariable._initial / _last value)."""
+        """An int-variable bound (the raw IntVariable._initial / _last value):
+        an int constant, an int parameter, or an arithmetic expression over
+        them (e.g. `lc - 1`)."""
         if isinstance(bound, bool):
             raise UPException(f"Unexpected boolean range bound: {bound}")
         if isinstance(bound, int):
             return self._add(_CONSTANT, "up:integer", int_value=bound)
-        return self._add(_PARAMETER, _up_type_str(bound.type), symbol=bound.name)
+        if isinstance(bound, model.Parameter):
+            return self._add(_PARAMETER, _up_type_str(bound.type), symbol=bound.name)
+        # An arithmetic bound over parameters/constants arrives as an FNode.
+        # Walk it into an expression tree; C++ int-parameter instantiation
+        # substitutes the parameters and eval_bound folds it to a constant.
+        return self.walk(bound)
 
 
 def _convert_parameters(parameters):
@@ -403,8 +409,13 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
             ir_effect.fluent = walker.walk(effect.fluent)
             ir_effect.value = walker.walk(effect.value)
             ir_effect.condition = walker.walk(effect.condition)
-            auto_promote = effect.environment.expression_manager.auto_promote
-            ir_effect.forall = [walker.walk(v) for v in auto_promote(effect.forall)]
+            # Emit each forall variable as a *declaration* (an IntVariable carries
+            # its [initial, last] bounds as children) -- the same node a quantifier
+            # condition uses -- so the QuantifierExpansionPass enumerates a range
+            # variable's integer interval. A bare walk() reference would drop the
+            # bounds, leaving C++ to misread the range variable as an (object-less)
+            # object variable and silently expand the effect to nothing.
+            ir_effect.forall = [walker._variable_declaration(v) for v in effect.forall]
             effects.append(ir_effect)
         ir_action.effects = effects
         actions.append(ir_action)
@@ -489,8 +500,13 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
             ir_fluent.default_value = walker.walk(default)
         elif leaf.is_int_type() or leaf.is_real_type():
             ir_fluent.default_value = walker.walk(default)
-        # Object/other declared defaults are ignored: object fluents require an
-        # explicit initial value.
+        elif leaf.is_user_type():
+            # Object (UserType) fluents: carry the declared default so the C++
+            # CWA pass materialises it for uninitialised instances/cells. Unlike
+            # a boolean-true default there is no closed-world assumption to
+            # invert -- an object fluent must hold some object, and the default
+            # supplies it for positions the initial state leaves unset.
+            ir_fluent.default_value = walker.walk(default)
 
     # Vector fields copy on assignment, so these land after all mutation
     out.fluents = fluents

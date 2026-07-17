@@ -35,7 +35,7 @@ class _RantanPlanBase(Engine):
         Engine.__init__(self)
 
         self._verbosity = options.get('verbosity')
-        self._strategy = options.get('strategy', 'seq')
+        self._strategy = options.get('strategy', 'els')
         self._max_steps = options.get('max_steps')
         self._persist_clauses = options.get('persist_clauses', False)
         self._symmetries = options.get('symmetries', False)
