@@ -283,11 +283,84 @@ def test_object_fluent_default_initial_value():
     assert_valid(p, r.plan)
 
 
+def test_object_fluent_assign_from_fluent_reachability():
+    """A fluent-valued object assign (``b := a``) must propagate the source's
+    reachable values in the grounding relaxation. Smallest failing form:
+
+        a, b : Obj, init a = o2, b = o1
+        copy   : b := a
+        finish : precondition b == o2;  effect done := true
+        goal   : done                    (solvable: copy; finish)
+
+    Historically the ObjectFluentIndex accumulated only *constant* assign
+    values (``b := o2``); a fluent RHS was silently skipped, so ``b`` never
+    gained ``a``'s values, the equality join found no tuple for ``finish``'s
+    precondition, ``finish`` was never instantiated, and a trivially solvable
+    problem returned UNSOLVABLE_PROVEN — despite
+    FLUENTS_IN_OBJECT_ASSIGNMENTS being declared in supported_kind(). The
+    object-fluent face of the value-chaining family pinned by
+    test_boolean_assign_from_fluent.
+
+    The chained variant (``c := b`` declared *before* ``b := a``) additionally
+    requires re-applying object-fluent effects of all ground actions to
+    fixpoint each grounding iteration (like numeric effects): the copy is
+    processed before its source gains values, so a single collection at
+    instantiation time misses the propagation.
+
+    Fixes: collect_object_fluent_effects resolves a fluent RHS to the source's
+    reachable value set (whole-type-universe fallback for any other
+    non-constant shape), and ground() re-applies object-fluent effects across
+    all accepted actions until the value sets stabilise."""
+    Obj = UserType("Obj")
+    o1, o2 = Object("o1", Obj), Object("o2", Obj)
+
+    def build(chain: bool) -> Problem:
+        a = Fluent("a", Obj)
+        b = Fluent("b", Obj)
+        done = Fluent("done", BoolType())
+        p = Problem("objfluent_chain" if chain else "objfluent_copy")
+        p.add_objects([o1, o2])
+        p.add_fluent(a)
+        p.add_fluent(b)
+        p.add_fluent(done, default_initial_value=False)
+        tested = b
+        if chain:
+            c = Fluent("c", Obj)
+            p.add_fluent(c)
+            p.set_initial_value(c(), o1)
+            # Declared first on purpose: its source (b) only gains o2 after
+            # copy_ba is processed later in the same grounding iteration.
+            copy_cb = InstantaneousAction("copy_cb")
+            copy_cb.add_effect(c(), b())
+            p.add_action(copy_cb)
+            tested = c
+        copy_ba = InstantaneousAction("copy_ba")
+        copy_ba.add_effect(b(), a())
+        p.add_action(copy_ba)
+        finish = InstantaneousAction("finish")
+        finish.add_precondition(Equals(tested(), o2))
+        finish.add_effect(done(), True)
+        p.add_action(finish)
+        p.set_initial_value(a(), o2)
+        p.set_initial_value(b(), o1)
+        p.add_goal(done())
+        return p
+
+    for chain in (False, True):
+        p = build(chain)
+        r = solve(p)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"chain={chain}: expected SOLVED, got {r.status} " \
+            f"(fluent-valued object assign invisible to grounding again)"
+        assert_valid(p, r.plan)
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_goal_relevance_numeric_value_chaining,
     test_goal_relevance_numeric_rhs_chaining,
     test_boolean_assign_from_fluent,
     test_object_fluent_default_initial_value,
+    test_object_fluent_assign_from_fluent_reachability,
     test_axioms_rejected_as_unsupported,
 ]

@@ -166,16 +166,54 @@ size_t ReachabilityGrounder::collect_object_fluent_effects(
         }
         if (!valid) continue;
 
-        // Resolve the value to an object index.
-        if (!pool.is_constant(value_eid) || !pool.payload_is_string(value_eid)) continue;
+        // Resolve the RHS into reachable values for the target instance:
+        //  - a constant object: that single value;
+        //  - a ground object-fluent state variable (b := a): the source's
+        //    currently reachable value set — ground() re-applies object-fluent
+        //    effects to fixpoint, so later source growth propagates;
+        //  - anything else: conservatively the whole object universe of the
+        //    target's value type. Never skip: an invisible assign
+        //    under-approximates the value sets and lets the equality join
+        //    prune reachable actions (wrong UNSOLVABLE_PROVEN).
+        if (pool.is_constant(value_eid) && pool.payload_is_string(value_eid)) {
+            const Object* val_obj =
+                lifted_problem_.find_object(pool.payload_string(value_eid));
+            if (val_obj) {
+                int val_idx =
+                    static_cast<int>(val_obj - &lifted_problem_.objects()[0]);
+                if (obj_fluents.add_value(fluent_schema->id(), arg_indices, val_idx)) {
+                    ++new_values;
+                }
+                continue;
+            }
+            // A string constant that is not a known object falls through to
+            // the conservative case.
+        }
 
-        const Object* val_obj = lifted_problem_.find_object(pool.payload_string(value_eid));
-        if (!val_obj) continue;
+        int src_schema_id = -1;
+        std::vector<int> src_arg_indices;
+        if (obj_fluents.decompose_object_fluent(value_eid, src_schema_id,
+                                                src_arg_indices)) {
+            // Copy before inserting: source and target may be the same
+            // instance (a := a), and add_value mutates the underlying map.
+            const auto& src_set = obj_fluents.get_values(src_schema_id,
+                                                         src_arg_indices);
+            const std::vector<int> src_values(src_set.begin(), src_set.end());
+            for (int val_idx : src_values) {
+                if (obj_fluents.add_value(fluent_schema->id(), arg_indices, val_idx)) {
+                    ++new_values;
+                }
+            }
+            continue;
+        }
 
-        int val_idx = static_cast<int>(val_obj - &lifted_problem_.objects()[0]);
-
-        if (obj_fluents.add_value(fluent_schema->id(), arg_indices, val_idx)) {
-            ++new_values;
+        // Unresolvable RHS shape: over-approximate with every object of the
+        // target fluent's value type.
+        for (int val_idx :
+             lifted_problem_.objects_of_type(fluent_schema->value_type())) {
+            if (obj_fluents.add_value(fluent_schema->id(), arg_indices, val_idx)) {
+                ++new_values;
+            }
         }
     }
 
@@ -391,6 +429,13 @@ GroundingResult ReachabilityGrounder::ground() {
         goal_reachable_layer = 0;
     }
 
+    // Guards the per-iteration re-application of object-fluent effects below
+    // (skips the full ground-action sweep for problems without object fluents).
+    bool has_object_fluents = false;
+    for (const Fluent& f : lifted_problem_.fluents()) {
+        if (f.is_object_fluent()) { has_object_fluents = true; break; }
+    }
+
     bool changed = true;
 
     while (changed) {
@@ -468,6 +513,26 @@ GroundingResult ReachabilityGrounder::ground() {
 
                 ground_actions.push_back(std::move(ga));
                 ++new_actions_this_iter;
+            }
+        }
+
+        // Re-apply object-fluent effects of all accepted actions until the
+        // value sets stabilize. Like numeric effects, they are NOT idempotent:
+        // a fluent-valued assign (b := a) contributes the source's *current*
+        // reachable set, which may grow after the copying action was first
+        // processed (and the copy may be instantiated before the source gains
+        // its values, depending on schema order). Sets grow monotonically over
+        // a finite universe, so this terminates.
+        if (has_object_fluents) {
+            bool obj_changed = true;
+            while (obj_changed) {
+                obj_changed = false;
+                for (const auto& ga : ground_actions) {
+                    if (collect_object_fluent_effects(ga, obj_fluents) > 0) {
+                        obj_changed = true;
+                        changed = true;
+                    }
+                }
             }
         }
 

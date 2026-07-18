@@ -60,6 +60,14 @@ public:
         int fluent_schema_id,
         const std::vector<int>& arg_obj_indices) const;
 
+    /// Decompose a STATE_VARIABLE ExprID for an object fluent.
+    /// Returns false if not an object fluent or decomposition fails.
+    /// Public so the grounder can decompose the *source* of a fluent-valued
+    /// object assign (b := a) and union its reachable values into the target.
+    bool decompose_object_fluent(ExprID eid,
+                                  int& out_schema_id,
+                                  std::vector<int>& out_arg_indices) const;
+
     /// Total number of (fluent_instance, value) pairs tracked.
     size_t total_entry_count() const { return total_entries_; }
 
@@ -97,12 +105,6 @@ private:
 
     static const std::vector<std::vector<int>> empty_tuples_;
     static const std::unordered_set<int> empty_values_;
-
-    /// Decompose a STATE_VARIABLE ExprID for an object fluent.
-    /// Returns false if not an object fluent or decomposition fails.
-    bool decompose_object_fluent(ExprID eid,
-                                  int& out_schema_id,
-                                  std::vector<int>& out_arg_indices) const;
 
     /// Resolve a value ExprID to an object index.
     /// The value must be a CONSTANT with a string payload (object name).
