@@ -74,9 +74,9 @@ The prize scales with the orbit: k interchangeable objects inflate the
 search by up to k!, and breaking the symmetry deflates it back.
 
 (A stronger per-orbit encoding — explicit orbits plus first-use precedence
-chains — was considered and deliberately deferred: the pairwise machinery
-below already collapses the search on every current benchmark, so there is
-no instance to justify it. Revisit if a huge orbit ever still struggles.)
+chains — was considered and deliberately deferred. It is written up in full
+in **"The deferred alternative"** below, together with the corpus evidence
+that no current instance justifies building it.)
 
 ## Detection: init + goal invariance, checked with Z3
 
@@ -218,7 +218,75 @@ measured effect (els strategy):
 | dt20 (els) | 66.8s | 1.2s |
 
 A domain with a very much larger orbit would be the trigger to revisit the
-deferred explicit-orbit encoding.
+deferred explicit-orbit encoding, described next.
+
+## The deferred alternative: explicit orbits + first-use precedence chains
+
+The pairwise encoding above never names the orbit as a whole — it only knows
+the *edges* (the `ObjectSwap` pairs) and re-derives a canonical ordering from
+`C(k,2)` guarded implications per step. The deferred alternative flips that
+around: compute the orbit explicitly (a connected component over the swap
+edges), fix an arbitrary object index order within it — `p1 < p2 < … < pk` —
+and impose that single total order **once**, with a *first-use precedence
+chain* instead of a quadratic pile of pairwise rules.
+
+**The encoding.** Give each object `o` in the orbit a monotone "has been used
+by step t" indicator,
+
+```
+used(o, t)  ≡  ⋁ { a@t' : t' ≤ t, a is a ground action instance mentioning o }
+used(o, t) ⇒ used(o, t+1)                          (monotone: once used, stays used)
+```
+
+and chain the indicators in index order — a higher-indexed object may only
+enter the plan once every lower-indexed one already has:
+
+```
+used(p_{i+1}, t)  ⇒  used(p_i, t)     for each consecutive pair, every step t
+```
+
+That is `k − 1` chain links, **linear** in orbit size, versus the pairwise
+scheme's `C(k,2)` guarded implications. It picks out exactly one of the `k!`
+mirror plans — the one that uses `p1` before `p2` before … before `pk` — so
+it also prunes *more* than the pairwise guards, which under ∃-step semantics
+can leave some symmetric orderings alive (the guard only fires while two
+specific objects still agree; a chain constrains the whole orbit at once).
+Soundness comes for free from the same "symmetric so far" logic: the `used`
+indicator is monotone, so the chain constrains an object only up to the point
+it is first used — after that the objects are genuinely distinguished and the
+chain, like the pairwise guard, imposes nothing further.
+
+**Cost.** Two things the pairwise path avoids: the orbit must be materialised
+(connected components over the edges — currently kept implicit), and each
+object needs a `used(o, t)` indicator wired to its action instances, per step.
+For a small orbit that is strictly more machinery for a strictly smaller win,
+which is why it stays on the shelf.
+
+**Why the shelf is the right place — the corpus evidence.** A preprocess-only
+sweep of all three benchmark sets (small-test, hard-test, and the API
+`benchmarks.domains` suite), scraping the `N symmetric pairs` line without
+solving, shows the object-interchange well is nearly dry:
+
+- Almost every instance detects **0 pairs** — including every grid/puzzle
+  domain (n_puzzle, pancake, rush_hour, sokoban, plotting, labyrinth) and the
+  logistics/numeric staples (depots, rover, drone, fo-counters).
+- The only genuinely large *single* orbit is **dump_trucks**, and it is a
+  clean clique that scales linearly with instance size: dt15 → 105 = C(15,2),
+  dt17 → 136 = C(17,2), dt20 → 190 = C(20,2). One orbit, `k` = the package
+  count.
+- The other high pair-counts are **not** single orbits — satellite/pfile8
+  (162), pfile7 (106) and tpp/p08 (73) match no `C(k,2)`, so they are *sums*
+  over several modest orbits (multiple interchangeable types: satellites,
+  instruments, directions, modes). Per-orbit `k` there is small, and the
+  pairwise encoding is not stressed.
+
+So the largest single orbit anywhere is dump_trucks at `k = 20` — 190
+constraints per step, which the pairwise encoding already crushes (dt20:
+66.8s → 1.2s). Nothing in the corpus makes the quadratic term hurt. The one
+lever that *could* manufacture a stress case is dump_trucks' own `params(n)`
+scaling: dt40, dt80, … push `k` up until `C(k,2)` (780, 3160, … clauses/step)
+plausibly starts to bite. That larger-dump_trucks experiment — not more
+detection — is the concrete trigger to revisit this section.
 
 ## Try it
 
@@ -242,5 +310,5 @@ for sym in (False, True):
 
 Expected: ~67s without symmetries, ~1.2s with. Add `"verbosity": "info"`
 (and a log sink via `rantanplan._rantanplan.set_log_sink`) to see
-`Symmetry detection: 45 symmetric pairs` — the complete pairwise encoding
-of the one 10-package orbit.
+`Symmetry detection: 190 symmetric pairs` — the complete pairwise encoding
+of the one 20-package orbit (190 = C(20,2)).
