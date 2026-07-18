@@ -95,14 +95,17 @@ switching to a `DagWalker` that produces an *equally valid* set of
 first, because it changes iteration order in those maps. If you ever touch
 `converter.py`'s traversal, this is the invariant to preserve.
 
-### Fluent declarations and array fluents
+### Fluent declarations, array & set fluents
 
 Alongside the node pool, `ProblemIR.fluents` carries the fluent *declarations*
 as `FluentIR` structs: name, parameters, the `value_type` string, optional
 numeric `lower_bound`/`upper_bound` (for a bounded `integer[0,15]`), and an
 optional `default_value` (a node index for a declared `default_initial_value`,
 which the C++ CWA pass treats as authoritative when materialising the initial
-state).
+state). A single positive `shape` discriminator (`FluentShapeIR` — `SCALAR` /
+`ARRAY` / `SET`, the IR-side mirror of the C++ `TypeKind` enum) says how to read
+the rest: a `SCALAR` fluent uses `value_type`, while `ARRAY` and `SET` fluents
+encode a structured shape instead.
 
 **Array fluents** add a structured shape instead of encoding it in a string:
 `element_type` (the leaf scalar type, e.g. `"up:integer"`), `array_sizes` (one
@@ -122,6 +125,19 @@ is rejected (Phase 1). So by the time the pool crosses the boundary, arrays are
 just ordinary fluent declarations with a shape plus per-cell scalar
 assignments — everything else about them is compiled away in the C++ grounder
 (see [`grounding.md`](grounding.md)).
+
+**Set fluents** (`shape = SET`) likewise carry only `element_type` (the set's
+element type) — the `set{T}` type-table name is generated once on the C++ side,
+so the converter authors no `value_type` string, exactly as for arrays. The
+`SET_*` operators are labelled with `up:set_*` heads and flow through the pool
+like any function application; `SetLoweringPass` compiles them away in C++. One
+deliberate asymmetry with arrays: a `SET_CONSTANT` value is *not* normalised at
+conversion — it crosses the boundary as an `up:set_constant` node (its elements
+walked in payload order for determinism), and the pass does the per-cell
+normalisation of initial-state and effect set constants uniformly. The converter
+rejects the out-of-scope cases (nested set types, set/array mixing, set-typed
+parameters, fluent-valued elements, non-empty set defaults) with clear
+`UPException`s. See [`grounding.md`](grounding.md) for the lowering.
 
 ## The two calls: `preprocess` and `solve`
 

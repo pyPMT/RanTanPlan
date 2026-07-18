@@ -109,6 +109,13 @@ for when you meet one out of order.
 - **SDAC (state-dependent action cost)** — an action cost given as an
   expression over the state rather than a constant, so the same action can
   cost different amounts at different points in the plan.
+- **Set fluent / membership cell** — a set-valued state variable from the
+  high-level language (no PDDL syntax; arrives via Unified Planning's
+  `SET_FLUENTS` kind). Before grounding, `SetLoweringPass` compiles each set
+  fluent into one boolean **membership cell** `s(e, args)` per element and
+  rewrites every set operation (`member`, `cardinality` via `COUNT`, `add`/
+  `remove`/`union` effects, …) over those cells, so no downstream pass or
+  encoder ever sees set structure ([`grounding.md`](grounding.md)).
 - **Timestep** — one slot of the unrolled trajectory; each has its own copy
   of every state and action variable ([`the-encoding.md`](the-encoding.md)).
 

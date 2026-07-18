@@ -141,6 +141,17 @@ Two `ExprKind`s — `FUNCTION_APPLICATION` and `STATE_VARIABLE` — use a
 are the accessors for that convention; everything else just reads
 `children()` directly.
 
+**Constructing and walking.** Passes that build new nodes (quantifier
+expansion, set lowering, CNF normalisation, static-fluent folding) do so through
+one shared helper, `ExprBuilder` (`problem/expr_builder.hpp`): cached operator
+head symbols plus folding `make_and`/`make_or`/`make_not`/`make_eq`/`make_count`/
+`make_app`/`object_constant`/`reintern`, using the standard operator spelling so
+rebuilt nodes dedup with the loader's — rather than each pass re-rolling its own
+`op_head`. To *read* every expression a problem holds — for a survival check or
+an analysis — use `for_each_expression` / `for_each_root_expression`
+(`problem/expr_walk.hpp`), which enumerate the action preconditions/costs/
+effects, goals, invariants, and initial state in one place.
+
 **Example.** Take object `rob1` (type `robot`) and object `room-a` (type
 `room`). The precondition `(at rob1 room-a)` interns as four nodes, built in
 this order — the fluent symbol first, then each argument, then the
@@ -169,7 +180,11 @@ returns an existing one. Type consistency is checked at the `Problem` level,
 not the pool level: `Problem::is_bool_type(id)`/`is_numeric_type(id)`/
 `is_object_type(id)` look up the node's `type_id` in the problem's type
 table — the pool itself doesn't know about types beyond storing the
-`type_id` integer.
+`type_id` integer. A `Type`'s kind (bool / int / real / object / array / set)
+is a single positive `TypeKind` field, set once at construction, that every
+`is_*()` predicate reads — so `is_object()` is `kind == OBJECT`, not a
+definition-by-exclusion. Going the other way, `Problem::type_id_of(const Type*)`
+is the inverse of that `type_id` lookup.
 
 ### The problem model: `Problem` / `Action` / `Fluent` / `Effect` / `Plan`
 

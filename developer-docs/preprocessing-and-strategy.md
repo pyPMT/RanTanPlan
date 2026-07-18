@@ -45,7 +45,8 @@ flowchart LR
     P[Problem] --> IP[Int-param instantiation]
     IP --> QE[Quantifier expansion]
     QE --> AL["[Array lowering]<br/>(arrays only)"]
-    AL --> A["[Grounding]<br/>(optional)"]
+    AL --> SL["[Set lowering]<br/>(sets only)"]
+    SL --> A["[Grounding]<br/>(optional)"]
     A --> B[CWA initial state]
     B --> C[Static fluent folding]
     C --> CN["[CNF normalization]<br/>(optional)"]
@@ -78,6 +79,16 @@ array fluents: it compiles constant-index array accesses into ordinary scalar
 cell fluents, so grounding stays array-free just as it stays quantifier-free
 (see [`grounding.md`](grounding.md)). It is a no-op — and leaves the ExprPool
 node order untouched — on a problem with no arrays.
+
+A fourth, `SetLoweringPass`, is its set-fluent analogue: it compiles set fluents
+into boolean membership cells `s(e, args)` and rewrites every `SET_*` operation
+through one membership formula `⟦S⟧_e` (`member` → the cell atom, `cardinality`
+→ `COUNT`, effects by a shape case-split: add/remove-chain-on-self → a single
+cell, monotone union-onto-self → conditional adds, else a per-cell expression
+assign), leaving grounding set-free. Also a no-op — and node-order-preserving —
+without set fluents. The two run adjacent; arrays and sets don't interact
+(set-of-array / array-of-set is rejected at conversion), so their relative order
+is free.
 
 `Pass` (`passes/pass.hpp`) is deliberately minimal: `apply(PreprocessedProblem&)`
 and `name()` (for logging). Passes are **stateless** — every pass-specific
@@ -132,6 +143,7 @@ multi-entry rows.
 | `IntParameterInstantiationPass` | transformer | shaping |
 | `QuantifierExpansionPass` | transformer | shaping |
 | `ArrayLoweringPass` | transformer | shaping (no-op without arrays) |
+| `SetLoweringPass` | transformer | shaping (no-op without sets) |
 | `GroundingPass` (optional) | transformer | shaping + rewriting + verdict — reachability grounding *is* pruning, and it sets `lower_bound`/`proven_unsolvable` |
 | `CWAInitialStatePass` | transformer | shaping (sole materialiser of default initial values) |
 | `StaticFluentPass` | transformer | performance by rewriting (also tightens later RPG bounds) |

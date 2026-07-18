@@ -13,9 +13,10 @@ A SAT/SMT-based automated planner with parallel action semantics. Combines a Pyt
 - **Numeric planning**: Full support for numeric fluents with SMT-based relaxed planning graph
 - **Bounded-integer action parameters & range variables**: finite-domain integer parameters (`Int[lb,ub]`) and integer-range quantifiers, compiled away before grounding (C++-native, no Python compiler)
 - **Native array fluents**: fixed-size array-valued fluents (Unified Planning's `ARRAY_FLUENTS` kind) compiled to ordinary scalar cells before solving — constant, action-parameter, and quantified indices are supported; state-dependent indices and object-parameterised arrays are not yet
+- **Native set fluents**: set-valued fluents (Unified Planning's `SET_FLUENTS` kind — `member`/`subseteq`/`disjoint`/`cardinality`/`add`/`remove`/`union`/`intersect`/`difference`, with full expression nesting) compiled to boolean membership cells before solving; cardinality lowers to a pseudo-boolean `COUNT`. User-type elements only (int and nested-set elements not yet)
 - **Declared state invariants**: PDDL `(:constraints (always φ))` asserted at every state
 - **Symmetry breaking**: Object symmetry detection and breaking
-- **Preprocessing pipeline**: Integer-parameter instantiation, quantifier expansion, array lowering, reachability grounding, RPG-based action removal, CWA completion, invariant discovery, landmark analysis
+- **Preprocessing pipeline**: Integer-parameter instantiation, quantifier expansion, array/set lowering, reachability grounding, RPG-based action removal, CWA completion, invariant discovery, landmark analysis
 - **Unified Planning integration**: Plug-and-play with UP framework
 
 **Limitation**: Does not support PDDL actions that both delete and add the same fluent.
@@ -168,7 +169,7 @@ Python Frontend              C++ Backend (_rantanplan module)
                             └──────────────────────┘
 ```
 
-The Python frontend uses Unified Planning to parse PDDL, converts the problem to a flat plain-data IR, and calls the C++ backend in-process through a nanobind extension module (no subprocess, no serialization). Canonicalization that used to run in Python — quantifier removal, integer-parameter instantiation, CNF normalization — now happens in C++; the only optional Python-side compilation step is UP cross-product grounding (`--up-grounding`). The backend runs a preprocessing pipeline (integer-parameter instantiation, quantifier expansion, array lowering, reachability grounding, RPG-based action removal, symmetry detection), then encodes the problem as SMT and solves with Z3 using custom propagators.
+The Python frontend uses Unified Planning to parse PDDL, converts the problem to a flat plain-data IR, and calls the C++ backend in-process through a nanobind extension module (no subprocess, no serialization). Canonicalization that used to run in Python — quantifier removal, integer-parameter instantiation, CNF normalization — now happens in C++; the only optional Python-side compilation step is UP cross-product grounding (`--up-grounding`). The backend runs a preprocessing pipeline (integer-parameter instantiation, quantifier expansion, array and set lowering, reachability grounding, RPG-based action removal, symmetry detection), then encodes the problem as SMT and solves with Z3 using custom propagators.
 
 ## Development
 
