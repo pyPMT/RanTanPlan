@@ -11,7 +11,7 @@ namespace rantanplan {
  * constant arithmetic) and before `GroundingPass` (cells must exist as
  * ordinary scalar fluents before the reachability fixpoint enumerates facts).
  * A no-op when the problem declares no array fluents, so the non-array path
- * (and its ExprPool node order) is untouched.
+ * is untouched.
  *
  * Thin pipeline wrapper over grounding/array_lowering.{hpp,cpp}; the
  * implementation stays co-located with the grounder because Phase 2

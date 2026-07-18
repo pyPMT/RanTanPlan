@@ -43,9 +43,8 @@ void assert_no_set_nodes(const Problem& problem);
 /**
  * @brief Lower set fluents to boolean membership cells before grounding.
  *
- * Thin pipeline wrapper over lower_sets(); a no-op without set fluents (the
- * non-set ExprPool node order is untouched). Ends by asserting no SET_* node
- * survives.
+ * Thin pipeline wrapper over lower_sets(); a no-op without set fluents. Ends
+ * by asserting no SET_* node survives.
  *
  * Note: `api::preprocess` rejects set problems when native grounding is
  * disabled (--up-grounding) before any pass runs.

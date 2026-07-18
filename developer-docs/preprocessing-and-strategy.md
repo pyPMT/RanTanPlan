@@ -77,8 +77,8 @@ a problem with no integer parameters and no quantifiers.
 A third pre-grounding pass, `ArrayLoweringPass`, runs only when the problem has
 array fluents: it compiles constant-index array accesses into ordinary scalar
 cell fluents, so grounding stays array-free just as it stays quantifier-free
-(see [`grounding.md`](grounding.md)). It is a no-op — and leaves the ExprPool
-node order untouched — on a problem with no arrays.
+(see [`grounding.md`](grounding.md)). It is a no-op on a problem with no
+arrays.
 
 A fourth, `SetLoweringPass`, is its set-fluent analogue: it compiles set fluents
 into boolean membership cells `s(e, args)` and rewrites every `SET_*` operation

@@ -1,6 +1,5 @@
 #include "problem.hpp"
 #include "visitors/fluent_collector.hpp"
-#include <algorithm>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_set>
@@ -44,16 +43,14 @@ void Problem::collect_grounded_fluents() {
         collector.collect_from_id(goal.goal_id());
     }
 
-    // Build the deduped list, sorted by ExprID for deterministic ordering.
-    // FluentCollector uses an unordered_set, so iteration order is
-    // non-deterministic; sorting ensures reproducible variable ordering
-    // across runs and platforms.
+    // Build the deduped list. Iteration order of the collector's
+    // unordered_set is arbitrary but fixed for the lifetime of this
+    // Problem, which is all position-as-id needs.
     grounded_fluents_.clear();
     grounded_fluents_.reserve(collector.fluent_count());
     for (ExprID eid : collector.get_fluents()) {
         grounded_fluents_.push_back(eid);
     }
-    std::sort(grounded_fluents_.begin(), grounded_fluents_.end());
 
     build_grounded_fluent_mappings();
 }

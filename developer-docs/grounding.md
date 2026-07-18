@@ -37,9 +37,8 @@ compiles arrays into ordinary scalar fluents:
 
 - Each array fluent becomes **one scalar cell fluent per defined position**,
   minted in row-major order (`board` → `board[0]`, `board[1]`, `board[2]`);
-  the array fluent schema itself is dropped. Cell minting order is
-  load-bearing (the ExprPool-ordering pitfall applies), and positions listed
-  as `undefined` are never minted.
+  the array fluent schema itself is dropped. Positions listed as `undefined`
+  are never minted.
 - Each **constant-index access** `a[c]` — in a precondition, effect target,
   effect value, cost, goal, invariant, or initial-state entry — is rewritten
   to its cell (rules L1/L3). A cell of an array whose element type is bounded
@@ -99,9 +98,7 @@ cells** using the *characteristic-function* encoding:
   `s(?e: T, params): bool` — the element type prepended to the signature — and
   the set fluent schema is dropped. The grounder then grounds the new element
   parameter like any object-parameterised predicate, so a set over `n` packages
-  becomes `n` ordinary membership atoms per instance. (Membership-cell and
-  object-constant minting order is load-bearing — the ExprPool-ordering pitfall
-  applies, just as for array cells.)
+  becomes `n` ordinary membership atoms per instance.
 - Every operation lowers through **one compositional membership formula**
   `⟦S⟧_e` ("is element `e` in set expression `S`?"): a fluent → the cell atom
   `s(e, args)`; `add(x, S)` → `⟦S⟧_e ∨ (e = x)`; `remove` → `∧ ¬(e = x)`;

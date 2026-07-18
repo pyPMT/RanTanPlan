@@ -18,8 +18,7 @@ namespace rantanplan {
 ///
 /// The transform:
 ///   * mints one ordinary scalar cell fluent per defined array position, in
-///     row-major position order (ExprID minting order is load-bearing — see
-///     CLAUDE.md pitfall #7);
+///     row-major position order;
 ///   * rewrites every `ARRAY_INDEX(a, c)` (L1 read / L3 write target) into its
 ///     cell fluent, in preconditions, effect conditions, effect RHS, costs,
 ///     goals, state invariants, and initial-state targets;

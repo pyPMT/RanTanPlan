@@ -1,7 +1,7 @@
 """UP Problem -> ProblemIR converter (the Python side of the C++ contract).
 
-Replaces the protobuf transport: a hand-rolled memoized DFS (see _FNodeToIR
-for why not a DagWalker) flattens every expression into one shared node pool
+Replaces the protobuf transport: a hand-rolled memoized DFS (see _FNodeToIR)
+flattens every expression into one shared node pool
 (children precede parents, shared subexpressions stored once), and the
 problem structure references nodes by index. The C++ loader (`ir_io.cpp`)
 interns the pool in a single forward pass.
@@ -125,23 +125,14 @@ def _index_contains_fluent(node) -> bool:
 class _FNodeToIR:
     """Flattens FNode DAGs into the shared node pool.
 
-    A hand-rolled memoized DFS rather than a DagWalker: the node creation
-    order must match the C++ ExprPool's insertion order exactly (head
-    symbol first, then arguments, then the application — the recursion
-    order of the old protobuf loader), and DagWalker visits arguments
-    before the parent handler runs, which permutes head symbols.
+    A hand-rolled memoized DFS: children must precede parents in the pool
+    (the C++ loader interns it in a single forward pass), and several node
+    kinds need custom control flow a generic walker complicates
+    (payload-carrying ARRAY_CONSTANT/SET_CONSTANT, range-bound folding,
+    the literal-equality expansions).
 
     Head symbols (fluent/function names) are memoized separately so
     repeated applications share one head node.
-
-    CONTRACT (deterministic minting order): first-occurrence ExprIDs feed
-    ``unordered_map<ExprID>`` iteration in the chained encoders, which
-    decides *which* (still valid) plan is found. Reordering this walk
-    silently changes plans without failing any test. The same obligation
-    extends to every C++ lowering pass that mints nodes (array cells,
-    set membership cells): minting must happen in a documented canonical
-    order (declaration order, row-major positions, element declaration
-    order).
     """
 
     def __init__(self):
@@ -258,8 +249,8 @@ class _FNodeToIR:
         if expression.node_type == OperatorKind.SET_CONSTANT:
             # A set literal `{c1..ck}` (empty for `{}`). Its elements live in the
             # payload (an ordered tuple) -- `args` is empty and `constant_value()`
-            # is an *unordered* set -- so they must be walked in payload order for
-            # deterministic node ids (pitfall #7). Emitted as an ordinary
+            # is an *unordered* set -- so they are walked from the payload.
+            # Emitted as an ordinary
             # up:set_constant application (element-constant children, no payload);
             # the SetLoweringPass rewrites it away. Not in _OPERATOR_NAMES because
             # the generic path reads `args`, which is empty here.
@@ -604,9 +595,8 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
     out.metric_kind = metric_kind
 
     # --- Declared fluent defaults (UP fluents_defaults) ---
-    # Walked last, after every other expression, so existing node ordering --
-    # and thus plan determinism (pitfall #7) -- is unperturbed: a re-walked
-    # constant dedups to its existing id, a genuinely new one appends. A
+    # Walked last, after every other expression: a re-walked constant dedups
+    # to its existing id, a genuinely new one appends. A
     # declared default is authoritative for instances/cells left uninitialised
     # (the C++ CWA pass materialises it). UP stores an array's default as one
     # scalar, so one value covers every cell. Only numeric and boolean-false

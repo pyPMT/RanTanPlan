@@ -19,10 +19,6 @@ namespace rantanplan {
 /// which is the form the IR loader normalises to (ir_io map_up_operator) — so
 /// nodes built here dedup with the loaded formula's nodes. The op *field* is the
 /// authoritative operator; the head string is display/dedup only.
-///
-/// Note: the pool interns append-only, so node-creation *order* is load-bearing
-/// for downstream determinism (CLAUDE.md pitfall #7). This helper does not
-/// change ordering — it interns in the same order the hand-written builders did.
 class ExprBuilder {
 public:
     explicit ExprBuilder(ExprPool& pool) : pool_(pool) {}
