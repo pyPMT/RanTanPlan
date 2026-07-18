@@ -35,8 +35,9 @@ enum class ExprOperator {
     AND, OR, NOT, IMPLIES, IFF,
 
     // Quantifiers. Only transiently present between the converter and the
-    // QuantifierExpansionPass (which runs right after grounding and rewrites
-    // them into AND/OR); no later pass or encoder sees them.
+    // QuantifierExpansionPass (which runs in the canonicalize phase, before
+    // grounding, and rewrites them into AND/OR); no later pass or encoder
+    // sees them.
     FORALL, EXISTS,
 
     // Pseudo-boolean: integer-valued count of n boolean arguments.

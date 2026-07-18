@@ -53,6 +53,12 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
             continue;
         }
 
+        // This hard error is what makes object fluents *total* functions over
+        // a finite universe (equality-only semantics, encoded as ints in
+        // z3_variable_factory.cpp): every reachable instance provably holds
+        // some object at every step. Value-expansion features (ghost-parameter
+        // enumeration of a fluent's possible values) rely on this totality —
+        // don't soften it to a default without revisiting them.
         if (type->is_object()) {
             throw std::runtime_error(
                 "Object fluent '" + pool->to_string(eid) + "' has no initial "

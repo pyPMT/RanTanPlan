@@ -425,7 +425,17 @@ class _RantanPlanBase(Engine):
     def _build_plan(instances, compiled_problem: Problem,
                     compilation_result) -> SequentialPlan:
         """Rebuild a SequentialPlan from IR action instances by name lookup,
-        mapping each back through the compilation steps."""
+        mapping each back through the compilation steps.
+
+        CONTRACT (name-based plan mapping): the returned parameter strings
+        are zipped against the *compiled* problem's lifted action signature,
+        so plan mapping only works while lowerings preserve action names and
+        signatures. A lowering that splits instances (e.g. ghost parameters)
+        must bake the extra values into the instance name the way C++
+        int-parameter instantiation already does; a feature whose per-step
+        values only exist in the solver model (symbolic indices) must extend
+        ResultIR to carry them — this zip cannot invent parameters.
+        """
         action_map = {a.name: a for a in compiled_problem.actions}
         object_map = {o.name: o for o in compiled_problem.all_objects}
         em = compiled_problem.environment.expression_manager

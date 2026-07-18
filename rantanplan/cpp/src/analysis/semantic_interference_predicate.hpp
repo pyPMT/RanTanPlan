@@ -41,6 +41,16 @@ enum class InterferenceSource {
  * The predicate owns the Z3 infrastructure and is otherwise stateless apart from
  * a per-action cache for the (cheap) conflicting-conditional-effects screen.
  * Result caching / graph building is the wrappers' responsibility.
+ *
+ * CONTRACT (interference sees what the visitor sees): preconditions and
+ * effects are converted into one shared context at pseudo-timestep -1 via the
+ * same GroundedEncodingVisitor the encoders use — whatever that visitor
+ * cannot convert, interference cannot analyse either. Corollaries: (a) a
+ * structured feature lowered to ground scalar cells before grounding is
+ * automatically analysed soundly here, with no new code; (b) any future
+ * symbolic residue (per-action decision variables) needs action-scoped
+ * variable naming in this shared context, or two actions' variables unify at
+ * timestep -1 and CHECK1/CHECK2 silently miss interference.
  */
 class SemanticInterferencePredicate {
 public:

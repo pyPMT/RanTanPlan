@@ -133,6 +133,15 @@ class _FNodeToIR:
 
     Head symbols (fluent/function names) are memoized separately so
     repeated applications share one head node.
+
+    CONTRACT (deterministic minting order): first-occurrence ExprIDs feed
+    ``unordered_map<ExprID>`` iteration in the chained encoders, which
+    decides *which* (still valid) plan is found. Reordering this walk
+    silently changes plans without failing any test. The same obligation
+    extends to every C++ lowering pass that mints nodes (array cells,
+    set membership cells): minting must happen in a documented canonical
+    order (declaration order, row-major positions, element declaration
+    order).
     """
 
     def __init__(self):
