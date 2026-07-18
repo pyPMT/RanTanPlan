@@ -252,8 +252,8 @@ private:
         // The cell's FLUENT_SYMBOL head identifies it across accesses (resolve
         // builds a state variable from it plus the access's object args). For a
         // nullary array, also pre-intern the full state variable so its ExprID
-        // is assigned in mint order (load-bearing for downstream iteration
-        // determinism); resolve_access rebuilds the identical id via dedup.
+        // is assigned in mint order; resolve_access rebuilds the identical
+        // id via dedup.
         ExprNode head;
         head.kind = static_cast<int>(ExprKind::FLUENT_SYMBOL);
         head.type_id = elem_type_id;

@@ -1,7 +1,7 @@
 """UP Problem -> ProblemIR converter (the Python side of the C++ contract).
 
-Replaces the protobuf transport: a hand-rolled memoized DFS (see _FNodeToIR
-for why not a DagWalker) flattens every expression into one shared node pool
+Replaces the protobuf transport: a hand-rolled memoized DFS (see _FNodeToIR)
+flattens every expression into one shared node pool
 (children precede parents, shared subexpressions stored once), and the
 problem structure references nodes by index. The C++ loader (`ir_io.cpp`)
 interns the pool in a single forward pass.
@@ -111,25 +111,14 @@ def _array_shape(tpe):
     return _up_type_str(leaf), sizes, leaf
 
 
-def _index_contains_fluent(node) -> bool:
-    """True if an array-index expression reads a fluent (state variable).
-
-    Scope guard (docs/native-arrays-plan.md): array indices must be built from
-    constants, parameters, quantified variables, and arithmetic over them --
-    never fluents. `a[f]` / `a[b[i]]` would make the index state-dependent."""
-    if node.is_fluent_exp():
-        return True
-    return any(_index_contains_fluent(arg) for arg in node.args)
-
-
 class _FNodeToIR:
     """Flattens FNode DAGs into the shared node pool.
 
-    A hand-rolled memoized DFS rather than a DagWalker: the node creation
-    order must match the C++ ExprPool's insertion order exactly (head
-    symbol first, then arguments, then the application — the recursion
-    order of the old protobuf loader), and DagWalker visits arguments
-    before the parent handler runs, which permutes head symbols.
+    A hand-rolled memoized DFS: children must precede parents in the pool
+    (the C++ loader interns it in a single forward pass), and several node
+    kinds need custom control flow a generic walker complicates
+    (payload-carrying ARRAY_CONSTANT/SET_CONSTANT, range-bound folding,
+    the literal-equality expansions).
 
     Head symbols (fluent/function names) are memoized separately so
     repeated applications share one head node.
@@ -235,22 +224,16 @@ class _FNodeToIR:
         if expression.node_type == OperatorKind.ARRAY_CONSTANT:
             raise UPException(
                 "Array constants outside the initial state are not supported yet.")
-        if expression.is_array_index():
-            # arg(0) is the array (a fluent / nested access); arg(1) is the index,
-            # which must not depend on state (see _index_contains_fluent).
-            index_expr = expression.arg(1)
-            if _index_contains_fluent(index_expr):
-                raise UPException(
-                    f"State-dependent array indices are not supported: index "
-                    f"'{index_expr}' reads a fluent. Array indices may only use "
-                    f"constants, parameters, quantified variables, and "
-                    f"arithmetic over them.")
+        # A state-dependent array index (`a[ptr]` — arg(1) reads a fluent) is
+        # allowed: the C++ TermResolutionPass compiles it away by per-position
+        # instance splitting before array lowering
+        # (docs/specs/undefinedness-semantics.md, regime R2).
 
         if expression.node_type == OperatorKind.SET_CONSTANT:
             # A set literal `{c1..ck}` (empty for `{}`). Its elements live in the
             # payload (an ordered tuple) -- `args` is empty and `constant_value()`
-            # is an *unordered* set -- so they must be walked in payload order for
-            # deterministic node ids (pitfall #7). Emitted as an ordinary
+            # is an *unordered* set -- so they are walked from the payload.
+            # Emitted as an ordinary
             # up:set_constant application (element-constant children, no payload);
             # the SetLoweringPass rewrites it away. Not in _OPERATOR_NAMES because
             # the generic path reads `args`, which is empty here.
@@ -258,20 +241,10 @@ class _FNodeToIR:
             children = [head] + [self.walk(e) for e in expression._content.payload]
             return self._add(_FUNCTION_APPLICATION, "", children=children)
 
-        # Scope guard: the element position of member/add/remove (arg 0) must not
-        # read a fluent -- `member(loc_of(t), S)` would make the element (and thus
-        # the lowered cell coordinate) state-dependent, which `⟦·⟧_e` cannot
-        # enumerate. Elements may only be constants, parameters, and quantified
-        # variables (the same line arrays drew for indices).
-        if expression.node_type in (OperatorKind.SET_MEMBER,
-                                    OperatorKind.SET_ADD,
-                                    OperatorKind.SET_REMOVE):
-            element = expression.arg(0)
-            if _index_contains_fluent(element):
-                raise UPException(
-                    f"State-dependent set elements are not supported: element "
-                    f"'{element}' reads a fluent. Set elements may only use "
-                    f"constants, parameters, and quantified variables.")
+        # A fluent-valued element of member/add/remove (`member(loc_of(t), S)`)
+        # is allowed: the C++ TermResolutionPass replaces it with a ghost
+        # parameter (pinned by an equality precondition) before set lowering,
+        # so the lowered cell coordinate is an ordinary parameter.
 
         # Whole-array equality against a literal (an ARRAY_CONSTANT operand,
         # e.g. n_puzzle's `Equals(puzzle, goal_blocks)` goal). Expand it
@@ -595,9 +568,8 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
     out.metric_kind = metric_kind
 
     # --- Declared fluent defaults (UP fluents_defaults) ---
-    # Walked last, after every other expression, so existing node ordering --
-    # and thus plan determinism (pitfall #7) -- is unperturbed: a re-walked
-    # constant dedups to its existing id, a genuinely new one appends. A
+    # Walked last, after every other expression: a re-walked constant dedups
+    # to its existing id, a genuinely new one appends. A
     # declared default is authoritative for instances/cells left uninitialised
     # (the C++ CWA pass materialises it). UP stores an array's default as one
     # scalar, so one value covers every cell. Only numeric and boolean-false

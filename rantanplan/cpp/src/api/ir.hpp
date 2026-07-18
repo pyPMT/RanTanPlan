@@ -10,7 +10,7 @@
  * @file ir.hpp
  * @brief Plain-data IR: the Python <-> C++ problem/result contract.
  *
- * Produced by rantanplan/converter.py (a UP DagWalker) and consumed by
+ * Produced by rantanplan/converter.py and consumed by
  * load_problem_from_ir (ir_io.cpp). The expression pool is one flat node
  * array with index children; children always precede their parents, so the
  * loader interns the array in a single forward pass.

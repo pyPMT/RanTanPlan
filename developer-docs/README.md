@@ -29,19 +29,24 @@ Concepts first, plumbing last — each doc leans only on the ones before it.
 5. [`relaxed-planning-graph.md`](relaxed-planning-graph.md) — the
    layer-by-layer reachability graph `ActionPruningPass` builds for
    tightened bounds, goal-relevance pruning, and cost lower bounds.
-6. [`interference-and-propagators.md`](interference-and-propagators.md) —
+6. [`symmetries.md`](symmetries.md) — interchangeable objects and their
+   orbits: how object swaps are detected by a Z3 init+goal invariance
+   check, and how the encoder breaks them with state-conditional
+   lexicographic constraints. Example-led (one three-package problem
+   traced through detection, completion, and encoding).
+7. [`interference-and-propagators.md`](interference-and-propagators.md) —
    why interference analysis has two interfaces, and how the Z3 user
    propagator is split into composable modules.
-7. [`encoders-and-planners.md`](encoders-and-planners.md) — the encoder
+8. [`encoders-and-planners.md`](encoders-and-planners.md) — the encoder
    families, the planner backends, optimal/anytime branch-and-bound, and
    how a search mode resolves to a planner.
-8. [`z3-control-and-interruption.md`](z3-control-and-interruption.md) — how
+9. [`z3-control-and-interruption.md`](z3-control-and-interruption.md) — how
    the Z3 solver is driven incrementally, timeout budgeting, and cross-thread
    cancellation.
-9. [`python-cpp-boundary.md`](python-cpp-boundary.md) — the in-process
-   nanobind contract: `ProblemIR`, the GIL, the anytime callback,
-   cancellation from Python. Plumbing — nothing conceptual depends on it,
-   but touch `converter.py` or `bindings.cpp` and this is the doc.
+10. [`python-cpp-boundary.md`](python-cpp-boundary.md) — the in-process
+    nanobind contract: `ProblemIR`, the GIL, the anytime callback,
+    cancellation from Python. Plumbing — nothing conceptual depends on it,
+    but touch `converter.py` or `bindings.cpp` and this is the doc.
 
 Each doc includes a Mermaid diagram of its central flow — GitHub and most
 Markdown viewers render these inline — and ends with a **Try it** box: a
@@ -96,6 +101,12 @@ for when you meet one out of order.
   Discovered by the preprocessor (mutexes by mutex analysis, bounds and
   conservation laws by action pruning), asserted at every timestep
   ([`preprocessing-and-strategy.md`](preprocessing-and-strategy.md)).
+- **Orbit / object swap** — an object swap is a detected transposition of
+  two same-typed objects that leaves init ∧ goals logically unchanged; an
+  orbit is a maximal set of pairwise-swappable (interchangeable) objects —
+  a connected component of the swap graph. k interchangeable objects mean
+  up to k! mirror plans, which symmetry breaking prunes to one
+  representative ([`symmetries.md`](symmetries.md)).
 - **Propagator (user propagator)** — Z3's extension point for injecting
   custom reasoning *during* search via callbacks; RantanPlan hosts one and
   dispatches to composable modules

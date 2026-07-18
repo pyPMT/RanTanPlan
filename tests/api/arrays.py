@@ -1069,24 +1069,27 @@ def test_whole_array_assignment_rejected():
     _assert_rejected(build)
 
 
-def test_converter_rejects_fluent_index():
-    """A state-dependent index (`a[f]` where f is a fluent) is rejected by the
-    converter with a clear message (Phase 1 scope guard)."""
-    def build():
-        em = _em()
-        a = Fluent("flidx_a", ArrayType(3, IntType(0, 9)))
-        f = Fluent("flidx_f", IntType(0, 2))
-        p = Problem("flidx")
-        p.add_fluent(a, default_initial_value=0)
-        p.add_fluent(f, default_initial_value=0)
-        p.set_initial_value(a, [1, 2, 3])
-        p.set_initial_value(f, 1)
-        w = InstantaneousAction("w")
-        w.add_effect(em.ArrayIndex(a(), Int(0)), 5)
-        p.add_action(w)
-        p.add_goal(Equals(em.ArrayIndex(a(), f()), Int(2)))  # fluent as index
-        return p
-    _assert_rejected(build)
+def test_fluent_index_in_goal_rejected():
+    """A state-dependent index in a *goal* (`a[f]` — goals are strict-⊥ and
+    cannot host the per-position split, docs/specs/undefinedness-semantics.md)
+    is rejected by the C++ TermResolutionPass with a rewrite hint. Action-side
+    state-dependent indices now solve — covered in tests/api/nested_terms.py."""
+    em = _em()
+    a = Fluent("flidx_a", ArrayType(3, IntType(0, 9)))
+    f = Fluent("flidx_f", IntType(0, 2))
+    p = Problem("flidx")
+    p.add_fluent(a, default_initial_value=0)
+    p.add_fluent(f, default_initial_value=0)
+    p.set_initial_value(a, [1, 2, 3])
+    p.set_initial_value(f, 1)
+    w = InstantaneousAction("w")
+    w.add_effect(em.ArrayIndex(a(), Int(0)), 5)
+    p.add_action(w)
+    p.add_goal(Equals(em.ArrayIndex(a(), f()), Int(2)))  # fluent as index
+    r = solve(p)
+    assert r.plan is None, "a state-dependent goal index must not solve"
+    assert r.status == PlanGenerationResultStatus.INTERNAL_ERROR, \
+        f"expected the C++ rejection to surface as INTERNAL_ERROR, got {r.status}"
 
 
 def test_up_grounding_flag_rejected():
@@ -1206,7 +1209,7 @@ CASES = [
     test_all_instances_collide_hard_error,
     test_oob_initial_state_assignment_dropped,
     test_whole_array_assignment_rejected,
-    test_converter_rejects_fluent_index,
+    test_fluent_index_in_goal_rejected,
     test_up_grounding_flag_rejected,
     # mini end-to-end
     test_sliding_puzzle_2x2,

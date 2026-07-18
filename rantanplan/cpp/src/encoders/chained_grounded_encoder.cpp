@@ -183,6 +183,13 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
 std::optional<const EffectExpression*> ChainedGroundedEncoder::get_effect_for_variable(
     const Action& action, ExprID var_eid) const {
 
+    // CONTRACT: at most one effect per (action, variable) may reach this
+    // encoder — the first match is taken and any further same-target effect
+    // is silently ignored. Lowering passes must respect this: a rewrite that
+    // would emit several same-target conditional effects inside one action
+    // (e.g. per-value expansion of a computed write) has to instance-split
+    // or fold into a single expression-valued assign instead (see the
+    // same-cell collision handling in array_lowering.cpp).
     for (const Effect& effect : action.effects()) {
         if (effect.effect_expression().fluent_id() == var_eid) {
             return &effect.effect_expression();

@@ -76,24 +76,18 @@ differently-built compound expressions the way `ExprPool::intern()` is; that
 canonical, whole-tree dedup only happens once `ir_io.cpp` interns the array
 into the C++ `ExprPool`.
 
-### Why the Python side is a hand-rolled DFS, not a `DagWalker`
+### The Python-side walk
 
 `rantanplan/converter.py`'s `_FNodeToIR` walks each UP `FNode` expression
-DAG and appends nodes to the pool. It's tempting to write this as a UP
-`DagWalker` (the idiomatic way to traverse UP expressions), but a
-`DagWalker` visits a node's *arguments* before running that node's own
-handler — which would insert argument nodes into the pool before the head
-symbol (fluent/function name) that owns them. The hand-rolled walker
-inserts the head symbol first, then arguments, matching the C++ `ExprPool`'s
-expected insertion order.
-
-This ordering isn't cosmetic. `ExprID`s are assigned by insertion order, and
-several C++ encoders key `unordered_map<ExprID, ...>` structures whose
-iteration order depends on those IDs. Reordering node creation — even
-switching to a `DagWalker` that produces an *equally valid* set of
-`ExprID`s — silently changes which (still-correct) plan the search finds
-first, because it changes iteration order in those maps. If you ever touch
-`converter.py`'s traversal, this is the invariant to preserve.
+DAG with a hand-rolled memoized DFS and appends nodes to the pool. The one
+hard requirement is topological: children must precede their parents in the
+node array, because the C++ loader interns it in a single forward pass. The
+walker is hand-rolled rather than a UP `DagWalker` mainly because several
+node kinds need custom control flow (payload-carrying
+`ARRAY_CONSTANT`/`SET_CONSTANT` literals, range-bound folding, the
+literal-equality expansions). Beyond the children-before-parents rule, the
+traversal order is free — it only influences which of several equally valid
+plans the search happens to return.
 
 ### Fluent declarations, array & set fluents
 

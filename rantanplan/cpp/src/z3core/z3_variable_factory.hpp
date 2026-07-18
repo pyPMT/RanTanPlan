@@ -26,6 +26,14 @@ class Problem;  // forward declaration
  * - Variable creation with proper types
  * - Variable caching and lifecycle management
  * - Timestep-aware variable management
+ *
+ * CONTRACT (static atom identity): a ground fluent *is* its interned ExprID,
+ * and its Z3 state variable is keyed by rendered name × timestep — so which
+ * cell an access touches is decided at compile time, never by the model.
+ * Everything structured (arrays, sets) is lowered to ground scalar cells
+ * before grounding to preserve this; a feature that wants model-dependent
+ * cell selection (symbolic indices) must introduce explicit read/write
+ * variables and element constraints instead of breaking this keying.
  */
 class Z3VariableFactory {
 private:

@@ -485,21 +485,33 @@ def test_reject_nested_set_type():
     _assert_rejected(build)
 
 
-def test_reject_fluent_valued_element():
-    def build():
-        p = Problem("fe")
-        locof = Fluent("locof", Pkg, t=Truck)
-        S = Fluent("S", _st(Pkg))
-        p.add_fluent(locof); p.add_fluent(S, default_initial_value=_em().Set([]))
-        p.add_fluent(Fluent("g", BoolType()), default_initial_value=False)
-        t1 = Object("t1", Truck); p.add_object(t1)
-        _pkgs(p, ["a"])
-        a = InstantaneousAction("a", t=Truck)
-        a.add_precondition(_em().SetMember(locof(a.parameter("t")), S()))  # fluent element
-        a.add_effect(Fluent("g", BoolType())(), True)
-        p.add_action(a)
-        return p
-    _assert_rejected(build)
+def test_fluent_valued_element():
+    """`member(locof(t), S)` — a fluent-valued element, formerly rejected at
+    conversion — is resolved by the C++ TermResolutionPass into a ghost
+    parameter pinned by an equality precondition before set lowering
+    (docs/nesting-status-and-gaps.md §4.2), so it now solves. The simulator
+    oracle does not evaluate object fluents, so this asserts plan shape
+    directly (the ghost machinery itself is UP-validated in
+    tests/api/nested_terms.py)."""
+    p = Problem("fe")
+    locof = Fluent("locof", Pkg, t=Truck)
+    S = Fluent("S", _st(Pkg))
+    g = Fluent("g", BoolType())
+    p.add_fluent(locof)
+    p.add_fluent(S, default_initial_value=_em().Set([]))
+    p.add_fluent(g, default_initial_value=False)
+    t1 = Object("t1", Truck); p.add_object(t1)
+    pa, = _pkgs(p, ["a"])
+    p.set_initial_value(locof(t1), pa)
+    p.set_initial_value(S(), _em().Set([_em().ObjectExp(pa)]))
+    pick = InstantaneousAction("pick", t=Truck)
+    pick.add_precondition(_em().SetMember(locof(pick.parameter("t")), S()))
+    pick.add_effect(g(), True)
+    p.add_action(pick)
+    p.add_goal(g())
+    r = solve(p)
+    assert r.plan is not None, f"fluent-valued element did not solve ({r.status})"
+    assert "pick" in [ai.action.name for ai in r.plan.actions]
 
 
 def test_reject_array_of_set():
@@ -509,6 +521,33 @@ def test_reject_array_of_set():
         p.add_fluent(Fluent("s", ArrayType(2, _st(Pkg))))
         return p
     _assert_rejected(build)
+
+
+def test_symmetries_with_set_fluents():
+    """`--symmetries` used to crash on set problems: the detection snapshot
+    was taken before SetLoweringPass, so its Z3 equivalence formula met raw
+    SET_* nodes ("Wrong number of arguments ... set_constant"). The snapshot
+    is now taken after the canonicalize lowerings (all-scalar, still lifted,
+    pre-StaticFluent), so detection runs and sees the interchangeable
+    packages. Pins solve + simulator validity with symmetries enabled."""
+    from unified_planning.shortcuts import OneshotPlanner
+    p = Problem("sym_sets")
+    held = Fluent("held", _st(Pkg), t=Truck)
+    p.add_fluent(held, default_initial_value=_em().Set([]))
+    t1 = Object("t1", Truck); p.add_object(t1)
+    _pkgs(p, ["a", "b"])
+    load = InstantaneousAction("load", t=Truck, pk=Pkg)
+    t, pk = load.parameter("t"), load.parameter("pk")
+    load.add_precondition(Not(_em().SetMember(pk, held(t))))
+    load.add_effect(held(t), _em().SetAdd(pk, held(t)))
+    p.add_action(load)
+    p.add_goal(GE(_em().SetCardinality(held(t1)), Int(2)))
+    with OneshotPlanner(name="rantanplan",
+                        params={"verbosity": "silent",
+                                "symmetries": True}) as pl:
+        r = pl.solve(p)
+    assert r.plan is not None, f"symmetries+sets did not solve ({r.status})"
+    assert _simulate_ok(p, r.plan), "plan fails set-semantics simulation"
 
 
 def test_up_grounding_rejected():
@@ -555,7 +594,8 @@ CASES = [
     test_reject_set_typed_parameter,
     test_reject_int_element_set,
     test_reject_nested_set_type,
-    test_reject_fluent_valued_element,
+    test_fluent_valued_element,
     test_reject_array_of_set,
+    test_symmetries_with_set_fluents,
     test_up_grounding_rejected,
 ]

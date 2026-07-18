@@ -11,15 +11,79 @@ naive instantiation: it only produces the ground actions that are actually
 and an unsolvability check for free in the same pass.
 
 By the time grounding runs, the canonicalization passes ahead of it
-(`IntParameterInstantiationPass`, `QuantifierExpansionPass`, and — when the
-problem has array fluents — `ArrayLoweringPass`) have already compiled away
-integer action parameters, every quantifier / `forall`-effect, and every
-constant-index array access, so the grounder only ever sees ordinary object
-parameters over quantifier-free, array-free actions — it never has to reason
-about integer parameters, nested quantifiers, or array structure (see
-[`preprocessing-and-strategy.md`](preprocessing-and-strategy.md)). The array
-lowering is described in [Array lowering](#array-lowering-before-grounding)
-below.
+(`IntParameterInstantiationPass`, `QuantifierExpansionPass`,
+`TermResolutionPass`, and — when the problem has array or set fluents —
+`ArrayLoweringPass` / `SetLoweringPass`) have already compiled away integer
+action parameters, every quantifier / `forall`-effect, every nested fluent
+term and state-dependent index, and every structured access, so the grounder
+only ever sees ordinary object parameters over quantifier-free, array-free
+actions — it never has to reason about integer parameters, nested
+quantifiers, or array structure (see
+[`preprocessing-and-strategy.md`](preprocessing-and-strategy.md)). Term
+resolution is described in
+[Term resolution](#term-resolution-before-the-lowerings) and the array
+lowering in [Array lowering](#array-lowering-before-grounding) below.
+
+## Term resolution (before the lowerings)
+
+FSTRIPS-style **nested fluent terms** — a fluent application used as an
+*argument* of another fluent application, `connections(card_at[r][c], N)` or
+`safe(loc(r))` — violate the shape every post-grounding consumer assumes
+(a ground atom's arguments are object constants). `TermResolutionPass`
+(`passes/term_resolution_pass.{hpp,cpp}`) restores that shape before
+grounding, by two mechanisms:
+
+- **Ghost parameters** (object-valued inner terms). Each distinct inner term
+  in an action gets a fresh action parameter of its value type, appended
+  after the declared signature and pinned by an equality precondition:
+  `move_north(r, c)` with `connections(card_at[r][c], N)` becomes
+  `move_north(r, c, ?g: Card)` with `card_at[r][c] = ?g ∧ connections(?g, N)`.
+  The equality is exactly the object-fluent pattern the grounder's
+  `BindingMatcher` joins, so `?g` is enumerated only over the cell's
+  *reachable* values — not the whole type — and every downstream pass,
+  analysis, and encoder sees stock shapes. Ground instances carry ghost
+  values as trailing parameters, which the Python plan mapping drops (it
+  zips against the lifted UP signature). Inner terms resolve
+  innermost-first, so `f(g(h(x)))` chains ghost equalities. Object fluents
+  are total under CWA (an uninitialised one is a hard error), so a ghost
+  never introduces undefinedness.
+
+- **Per-position instance splitting** (state-dependent indices, `a[ptr]` /
+  `a[b[i]]`). An int-typed ghost has no grounder join to enumerate it, so
+  the action is instead split: one instance per position `p` of the indexed
+  dimension, with precondition `e = p` and the index replaced by the
+  constant — which the array lowering below then handles as an ordinary
+  constant-index access — plus one **boundary instance** (`e < 0 ∨ e ≥ n`,
+  index replaced by the statically out-of-bounds constant `n`) that the
+  array lowering resolves per the undefinedness semantics at compile time.
+
+**Undefinedness (⊥) semantics** — the non-strict (permissive) reading of
+Davesa et al. Def. 9, stated once and cited by every lowering:
+
+1. *Statically decidable* ⊥ (constant indices): ⊥ propagates strictly
+   through every operator except OR and COUNT; a ⊥ *conditional* effect is
+   dropped (the action stays applicable — the guarded one-past-the-end
+   write); a ⊥ *unconditional* effect or a ⊥-collapsed precondition
+   discards the instance. Goals, invariants, and the initial state are
+   strict: ⊥ there is a hard modelling error.
+2. *Runtime* definedness (state-dependent indices): re-stated as
+   conditions via the split above — an out-of-bounds pointer state
+   satisfies no in-range instance ("read of ⊥ ⇒ inapplicable" as an
+   ordinary precondition), while the boundary instance restores the
+   non-strict cases (OR absorption, dropped guarded writes) by reducing
+   them to statically decidable ones. No runtime ⊥ checks exist anywhere
+   in the encoding.
+3. A nested object-valued term in a *goal* is expanded by value-universe
+   disjunction — `φ` becomes `⋁_o (t = o ∧ φ[t → o])`, the Exists-rewrite
+   done mechanically (sound and exhaustive because object fluents are
+   total). State-dependent indices in goals, and any nesting in
+   invariants/initial state, are rejected with a rewrite hint, since
+   nothing there can host a split.
+
+Two shapes are resolved by the pass but currently unreachable through the
+UP API, which refuses fluent-containing effect *targets*
+(`loc(owner(x)) := l`, `a[ptr] := v`); tests pin the upstream behaviour so
+the coverage gets added if the fork starts accepting them.
 
 ## Array lowering (before grounding)
 
@@ -37,9 +101,8 @@ compiles arrays into ordinary scalar fluents:
 
 - Each array fluent becomes **one scalar cell fluent per defined position**,
   minted in row-major order (`board` → `board[0]`, `board[1]`, `board[2]`);
-  the array fluent schema itself is dropped. Cell minting order is
-  load-bearing (the ExprPool-ordering pitfall applies), and positions listed
-  as `undefined` are never minted.
+  the array fluent schema itself is dropped. Positions listed as `undefined`
+  are never minted.
 - Each **constant-index access** `a[c]` — in a precondition, effect target,
   effect value, cost, goal, invariant, or initial-state entry — is rewritten
   to its cell (rules L1/L3). A cell of an array whose element type is bounded
@@ -99,9 +162,7 @@ cells** using the *characteristic-function* encoding:
   `s(?e: T, params): bool` — the element type prepended to the signature — and
   the set fluent schema is dropped. The grounder then grounds the new element
   parameter like any object-parameterised predicate, so a set over `n` packages
-  becomes `n` ordinary membership atoms per instance. (Membership-cell and
-  object-constant minting order is load-bearing — the ExprPool-ordering pitfall
-  applies, just as for array cells.)
+  becomes `n` ordinary membership atoms per instance.
 - Every operation lowers through **one compositional membership formula**
   `⟦S⟧_e` ("is element `e` in set expression `S`?"): a fluent → the cell atom
   `s(e, args)`; `add(x, S)` → `⟦S⟧_e ∨ (e = x)`; `remove` → `∧ ¬(e = x)`;

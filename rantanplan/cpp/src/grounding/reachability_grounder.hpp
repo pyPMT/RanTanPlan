@@ -60,6 +60,18 @@ struct GroundingResult {
 ///   add-effects produce new facts). Numeric fluents don't constrain
 ///   reachability in the boolean relaxation.
 ///
+/// - RELAXATION OBLIGATION (soundness contract for new constructs): the
+///   grounder prunes anything it cannot see a relaxed achiever for, so every
+///   effect shape must either be visible to the fixpoint or conservatively
+///   over-approximated — otherwise reachable actions get pruned and solvable
+///   problems are "proven" unsolvable. The object-fluent index is the
+///   template: a constant assign contributes one value, a fluent-valued
+///   assign contributes the source's current value set (re-applied to
+///   fixpoint each iteration, like numeric effects), and any unresolvable
+///   shape falls back to the whole type universe. A new effect shape that
+///   the indices cannot decompose must get the same treatment: over-
+///   approximate, never skip silently.
+///
 /// - The lower bound equals the iteration count: the earliest layer at which
 ///   all goal facts are present.
 class ReachabilityGrounder {

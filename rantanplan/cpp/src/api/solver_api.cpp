@@ -25,6 +25,7 @@
 #include "passes/int_parameter_instantiation_pass.hpp"
 #include "passes/array_lowering_pass.hpp"
 #include "passes/set_lowering_pass.hpp"
+#include "passes/term_resolution_pass.hpp"
 #include "passes/grounding_pass.hpp"
 #include "passes/quantifier_expansion_pass.hpp"
 #include "passes/cwa_initial_state_pass.hpp"
@@ -38,6 +39,25 @@
 #include "z3++.h"
 
 namespace rantanplan::api {
+
+namespace {
+/// Captures the canonicalized (post-lowering, pre-grounding) problem for
+/// symmetry detection. The snapshot must be all-scalar — the detection's Z3
+/// equivalence check cannot convert SET_* / ARRAY_INDEX / nested-term nodes
+/// (raw set nodes used to crash it) — yet still lifted and pre-StaticFluent
+/// (small formula; the distinguishing static assignments intact), which is
+/// exactly this point in the pipeline.
+class SymmetrySnapshotPass : public rantanplan::Pass {
+public:
+    explicit SymmetrySnapshotPass(rantanplan::Problem& slot) : slot_(slot) {}
+    void apply(rantanplan::PreprocessedProblem& result) const override {
+        slot_ = result.problem;  // cheap copy (shared ExprPool)
+    }
+    std::string name() const override { return "symmetry-snapshot"; }
+private:
+    rantanplan::Problem& slot_;
+};
+} // namespace
 
 void InterruptSlot::interrupt() {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -81,6 +101,16 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
             "Set fluents require native grounding; --up-grounding is "
             "unsupported for set problems.");
     }
+    // Ghost parameters minted by TermResolutionPass are enumerated by the
+    // native grounder's equality join, and its index splits assume the native
+    // pipeline; the UP-grounding path never sees either.
+    if (!options.enable_grounding &&
+        (rantanplan::has_nested_fluent_terms(problem) ||
+         rantanplan::has_state_dependent_indices(problem))) {
+        throw std::invalid_argument(
+            "Nested fluent terms / state-dependent indices require native "
+            "grounding; --up-grounding is unsupported for such problems.");
+    }
 
     // === PREPROCESSING PIPELINE ===
     //
@@ -115,17 +145,20 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     //   - ArithmeticProfile last (reads final expressions, sets all_integer for
     //     every downstream Z3 translation)
 
-    // Snapshot the original (pre-grounding) problem for symmetry detection.
-    // Detection checks initial-state + goals equivalence under object swap;
-    // this is cheaper on the lifted problem (smaller Z3 formula) and must
-    // happen before StaticFluent removes distinguishing static assignments.
+    // The symmetry-detection snapshot is taken *mid-pipeline* by
+    // SymmetrySnapshotPass (above): after the canonicalize lowerings so the
+    // detection sees only scalar shapes, before grounding/StaticFluent so
+    // the equivalence check stays lifted and the distinguishing static
+    // assignments are still present. The optional is engaged here (empty)
+    // so the analysis pass can hold a stable pointer to it.
     std::optional<rantanplan::Problem> original_problem;
     if (options.enable_symmetries) {
-        original_problem = problem;  // cheap copy (shared ExprPool)
+        original_problem.emplace();
     }
 
     rantanplan::IntParameterInstantiationPass int_parameter_instantiation_pass;
     rantanplan::QuantifierExpansionPass quantifier_expansion_pass;
+    rantanplan::TermResolutionPass term_resolution_pass;
     rantanplan::ArrayLoweringPass array_lowering_pass;
     rantanplan::SetLoweringPass set_lowering_pass;
     rantanplan::GroundingPass grounding_pass;
@@ -138,6 +171,10 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     rantanplan::SymmetryAnalysisPass symmetry_analysis_pass(
         original_problem ? &*original_problem : nullptr);
     rantanplan::ArithmeticProfilePass arithmetic_profile_pass;
+    std::optional<SymmetrySnapshotPass> symmetry_snapshot_pass;
+    if (original_problem) {
+        symmetry_snapshot_pass.emplace(*original_problem);
+    }
 
     std::vector<const rantanplan::Pass*> passes;
 
@@ -148,6 +185,12 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     // object grounding over quantifier-free actions.
     passes.push_back(&int_parameter_instantiation_pass);
     passes.push_back(&quantifier_expansion_pass);
+    // Term resolution must follow quantifier expansion (quantified variables
+    // are already enumerated) and precede the structured lowerings: a ghost
+    // equality pinned on an array cell (`card_at[r][c] = ?g`) is rewritten by
+    // ArrayLoweringPass like any other access, and a ghosted set element is an
+    // ordinary parameter for SetLoweringPass. No-op without nested terms.
+    passes.push_back(&term_resolution_pass);
     // Array lowering must follow quantifier expansion (indices become ground
     // constant arithmetic) and precede grounding (cells must exist before the
     // reachability fixpoint enumerates facts). No-op without array fluents.
@@ -159,6 +202,11 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     // Sets and arrays don't interact (mixing is rejected at conversion), so the
     // relative order is free. No-op without set fluents.
     passes.push_back(&set_lowering_pass);
+    // Symmetry snapshot: canonicalized (all-scalar) but still lifted and
+    // pre-StaticFluent — see SymmetrySnapshotPass.
+    if (symmetry_snapshot_pass) {
+        passes.push_back(&*symmetry_snapshot_pass);
+    }
     if (options.enable_grounding) {
         passes.push_back(&grounding_pass);
     }
