@@ -50,6 +50,15 @@ enum class ExprOperator {
     // access into ordinary scalar cells; no later pass or encoder sees it.
     ARRAY_INDEX,
 
+    // Set operators (UP's SET_* family). Only transiently present between the
+    // converter and the SetLoweringPass, which lowers every set fluent into
+    // ordinary boolean membership cells and rewrites these operators into
+    // logic/COUNT; no later pass or encoder sees a SET_* node. SET_CONSTANT is
+    // a set literal `{c1..ck}` (zero children = the empty set).
+    SET_MEMBER, SET_SUBSETEQ, SET_DISJOINT, SET_CARDINALITY,
+    SET_ADD, SET_REMOVE, SET_UNION, SET_INTERSECT, SET_DIFFERENCE,
+    SET_CONSTANT,
+
     // Unknown operator
     UNKNOWN
 };
@@ -82,6 +91,16 @@ inline ExprOperator string_to_expr_operator(const std::string& op_string) {
     if (op_string == "up:exists") return ExprOperator::EXISTS;
     if (op_string == "up:count") return ExprOperator::COUNT;
     if (op_string == "up:array_index") return ExprOperator::ARRAY_INDEX;
+    if (op_string == "up:set_member") return ExprOperator::SET_MEMBER;
+    if (op_string == "up:set_subseteq") return ExprOperator::SET_SUBSETEQ;
+    if (op_string == "up:set_disjoint") return ExprOperator::SET_DISJOINT;
+    if (op_string == "up:set_cardinality") return ExprOperator::SET_CARDINALITY;
+    if (op_string == "up:set_add") return ExprOperator::SET_ADD;
+    if (op_string == "up:set_remove") return ExprOperator::SET_REMOVE;
+    if (op_string == "up:set_union") return ExprOperator::SET_UNION;
+    if (op_string == "up:set_intersect") return ExprOperator::SET_INTERSECT;
+    if (op_string == "up:set_difference") return ExprOperator::SET_DIFFERENCE;
+    if (op_string == "up:set_constant") return ExprOperator::SET_CONSTANT;
 
     // Standard notation
     if (op_string == "+") return ExprOperator::PLUS;
@@ -106,6 +125,16 @@ inline ExprOperator string_to_expr_operator(const std::string& op_string) {
     if (op_string == "exists") return ExprOperator::EXISTS;
     if (op_string == "count") return ExprOperator::COUNT;
     if (op_string == "array_index") return ExprOperator::ARRAY_INDEX;
+    if (op_string == "set_member") return ExprOperator::SET_MEMBER;
+    if (op_string == "set_subseteq") return ExprOperator::SET_SUBSETEQ;
+    if (op_string == "set_disjoint") return ExprOperator::SET_DISJOINT;
+    if (op_string == "set_cardinality") return ExprOperator::SET_CARDINALITY;
+    if (op_string == "set_add") return ExprOperator::SET_ADD;
+    if (op_string == "set_remove") return ExprOperator::SET_REMOVE;
+    if (op_string == "set_union") return ExprOperator::SET_UNION;
+    if (op_string == "set_intersect") return ExprOperator::SET_INTERSECT;
+    if (op_string == "set_difference") return ExprOperator::SET_DIFFERENCE;
+    if (op_string == "set_constant") return ExprOperator::SET_CONSTANT;
 
     return ExprOperator::UNKNOWN;
 }
@@ -134,6 +163,16 @@ inline std::string expr_operator_to_string(ExprOperator op) {
         case ExprOperator::EXISTS: return "exists";
         case ExprOperator::COUNT: return "count";
         case ExprOperator::ARRAY_INDEX: return "array_index";
+        case ExprOperator::SET_MEMBER: return "set_member";
+        case ExprOperator::SET_SUBSETEQ: return "set_subseteq";
+        case ExprOperator::SET_DISJOINT: return "set_disjoint";
+        case ExprOperator::SET_CARDINALITY: return "set_cardinality";
+        case ExprOperator::SET_ADD: return "set_add";
+        case ExprOperator::SET_REMOVE: return "set_remove";
+        case ExprOperator::SET_UNION: return "set_union";
+        case ExprOperator::SET_INTERSECT: return "set_intersect";
+        case ExprOperator::SET_DIFFERENCE: return "set_difference";
+        case ExprOperator::SET_CONSTANT: return "set_constant";
         default: return "";
     }
 }
@@ -163,6 +202,16 @@ inline bool is_logical_operator(ExprOperator op) {
     return op == ExprOperator::AND || op == ExprOperator::OR ||
            op == ExprOperator::NOT || op == ExprOperator::IMPLIES ||
            op == ExprOperator::IFF;
+}
+
+/// A set operator (UP's SET_* family). All are lowered away by SetLoweringPass
+/// before grounding; used by the pass and its no-survivor backstop.
+inline bool is_set_operator(ExprOperator op) {
+    return op == ExprOperator::SET_MEMBER || op == ExprOperator::SET_SUBSETEQ ||
+           op == ExprOperator::SET_DISJOINT || op == ExprOperator::SET_CARDINALITY ||
+           op == ExprOperator::SET_ADD || op == ExprOperator::SET_REMOVE ||
+           op == ExprOperator::SET_UNION || op == ExprOperator::SET_INTERSECT ||
+           op == ExprOperator::SET_DIFFERENCE || op == ExprOperator::SET_CONSTANT;
 }
 
 inline bool is_standard_operator(const std::string& op) {

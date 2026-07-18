@@ -1,4 +1,5 @@
 #include "static_fluent_pass.hpp"
+#include "../problem/expr_builder.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
 #include "../util/stats.hpp"
@@ -111,10 +112,9 @@ static ExprID try_fold_comparison(ExprPool& pool, ExprOperator op,
 // Returns a simplified ExprID, or EXPR_NULL if no simplification possible.
 // Handles both full folding (all constant args) and partial folding
 // (e.g., AND(true, X) → X).
-static ExprID try_fold_boolean(ExprPool& pool, ExprOperator op,
+static ExprID try_fold_boolean(ExprPool& pool, ExprBuilder& builder, ExprOperator op,
                                 const std::vector<ExprID>& children, int type_id) {
     if (children.size() < 2) return EXPR_NULL;
-    ExprID head = children[0];
 
     if (op == ExprOperator::NOT && children.size() == 2) {
         if (pool.is_true_constant(children[1]))  return pool.intern_bool_constant(false);
@@ -132,16 +132,8 @@ static ExprID try_fold_boolean(ExprPool& pool, ExprOperator op,
         }
         if (kept.empty()) return pool.intern_bool_constant(true);
         if (kept.size() == 1) return kept[0];
-        if (kept.size() < children.size() - 1) {
-            // Build simplified AND with fewer arguments
-            ExprNode node;
-            node.kind = static_cast<int>(ExprKind::FUNCTION_APPLICATION);
-            node.op = static_cast<int>(ExprOperator::AND);
-            node.type_id = type_id;
-            node.children.push_back(head);
-            for (ExprID k : kept) node.children.push_back(k);
-            return pool.intern(std::move(node));
-        }
+        if (kept.size() < children.size() - 1)
+            return builder.make_app(ExprOperator::AND, kept, type_id);
         return EXPR_NULL;
     }
 
@@ -155,15 +147,8 @@ static ExprID try_fold_boolean(ExprPool& pool, ExprOperator op,
         }
         if (kept.empty()) return pool.intern_bool_constant(false);
         if (kept.size() == 1) return kept[0];
-        if (kept.size() < children.size() - 1) {
-            ExprNode node;
-            node.kind = static_cast<int>(ExprKind::FUNCTION_APPLICATION);
-            node.op = static_cast<int>(ExprOperator::OR);
-            node.type_id = type_id;
-            node.children.push_back(head);
-            for (ExprID k : kept) node.children.push_back(k);
-            return pool.intern(std::move(node));
-        }
+        if (kept.size() < children.size() - 1)
+            return builder.make_app(ExprOperator::OR, kept, type_id);
         return EXPR_NULL;
     }
 
@@ -180,7 +165,7 @@ static ExprID try_fold_boolean(ExprPool& pool, ExprOperator op,
 // Combined substitute + constant fold walker
 // ============================================================================
 
-static ExprID simplify_expr(ExprPool& pool, ExprID expr,
+static ExprID simplify_expr(ExprPool& pool, ExprBuilder& builder, ExprID expr,
                              const std::unordered_map<ExprID, ExprID>& static_values) {
     if (!expr.valid()) return expr;
 
@@ -199,7 +184,6 @@ static ExprID simplify_expr(ExprPool& pool, ExprID expr,
     int orig_kind = node_ref.kind;
     int orig_op = node_ref.op;
     int orig_type_id = node_ref.type_id;
-    auto orig_payload = node_ref.payload;
     // node_ref may be dangling after this point
 
     // Recurse on all children
@@ -207,7 +191,7 @@ static ExprID simplify_expr(ExprPool& pool, ExprID expr,
     std::vector<ExprID> new_children;
     new_children.reserve(orig_children.size());
     for (ExprID child : orig_children) {
-        ExprID nc = simplify_expr(pool, child, static_values);
+        ExprID nc = simplify_expr(pool, builder, child, static_values);
         new_children.push_back(nc);
         if (nc != child) any_changed = true;
     }
@@ -225,19 +209,15 @@ static ExprID simplify_expr(ExprPool& pool, ExprID expr,
             ExprID folded = try_fold_comparison(pool, op, new_children);
             if (folded.valid()) return folded;
         } else if (is_logical_operator(op)) {
-            ExprID folded = try_fold_boolean(pool, op, new_children, orig_type_id);
+            ExprID folded = try_fold_boolean(pool, builder, op, new_children, orig_type_id);
             if (folded.valid()) return folded;
         }
     }
 
-    // Intern the new node with substituted children
-    ExprNode new_node;
-    new_node.kind = orig_kind;
-    new_node.op = orig_op;
-    new_node.type_id = orig_type_id;
-    new_node.children = std::move(new_children);
-    new_node.payload = std::move(orig_payload);
-    return pool.intern(std::move(new_node));
+    // Rebuild the node with substituted children (kind/op/type_id/payload
+    // preserved from the original — read fresh, as the content at `expr` is
+    // stable across the appends above).
+    return builder.reintern(expr, std::move(new_children));
 }
 
 // ============================================================================
@@ -248,6 +228,7 @@ void StaticFluentPass::apply(PreprocessedProblem& result) const {
     ScopedTimer timer;  // measuring-only; the pipeline records the stats key
     const auto& problem = result.problem;
     ExprPool& pool = *problem.pool_ptr();
+    ExprBuilder builder(pool);
 
     // Step 1: Identify fluents modified by any effect
     std::unordered_set<ExprID> modified_fluents;
@@ -289,7 +270,7 @@ void StaticFluentPass::apply(PreprocessedProblem& result) const {
 
         // Simplify precondition
         if (new_action.has_precondition()) {
-            ExprID new_pre = simplify_expr(pool, action.precondition_id(), static_values);
+            ExprID new_pre = simplify_expr(pool, builder, action.precondition_id(), static_values);
             if (new_pre != action.precondition_id()) {
                 new_action.set_precondition_id(new_pre);
             }
@@ -298,9 +279,9 @@ void StaticFluentPass::apply(PreprocessedProblem& result) const {
         // Simplify effects
         for (auto& effect : new_action.mutable_effects()) {
             const auto& ee = effect.effect_expression();
-            ExprID new_value = simplify_expr(pool, ee.value_id(), static_values);
+            ExprID new_value = simplify_expr(pool, builder, ee.value_id(), static_values);
             ExprID new_cond = ee.is_conditional()
-                ? simplify_expr(pool, ee.condition_id(), static_values)
+                ? simplify_expr(pool, builder, ee.condition_id(), static_values)
                 : ee.condition_id();
 
             if (new_value != ee.value_id() || new_cond != ee.condition_id()) {
@@ -311,7 +292,7 @@ void StaticFluentPass::apply(PreprocessedProblem& result) const {
 
         // Simplify cost expression
         if (new_action.has_explicit_cost()) {
-            ExprID new_cost = simplify_expr(pool, action.cost_id(), static_values);
+            ExprID new_cost = simplify_expr(pool, builder, action.cost_id(), static_values);
             if (new_cost != action.cost_id()) {
                 new_action.set_cost_id(new_cost);
             }
@@ -325,7 +306,7 @@ void StaticFluentPass::apply(PreprocessedProblem& result) const {
     new_goals.reserve(problem.goals().size());
     for (const auto& goal : problem.goals()) {
         Goal new_goal = goal;
-        ExprID new_gid = simplify_expr(pool, goal.goal_id(), static_values);
+        ExprID new_gid = simplify_expr(pool, builder, goal.goal_id(), static_values);
         if (new_gid != goal.goal_id()) {
             new_goal.set_goal_id(new_gid);
         }
@@ -346,7 +327,7 @@ void StaticFluentPass::apply(PreprocessedProblem& result) const {
     std::vector<ExprID> new_invariants;
     new_invariants.reserve(problem.state_invariants().size());
     for (ExprID inv : problem.state_invariants()) {
-        new_invariants.push_back(simplify_expr(pool, inv, static_values));
+        new_invariants.push_back(simplify_expr(pool, builder, inv, static_values));
     }
 
     // Step 7: Build new problem (re-collects grounded fluents automatically)

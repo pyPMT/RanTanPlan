@@ -225,6 +225,11 @@ NB_MODULE(_rantanplan, m) {
         .def_rw("lower_bound", &ir::ParameterIR::lower_bound)
         .def_rw("upper_bound", &ir::ParameterIR::upper_bound);
 
+    nb::enum_<ir::FluentShapeIR>(m, "FluentShape")
+        .value("SCALAR", ir::FluentShapeIR::SCALAR)
+        .value("ARRAY", ir::FluentShapeIR::ARRAY)
+        .value("SET", ir::FluentShapeIR::SET);
+
     nb::class_<ir::FluentIR>(m, "FluentIR")
         .def(nb::init<>())
         .def_rw("name", &ir::FluentIR::name)
@@ -235,6 +240,7 @@ NB_MODULE(_rantanplan, m) {
         .def_rw("element_type", &ir::FluentIR::element_type)
         .def_rw("array_sizes", &ir::FluentIR::array_sizes)
         .def_rw("undefined_positions", &ir::FluentIR::undefined_positions)
+        .def_rw("shape", &ir::FluentIR::shape)
         .def_rw("default_value", &ir::FluentIR::default_value);
 
     nb::class_<ir::EffectIR>(m, "EffectIR")

@@ -43,6 +43,9 @@ class Problem {
     // Allow the grounder's array lowering to mint cell fluents and replace
     // actions/goals/initial-state when compiling array accesses away.
     friend Problem lower_arrays(const Problem& problem);
+    // Allow set lowering to mint boolean membership fluents and replace
+    // actions/goals/initial-state when compiling set operations away.
+    friend Problem lower_sets(const Problem& problem);
 
 public:
     // Constructors
@@ -214,6 +217,13 @@ public:
             return &(*types_)[node.type_id];
         }
         return nullptr;
+    }
+
+    /// The index of `type` within types() — its `ExprNode::type_id`, the inverse
+    /// of type_for_id — or -1 for nullptr. Precondition: a non-null `type` points
+    /// into this problem's types() vector (as every resolved Type* here does).
+    int type_id_of(const Type* type) const {
+        return type ? static_cast<int>(type - &(*types_)[0]) : -1;
     }
 
     /// Check if an ExprID is an object constant (CONSTANT kind, string payload, object type).

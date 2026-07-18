@@ -80,6 +80,57 @@ outside the initial state are rejected in Phase 1.
 > will then have to interleave with the reachability fixpoint below rather
 > than run entirely ahead of it.
 
+## Set lowering (before grounding)
+
+Other problems carry **set fluents** — set-valued state variables from the
+high-level language (again no PDDL surface syntax; they arrive through Unified
+Planning's `SET_FLUENTS` kind). A fluent `pin : set{Package}` holds a subset of
+the packages; operations are the structured `SET_*` family — `member(x, S)`,
+`subseteq`/`disjoint`, `cardinality(S)`, and the set-valued `add`/`remove`/
+`union`/`intersect`/`difference`/constant — and they compose arbitrarily
+(`cardinality(union(pin(t1), pin(t2)))`).
+
+As with arrays, RantanPlan does **not** carry set structure into the encoder.
+`SetLoweringPass` (`passes/set_lowering_pass.{hpp,cpp}`) runs adjacent to array
+lowering, before the grounder, and compiles sets into **boolean membership
+cells** using the *characteristic-function* encoding:
+
+- Each set fluent `s(params): set{T}` becomes a boolean fluent
+  `s(?e: T, params): bool` — the element type prepended to the signature — and
+  the set fluent schema is dropped. The grounder then grounds the new element
+  parameter like any object-parameterised predicate, so a set over `n` packages
+  becomes `n` ordinary membership atoms per instance. (Membership-cell and
+  object-constant minting order is load-bearing — the ExprPool-ordering pitfall
+  applies, just as for array cells.)
+- Every operation lowers through **one compositional membership formula**
+  `⟦S⟧_e` ("is element `e` in set expression `S`?"): a fluent → the cell atom
+  `s(e, args)`; `add(x, S)` → `⟦S⟧_e ∨ (e = x)`; `remove` → `∧ ¬(e = x)`;
+  `union`/`intersect`/`difference` → `∨`/`∧`/`∧¬` of the operands. `member(x, S)`
+  in a condition is `⟦S⟧_x`; `subseteq`/`disjoint`/set-equality expand to a
+  conjunction over the element domain; **`cardinality(S)`** becomes the existing
+  `COUNT` operator over the membership formulas — so `|S| < 2` is a pseudo-
+  boolean at-most-1 and `|S1| < |S2|` a sum comparison, with no helper state
+  fluent to maintain.
+- **Effects** split by RHS shape: an add/remove *chain onto the target set
+  itself* (`s := add(x, s)`) lowers to a single-cell write `s(x, args) := true`
+  (no enumeration — this keeps `load`-style actions at cell granularity for the
+  frame and interference); a *monotone union onto the target* (`s := s ∪ Q`) to
+  one per-element conditional add `⟦Q⟧_e → s(e, args) := true`; anything else
+  (intersect/difference, a third-set union, `s := {}`, `s := {c}`) to one
+  expression-valued boolean assign `s(e, args) := ⟦S⟧_e` per element. An initial
+  `SET_CONSTANT` value becomes the true membership cells, CWA supplying the
+  false rest.
+
+The pass ends by asserting no `SET_*` node (nor set-typed state variable)
+survives. **Why this needs no downstream changes:** membership cells are
+ordinary boolean grounded fluents and the effects are the same shapes the array
+work already taught every pass to handle, so mutexes, invariants, the RPG,
+achievers, and both interference analyses digest them unchanged — and
+exists-step parallelism falls out at *cell* granularity (two `add`s of different
+elements co-fire; an `add` and a `remove` of the same element correctly
+serialise). User-type elements only in v1; int and nested-set elements, and
+set-typed action parameters, are rejected at conversion.
+
 ## Why not just enumerate every combination
 
 The naive approach — for each action schema, try every combination of

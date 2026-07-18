@@ -65,6 +65,11 @@ struct ParameterIR {
     std::optional<int64_t> upper_bound;
 };
 
+/// A fluent's value shape — the single positive discriminator the loader
+/// dispatches on (mirrors the C++ `TypeKind`). SCALAR uses `value_type`; ARRAY
+/// uses `element_type` + `array_sizes`; SET uses `element_type`.
+enum class FluentShapeIR : int { SCALAR = 0, ARRAY = 1, SET = 2 };
+
 struct FluentIR {
     std::string name;
     std::string value_type;
@@ -75,14 +80,22 @@ struct FluentIR {
     /// mints cells of that element type), same as scalar bounded fluents.
     std::optional<double> lower_bound;
     std::optional<double> upper_bound;
-    /// Array shape (from an ArrayType value, e.g. `array[3, integer[0, 15]]`);
-    /// empty `array_sizes` means this is not an array fluent. `element_type` is
-    /// the leaf scalar type string ("up:integer", ...); `array_sizes` is the
-    /// per-dimension size list; `undefined_positions` are full coordinate
-    /// tuples the grounder must never mint as cells.
+    /// Structured-value data, interpreted per `shape`. For an ARRAY fluent (from
+    /// an ArrayType value, e.g. `array[3, integer[0, 15]]`): `element_type` is
+    /// the leaf scalar type string ("up:integer", …), `array_sizes` the
+    /// per-dimension size list, `undefined_positions` full coordinate tuples the
+    /// grounder must never mint as cells. For a SET fluent (from a SetType
+    /// value): `element_type` is the set's element type and `array_sizes` is
+    /// empty. For a SCALAR fluent both are empty and `value_type` is used.
     std::string element_type;
     std::vector<int64_t> array_sizes;
     std::vector<std::vector<int64_t>> undefined_positions;
+    /// The value shape (scalar / array / set). ARRAY and SET are mutually
+    /// exclusive (set-of-array / array-of-set are rejected at conversion); the
+    /// loader resolves the value type as `set{element_type}` for SET, and the
+    /// SetLoweringPass rewrites set fluents into boolean membership cells before
+    /// grounding.
+    FluentShapeIR shape = FluentShapeIR::SCALAR;
     /// Declared default_initial_value (UP `fluents_defaults`), as an index into
     /// ProblemIR::nodes pointing to a CONSTANT node; unset when the fluent
     /// declares no default. The CWA pass treats it as authoritative for cells

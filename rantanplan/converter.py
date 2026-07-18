@@ -53,6 +53,15 @@ _OPERATOR_NAMES = {
     OperatorKind.EXISTS: "up:exists",
     OperatorKind.FORALL: "up:forall",
     OperatorKind.ARRAY_INDEX: "up:array_index",
+    OperatorKind.SET_MEMBER: "up:set_member",
+    OperatorKind.SET_SUBSETEQ: "up:set_subseteq",
+    OperatorKind.SET_DISJOINT: "up:set_disjoint",
+    OperatorKind.SET_CARDINALITY: "up:set_cardinality",
+    OperatorKind.SET_ADD: "up:set_add",
+    OperatorKind.SET_REMOVE: "up:set_remove",
+    OperatorKind.SET_UNION: "up:set_union",
+    OperatorKind.SET_INTERSECT: "up:set_intersect",
+    OperatorKind.SET_DIFFERENCE: "up:set_difference",
 }
 
 
@@ -78,6 +87,14 @@ def _up_type_str(tpe) -> str:
         # carries this string -- C++ derives the fluent's value type from
         # element_type + array_sizes.
         return f"array[{tpe.size}, {_up_type_str(tpe.elements_type)}]"
+    if tpe.is_set_type():
+        # Set type name from the element type. Needed as the type-reference key
+        # for set-fluent *expression* head symbols (a bare FLUENT_EXP referring
+        # to a set fluent); it must match the name the C++ loader generates
+        # (ir_io.cpp set_type_name), and a mismatch surfaces as a hard "could not
+        # find type" at load. The fluent *declaration* does not carry this string
+        # -- C++ derives the value type from element_type + shape=SET.
+        return f"set{{{_up_type_str(tpe.elements_type)}}}"
     return str(tpe.name)
 
 
@@ -229,6 +246,33 @@ class _FNodeToIR:
                     f"constants, parameters, quantified variables, and "
                     f"arithmetic over them.")
 
+        if expression.node_type == OperatorKind.SET_CONSTANT:
+            # A set literal `{c1..ck}` (empty for `{}`). Its elements live in the
+            # payload (an ordered tuple) -- `args` is empty and `constant_value()`
+            # is an *unordered* set -- so they must be walked in payload order for
+            # deterministic node ids (pitfall #7). Emitted as an ordinary
+            # up:set_constant application (element-constant children, no payload);
+            # the SetLoweringPass rewrites it away. Not in _OPERATOR_NAMES because
+            # the generic path reads `args`, which is empty here.
+            head = self._head(_FUNCTION_SYMBOL, "up:set_constant", "up:operator")
+            children = [head] + [self.walk(e) for e in expression._content.payload]
+            return self._add(_FUNCTION_APPLICATION, "", children=children)
+
+        # Scope guard: the element position of member/add/remove (arg 0) must not
+        # read a fluent -- `member(loc_of(t), S)` would make the element (and thus
+        # the lowered cell coordinate) state-dependent, which `⟦·⟧_e` cannot
+        # enumerate. Elements may only be constants, parameters, and quantified
+        # variables (the same line arrays drew for indices).
+        if expression.node_type in (OperatorKind.SET_MEMBER,
+                                    OperatorKind.SET_ADD,
+                                    OperatorKind.SET_REMOVE):
+            element = expression.arg(0)
+            if _index_contains_fluent(element):
+                raise UPException(
+                    f"State-dependent set elements are not supported: element "
+                    f"'{element}' reads a fluent. Set elements may only use "
+                    f"constants, parameters, and quantified variables.")
+
         # Whole-array equality against a literal (an ARRAY_CONSTANT operand,
         # e.g. n_puzzle's `Equals(puzzle, goal_blocks)` goal). Expand it
         # element-wise into a conjunction of scalar per-cell equalities, which
@@ -290,6 +334,11 @@ class _FNodeToIR:
 def _convert_parameters(parameters):
     result = []
     for param in parameters:
+        if param.type.is_set_type():
+            raise UPException(
+                f"Set-typed parameter '{param.name}' is not supported "
+                f"(a set-typed action/fluent parameter would enumerate 2^|D| "
+                f"instances).")
         ir_param = _ir.ParameterIR()
         ir_param.name = param.name
         ir_param.type_name = _up_type_str(param.type)
@@ -382,6 +431,11 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
             # array_sizes (the single renderer -- ir_io.cpp). value_type is left
             # empty, so there is no second, hand-rendered string to keep in sync.
             element_type, sizes, leaf = _array_shape(ftype)
+            if leaf.is_set_type():
+                raise UPException(
+                    f"Array fluent '{fluent.name}' has set-typed elements; "
+                    f"set/array mixing is not supported.")
+            ir_fluent.shape = _ir.FluentShape.ARRAY
             ir_fluent.element_type = element_type
             ir_fluent.array_sizes = sizes
             # Element bounds ride on lower/upper_bound (same convention as scalar
@@ -394,6 +448,19 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
             if fluent.undefined_positions:
                 ir_fluent.undefined_positions = [
                     [int(c) for c in pos] for pos in fluent.undefined_positions]
+        elif ftype.is_set_type():
+            # A set fluent sends only its structured shape (shape=SET + element
+            # type); the C++ loader generates the `set{T}` value type and the
+            # SetLoweringPass rewrites the fluent into boolean membership cells.
+            # value_type is left empty (no second hand-rendered string to sync).
+            elem = ftype.elements_type
+            if not elem.is_user_type():
+                raise UPException(
+                    f"Set fluent '{fluent.name}' has element type '{elem}': only "
+                    f"user-type set elements are supported (int elements, nested "
+                    f"set types, and set/array mixing are out of scope for v1).")
+            ir_fluent.shape = _ir.FluentShape.SET
+            ir_fluent.element_type = _up_type_str(elem)
         else:
             ir_fluent.value_type = _up_type_str(ftype)
             if ftype.is_int_type() or ftype.is_real_type():
@@ -560,6 +627,17 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
             # invert -- an object fluent must hold some object, and the default
             # supplies it for positions the initial state leaves unset.
             ir_fluent.default_value = walker.walk(default)
+        elif leaf.is_set_type():
+            # An empty-set default is already the closed-world default (every
+            # membership cell false), so it needs no materialisation and carries
+            # no default_value. A non-empty set default would need per-cell trues
+            # and is rejected in v1 (mirrors the boolean-true rejection).
+            if default.node_type == OperatorKind.SET_CONSTANT and \
+                    len(default._content.payload) > 0:
+                raise UPException(
+                    f"Set fluent '{fluent.name}' declares a non-empty "
+                    f"default_initial_value, which is not supported (only the "
+                    f"empty-set default, i.e. the closed-world default, is).")
 
     # Vector fields copy on assignment, so these land after all mutation
     out.fluents = fluents

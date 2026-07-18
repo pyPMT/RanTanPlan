@@ -32,6 +32,19 @@ void MutexAnalysisPass::apply(PreprocessedProblem& result) const {
     std::vector<const MutexCandidate*> tier1_failed;
     for (const auto& candidate : candidates) {
         if (syntactic_mutex_check(candidate, problem)) {
+            // An at-most-one invariant must also hold in the initial state.
+            // syntactic_mutex_check accepts a delete-only predicate (actions can
+            // only shrink its true-set), but such a predicate may still have >=2
+            // members true initially (e.g. the union-then-clear pattern: a set
+            // membership predicate initialised with several elements, cleared by
+            // an action). That invariant is violated at t=0, so it is unsound —
+            // reject the candidate. (The h² path below is already sound here: the
+            // members are co-reachable at RPG layer 0, so all_pairs_mutex fails.)
+            int init_true = 0;
+            for (ExprID m : candidate.members)
+                if (initially_true.count(m)) ++init_true;
+            if (init_true > 1) continue;
+
             MutexConstraint inv;
             inv.members = candidate.members;
             inv.label = candidate.predicate + "(" + candidate.entity + ", ...)";

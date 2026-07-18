@@ -175,6 +175,14 @@ static std::string array_value_type_name(const ir::FluentIR& ir_fluent) {
     return element;
 }
 
+/// The single renderer for a set type's table name, from its element type name.
+/// As with arrays, C++ is the sole source of truth: the converter sends only
+/// the structured shape (element_type + shape=SET), and both set-type registration
+/// and per-fluent value-type resolution go through this one function.
+static std::string set_type_name(const std::string& element) {
+    return "set{" + element + "}";
+}
+
 /// One first-class array type per dimension. Array types are entries in the
 /// problem's type table, named via array_type_name and nested innermost-first.
 /// Registration is two-phase because the table is a `std::vector<Type>`: every
@@ -196,7 +204,7 @@ static std::vector<ArrayTypeEntry> register_array_type_names(
     std::vector<ArrayTypeEntry> array_types;
     std::unordered_set<std::string> seen;
     for (const auto& ir_fluent : ir_problem.fluents) {
-        if (ir_fluent.array_sizes.empty()) continue;
+        if (ir_fluent.shape != ir::FluentShapeIR::ARRAY) continue;
         std::string element = ir_fluent.element_type;
         for (auto it = ir_fluent.array_sizes.rbegin();
              it != ir_fluent.array_sizes.rend(); ++it) {
@@ -224,6 +232,43 @@ static void link_array_element_types(
     }
 }
 
+/// A registered set type, kept by *index* (indices survive vector growth,
+/// pointers do not) plus its element name to resolve against the map in phase 2.
+struct SetTypeEntry {
+    size_t type_index;
+    std::string element_name;
+};
+
+/// Phase 1: emplace one `set{<element>}` type per distinct set fluent's element
+/// type, deduplicated by name. Sets have no nesting (nested set types are
+/// rejected at conversion), so this is the flat analogue of
+/// register_array_type_names. Must run before the name→pointer map is built.
+static std::vector<SetTypeEntry> register_set_type_names(
+        std::vector<Type>& types, const ir::ProblemIR& ir_problem) {
+    std::vector<SetTypeEntry> set_types;
+    std::unordered_set<std::string> seen;
+    for (const auto& ir_fluent : ir_problem.fluents) {
+        if (ir_fluent.shape != ir::FluentShapeIR::SET) continue;
+        std::string tname = set_type_name(ir_fluent.element_type);
+        if (seen.insert(tname).second) {
+            types.emplace_back(tname);
+            set_types.push_back({types.size() - 1, ir_fluent.element_type});
+        }
+    }
+    return set_types;
+}
+
+/// Phase 2: link each registered set type to its element type, once the
+/// name→pointer map is stable.
+static void link_set_element_types(
+        std::vector<Type>& types,
+        const std::unordered_map<std::string, const Type*>& name_to_ptr,
+        const std::vector<SetTypeEntry>& set_types) {
+    for (const auto& entry : set_types) {
+        types[entry.type_index].set_set(name_to_ptr.at(entry.element_name));
+    }
+}
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -248,11 +293,18 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
     // those pointers are stable — see register_array_type_names / link_...
     std::vector<ArrayTypeEntry> array_types =
         register_array_type_names(*problem.types_, ir_problem);
+    // Set types are likewise first-class table entries, one `set{<element>}` per
+    // distinct set fluent. Registered in the same before-the-map window as array
+    // types so vector growth never dangles a Type*, and linked in the same
+    // post-map phase (see register_set_type_names / link_set_element_types).
+    std::vector<SetTypeEntry> set_types =
+        register_set_type_names(*problem.types_, ir_problem);
     for (auto& type : *problem.types_) {
         problem.type_name_to_ptr_[type.name()] = &type;
     }
     problem.resolve_type_hierarchy();
     link_array_element_types(*problem.types_, problem.type_name_to_ptr_, array_types);
+    link_set_element_types(*problem.types_, problem.type_name_to_ptr_, set_types);
 
     IRLoadContext ctx{ir_problem, *problem.types_, problem.type_name_to_ptr_,
                       *problem.pool_, {}};
@@ -274,12 +326,14 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
             const Type* param_type = ctx.find_type(ir_param.type_name);
             params.emplace_back(ir_param.name, param_type);
         }
-        // An array fluent carries no value_type string; its type is the
-        // generated (registered) array type name derived from its structured
-        // shape. Scalar fluents resolve by their value_type string as before.
-        const std::string value_type_name = ir_fluent.array_sizes.empty()
-            ? ir_fluent.value_type
-            : array_value_type_name(ir_fluent);
+        // Structured fluents (array / set) carry no value_type string; their
+        // type is the generated (registered) type name derived from the
+        // structured shape. The loader dispatches on the single `shape`
+        // discriminator (mutually-exclusive kinds — see FluentShapeIR).
+        const std::string value_type_name =
+            ir_fluent.shape == ir::FluentShapeIR::ARRAY ? array_value_type_name(ir_fluent)
+            : ir_fluent.shape == ir::FluentShapeIR::SET ? set_type_name(ir_fluent.element_type)
+            :                                             ir_fluent.value_type;
         const Type* value_type = ctx.find_type(value_type_name);
         if (!value_type) {
             Logger::instance().error("Could not find type '" + value_type_name +
