@@ -52,6 +52,7 @@ _OPERATOR_NAMES = {
     OperatorKind.COUNT: "up:count",
     OperatorKind.EXISTS: "up:exists",
     OperatorKind.FORALL: "up:forall",
+    OperatorKind.ARRAY_INDEX: "up:array_index",
 }
 
 
@@ -67,7 +68,41 @@ def _up_type_str(tpe) -> str:
         return "up:integer"
     if tpe.is_real_type():
         return "up:real"
+    if tpe.is_array_type():
+        # Array type name, constructed from the nested structure (size +
+        # element). Needed as the type-reference key for array-fluent
+        # *expression* head symbols (a bare FLUENT_EXP inside ARRAY_INDEX); it
+        # must match the name the C++ loader generates from the same structured
+        # shape (ir_io.cpp array_type_name), and a mismatch surfaces as a hard
+        # "could not find type" at load. The fluent *declaration* no longer
+        # carries this string -- C++ derives the fluent's value type from
+        # element_type + array_sizes.
+        return f"array[{tpe.size}, {_up_type_str(tpe.elements_type)}]"
     return str(tpe.name)
+
+
+def _array_shape(tpe):
+    """(element_type_str, [per-dim sizes], leaf_type) for an ArrayType.
+
+    Descends nested ArrayTypes: array[2, array[3, integer[0,5]]] ->
+    ("up:integer", [2, 3], integer[0,5])."""
+    sizes = []
+    leaf = tpe
+    while leaf.is_array_type():
+        sizes.append(int(leaf.size))
+        leaf = leaf.elements_type
+    return _up_type_str(leaf), sizes, leaf
+
+
+def _index_contains_fluent(node) -> bool:
+    """True if an array-index expression reads a fluent (state variable).
+
+    Scope guard (docs/native-arrays-plan.md): array indices must be built from
+    constants, parameters, quantified variables, and arithmetic over them --
+    never fluents. `a[f]` / `a[b[i]]` would make the index state-dependent."""
+    if node.is_fluent_exp():
+        return True
+    return any(_index_contains_fluent(arg) for arg in node.args)
 
 
 class _FNodeToIR:
@@ -180,7 +215,37 @@ class _FNodeToIR:
             children = [head] + [self.walk(arg) for arg in expression.args]
             return self._add(_STATE_VARIABLE, fluent_type, children=children)
 
-        # Operator application (and/or/not/implies/iff, arithmetic, relations)
+        if expression.node_type == OperatorKind.ARRAY_CONSTANT:
+            raise UPException(
+                "Array constants outside the initial state are not supported yet.")
+        if expression.is_array_index():
+            # arg(0) is the array (a fluent / nested access); arg(1) is the index,
+            # which must not depend on state (see _index_contains_fluent).
+            index_expr = expression.arg(1)
+            if _index_contains_fluent(index_expr):
+                raise UPException(
+                    f"State-dependent array indices are not supported: index "
+                    f"'{index_expr}' reads a fluent. Array indices may only use "
+                    f"constants, parameters, quantified variables, and "
+                    f"arithmetic over them.")
+
+        # Whole-array equality against a literal (an ARRAY_CONSTANT operand,
+        # e.g. n_puzzle's `Equals(puzzle, goal_blocks)` goal). Expand it
+        # element-wise into a conjunction of scalar per-cell equalities, which
+        # the constant-index array lowering already handles. Handled only when
+        # exactly one side is the literal (the other is the array term to index).
+        if expression.is_equals():
+            a, b = expression.arg(0), expression.arg(1)
+            a_arr, b_arr = a.is_array_constant(), b.is_array_constant()
+            if a_arr != b_arr:
+                em = expression.environment.expression_manager
+                term, const = (b, a) if a_arr else (a, b)
+                conjuncts = [em.Equals(t, v)
+                             for t, v in _array_literal_cells(em, term, const)]
+                return self.walk(em.And(*conjuncts))
+
+        # Operator application (and/or/not/implies/iff, arithmetic, relations,
+        # array_index)
         operator_name = _OPERATOR_NAMES.get(expression.node_type)
         if operator_name is None:
             raise UPException(f"Unsupported operator: {expression.node_type}")
@@ -207,13 +272,19 @@ class _FNodeToIR:
         return self._head(_VARIABLE, variable.name, _up_type_str(variable.type))
 
     def _bound_node(self, bound):
-        """An int-variable bound: an int constant or a reference to an int
-        parameter (the raw IntVariable._initial / _last value)."""
+        """An int-variable bound (the raw IntVariable._initial / _last value):
+        an int constant, an int parameter, or an arithmetic expression over
+        them (e.g. `lc - 1`)."""
         if isinstance(bound, bool):
             raise UPException(f"Unexpected boolean range bound: {bound}")
         if isinstance(bound, int):
             return self._add(_CONSTANT, "up:integer", int_value=bound)
-        return self._add(_PARAMETER, _up_type_str(bound.type), symbol=bound.name)
+        if isinstance(bound, model.Parameter):
+            return self._add(_PARAMETER, _up_type_str(bound.type), symbol=bound.name)
+        # An arithmetic bound over parameters/constants arrives as an FNode.
+        # Walk it into an expression tree; C++ int-parameter instantiation
+        # substitutes the parameters and eval_bound folds it to a constant.
+        return self.walk(bound)
 
 
 def _convert_parameters(parameters):
@@ -233,6 +304,50 @@ def _convert_parameters(parameters):
                 ir_param.upper_bound = int(ptype.upper_bound)
         result.append(ir_param)
     return result
+
+
+def _array_literal_cells(expr_manager, term, array_const):
+    """Yield (indexed_term, scalar_element) for every leaf of an array constant.
+
+    Pairs each leaf of a (possibly nested) ARRAY_CONSTANT with the corresponding
+    constant-index ARRAY_INDEX access into `term`, in row-major order. Used to
+    expand a whole-array literal appearing in a goal/precondition equality or an
+    assignment effect into per-cell scalar operations (the same shape the C++
+    array lowering already handles). Unlike `_emit_array_cells` there is no
+    undefined-position handling: a literal in an expression is fully defined."""
+    for i, element in enumerate(array_const.constant_value()):
+        cell_term = expr_manager.ArrayIndex(term, expr_manager.Int(i))
+        if element.is_array_constant():
+            yield from _array_literal_cells(expr_manager, cell_term, element)
+        else:
+            yield cell_term, element
+
+
+def _emit_array_cells(walker, expr_manager, array_expr, array_const,
+                      prefix, undefined, out):
+    """Normalise a whole-array initial value into one per-cell AssignmentIR.
+
+    Recurses through a (possibly nested) ARRAY_CONSTANT; for each defined leaf
+    cell it emits an assignment whose fluent target is ARRAY_INDEX(...) built
+    with constant indices (walked through the ordinary operator path, so the
+    up:array_index head is interned like any other) and whose value is the
+    scalar element. Positions in `undefined` (full coordinate tuples) are
+    skipped -- their cells are never assigned."""
+    for i, element in enumerate(array_const.constant_value()):
+        coord = prefix + (i,)
+        if element.is_array_constant():
+            _emit_array_cells(walker, expr_manager, array_expr, element,
+                              coord, undefined, out)
+            continue
+        if coord in undefined:
+            continue
+        index_expr = array_expr
+        for c in coord:
+            index_expr = expr_manager.ArrayIndex(index_expr, expr_manager.Int(c))
+        ir_assignment = _ir.AssignmentIR()
+        ir_assignment.fluent = walker.walk(index_expr)
+        ir_assignment.value = walker.walk(element)
+        out.append(ir_assignment)
 
 
 def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
@@ -259,16 +374,37 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
     for fluent in problem.fluents:
         ir_fluent = _ir.FluentIR()
         ir_fluent.name = fluent.name
-        ir_fluent.value_type = _up_type_str(fluent.type)
         ir_fluent.parameters = _convert_parameters(fluent.signature)
         ftype = fluent.type
-        if ftype.is_int_type() or ftype.is_real_type():
-            if ftype.lower_bound is not None:
-                ir_fluent.lower_bound = float(ftype.lower_bound)
-            if ftype.upper_bound is not None:
-                ir_fluent.upper_bound = float(ftype.upper_bound)
+        if ftype.is_array_type():
+            # An array fluent sends only its structured shape; the C++ loader
+            # generates the canonical array type name from element_type +
+            # array_sizes (the single renderer -- ir_io.cpp). value_type is left
+            # empty, so there is no second, hand-rendered string to keep in sync.
+            element_type, sizes, leaf = _array_shape(ftype)
+            ir_fluent.element_type = element_type
+            ir_fluent.array_sizes = sizes
+            # Element bounds ride on lower/upper_bound (same convention as scalar
+            # bounded fluents); the grounder mints cells of the element type.
+            if leaf.is_int_type() or leaf.is_real_type():
+                if leaf.lower_bound is not None:
+                    ir_fluent.lower_bound = float(leaf.lower_bound)
+                if leaf.upper_bound is not None:
+                    ir_fluent.upper_bound = float(leaf.upper_bound)
+            if fluent.undefined_positions:
+                ir_fluent.undefined_positions = [
+                    [int(c) for c in pos] for pos in fluent.undefined_positions]
+        else:
+            ir_fluent.value_type = _up_type_str(ftype)
+            if ftype.is_int_type() or ftype.is_real_type():
+                if ftype.lower_bound is not None:
+                    ir_fluent.lower_bound = float(ftype.lower_bound)
+                if ftype.upper_bound is not None:
+                    ir_fluent.upper_bound = float(ftype.upper_bound)
         fluents.append(ir_fluent)
-    out.fluents = fluents
+    # out.fluents assigned last (with out.actions/out.nodes): nanobind copies
+    # vector fields on assignment, and the declared-defaults loop below still
+    # mutates these FluentIR entries.
 
     # --- Objects ---
     objects = []
@@ -280,6 +416,7 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
     out.objects = objects
 
     # --- Actions ---
+    expr_manager = problem.environment.expression_manager
     actions = []
     for action in problem.actions:
         if not isinstance(action, InstantaneousAction):
@@ -293,31 +430,70 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
 
         effects = []
         for effect in action.effects:
-            ir_effect = _ir.EffectIR()
             if effect.is_assignment():
-                ir_effect.kind = 0
+                kind = 0
             elif effect.is_increase():
-                ir_effect.kind = 1
+                kind = 1
             elif effect.is_decrease():
-                ir_effect.kind = 2
+                kind = 2
             else:
                 raise UPException(f"Unsupported effect: {effect}")
+
+            # Emit each forall variable as a *declaration* (an IntVariable carries
+            # its [initial, last] bounds as children) -- the same node a quantifier
+            # condition uses -- so the QuantifierExpansionPass enumerates a range
+            # variable's integer interval. A bare walk() reference would drop the
+            # bounds, leaving C++ to misread the range variable as an (object-less)
+            # object variable and silently expand the effect to nothing.
+            forall = [walker._variable_declaration(v) for v in effect.forall]
+            condition = walker.walk(effect.condition)
+
+            # Whole-array assignment from a literal (e.g. `puzzle := goal_blocks`):
+            # expand into one per-cell effect, sharing kind/condition/forall. The
+            # per-cell target is a constant-index access the array lowering
+            # handles like any scalar cell.
+            if effect.value.is_array_constant():
+                for cell_fluent, cell_value in _array_literal_cells(
+                        expr_manager, effect.fluent, effect.value):
+                    ir_effect = _ir.EffectIR()
+                    ir_effect.kind = kind
+                    ir_effect.fluent = walker.walk(cell_fluent)
+                    ir_effect.value = walker.walk(cell_value)
+                    ir_effect.condition = condition
+                    ir_effect.forall = forall
+                    effects.append(ir_effect)
+                continue
+
+            ir_effect = _ir.EffectIR()
+            ir_effect.kind = kind
             ir_effect.fluent = walker.walk(effect.fluent)
             ir_effect.value = walker.walk(effect.value)
-            ir_effect.condition = walker.walk(effect.condition)
-            auto_promote = effect.environment.expression_manager.auto_promote
-            ir_effect.forall = [walker.walk(v) for v in auto_promote(effect.forall)]
+            ir_effect.condition = condition
+            ir_effect.forall = forall
             effects.append(ir_effect)
         ir_action.effects = effects
         actions.append(ir_action)
 
     # --- Initial state ---
+    # Two shapes (see docs/native-arrays-plan.md): a whole-array ARRAY_CONSTANT
+    # value is normalised to one per-cell assignment per defined cell (avoids an
+    # ARRAY_CONSTANT node kind in the ExprPool); everything else (per-cell
+    # ARRAY_INDEX keys and scalar assignments) passes through unchanged.
     initial_state = []
     for state_var, value in problem.explicit_initial_values.items():
-        ir_assignment = _ir.AssignmentIR()
-        ir_assignment.fluent = walker.walk(state_var)
-        ir_assignment.value = walker.walk(value)
-        initial_state.append(ir_assignment)
+        if value.is_array_constant():
+            undefined = set()
+            if state_var.is_fluent_exp():
+                positions = state_var.fluent().undefined_positions
+                if positions:
+                    undefined = {tuple(p) for p in positions}
+            _emit_array_cells(walker, expr_manager, state_var, value, (),
+                              undefined, initial_state)
+        else:
+            ir_assignment = _ir.AssignmentIR()
+            ir_assignment.fluent = walker.walk(state_var)
+            ir_assignment.value = walker.walk(value)
+            initial_state.append(ir_assignment)
     out.initial_state = initial_state
 
     # --- Goals ---
@@ -351,7 +527,42 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
             break
     out.metric_kind = metric_kind
 
+    # --- Declared fluent defaults (UP fluents_defaults) ---
+    # Walked last, after every other expression, so existing node ordering --
+    # and thus plan determinism (pitfall #7) -- is unperturbed: a re-walked
+    # constant dedups to its existing id, a genuinely new one appends. A
+    # declared default is authoritative for instances/cells left uninitialised
+    # (the C++ CWA pass materialises it). UP stores an array's default as one
+    # scalar, so one value covers every cell. Only numeric and boolean-false
+    # defaults are carried: a boolean-true default would invert the closed-world
+    # assumption unsoundly (the grounder assumes false), and object fluents must
+    # be initialised explicitly (the CWA pass errors otherwise).
+    for fluent, ir_fluent in zip(problem.fluents, fluents):
+        default = problem.fluents_defaults.get(fluent)
+        if default is None:
+            continue
+        # _array_shape returns leaf == fluent.type for a scalar fluent, so this
+        # covers scalar and array defaults with one descent.
+        _, _, leaf = _array_shape(fluent.type)
+        if leaf.is_bool_type():
+            if default.is_bool_constant() and default.bool_constant_value():
+                raise UPException(
+                    f"Boolean fluent '{fluent.name}' declares "
+                    f"default_initial_value=True, which is not supported "
+                    f"(it inverts the closed-world assumption).")
+            ir_fluent.default_value = walker.walk(default)
+        elif leaf.is_int_type() or leaf.is_real_type():
+            ir_fluent.default_value = walker.walk(default)
+        elif leaf.is_user_type():
+            # Object (UserType) fluents: carry the declared default so the C++
+            # CWA pass materialises it for uninitialised instances/cells. Unlike
+            # a boolean-true default there is no closed-world assumption to
+            # invert -- an object fluent must hold some object, and the default
+            # supplies it for positions the initial state leaves unset.
+            ir_fluent.default_value = walker.walk(default)
+
     # Vector fields copy on assignment, so these land after all mutation
+    out.fluents = fluents
     out.actions = actions
     out.nodes = walker.nodes
     return out

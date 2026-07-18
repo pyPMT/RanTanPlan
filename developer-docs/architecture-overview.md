@@ -241,7 +241,7 @@ initial state: (at rob1 room-a)
      keeps `move(rob1, room-a, room-b)` (it's on a path to the goal) and
      would prune any ground action that can't reach the goal even
      transitively.
-   - **Invariant oracle**: discovers `(at rob1 room-a)` and
+   - **Mutex analysis**: discovers `(at rob1 room-a)` and
      `(at rob1 room-b)` are mutually exclusive (the robot is in exactly one
      room) and records it as a `MutexConstraint` — injected as an extra
      clause at every timestep, giving the SAT solver a fact it would
@@ -334,7 +334,7 @@ rantanplan -d pddl/small-test/zenotravel/domain.pddl \
 
 The bracketed log tags are the pipeline stages, in order: `[Grounding I1]`…
 (the reachability fixpoint, iteration by iteration), `[CWA]`,
-`[StaticFluent]`, `[RPG.Numeric L0]`… and `[ActionPruning]`, `[InvOracle]`
+`[StaticFluent]`, `[RPG.Numeric L0]`… and `[ActionPruning]`, `[MutexAnalysis]`
 (mutex discovery), `[ArithProfile]` (which SMT logic the problem gets) —
 everything up to there is `api::preprocess()`. Then `[Solving T3]`,
 `[Solving T4]`, … is `api::solve()` — and note it starts at T3, the lower

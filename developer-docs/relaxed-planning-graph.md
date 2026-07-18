@@ -164,7 +164,7 @@ flowchart TD
     A["Build NumericRelaxedPlanningGraph<br/>(true fixpoint) over current Problem"] --> B{goals reachable?}
     B -->|no| C[proven_unsolvable = true]
     B -->|yes| D["lower_bound = max(lower_bound, get_minimum_steps_lower_bound())"]
-    D --> E["get_state_variable_bounds() → tightened_bounds<br/>+ conservation-law discovery"]
+    D --> E["get_state_variable_bounds() → state-constraint bounds<br/>+ conservation-law discovery"]
     E --> F["get_removable_action_indices() → forward-prune RPG-unreachable actions"]
     F --> G["AchieversAnalysis::update()<br/>using action_first_layers / bounds"]
     G --> H{any action removed<br/>by goal-relevance?}
@@ -178,13 +178,14 @@ only to enable the action just removed), so each pruning iteration rebuilds
 the RPG from scratch over the shrunken problem and re-checks. The loop
 stops either when an iteration removes nothing (a real fixpoint) or after
 `goal_relevance_max_iterations` (default 10) as a safety cap. The RPG that
-survives to the end of the pass is stored on `PreprocessedProblem` as
-`fixpoint_rpg`, and its final layer's interval bounds are what
-`evaluate_interval()` uses to compute a lower bound on each action's
-state-dependent cost (SDAC) — see
+survives to the end of the pass stays local to it: its final layer's
+interval bounds are what `evaluate_interval()` uses to compute a lower
+bound on each action's state-dependent cost (SDAC), and its tightened
+bounds, conservation laws, and object-fluent domains are published as the
+encoder-ready `state_constraints` — see
 [`preprocessing-and-strategy.md`](preprocessing-and-strategy.md) for where
-`tightened_bounds`, `sdac_cost_lower_bounds`, and `fixpoint_rpg` fit into
-the rest of the `PreprocessedProblem` contract.
+`state_constraints` and `sdac_cost_lower_bounds` fit into the rest of the
+`PreprocessedProblem` contract.
 
 ## Try it
 

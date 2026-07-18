@@ -29,7 +29,6 @@ struct PreprocessorOptions {
     bool enable_cnf_normalization = true;  ///< CNF-normalize conditions after static folding
 
     // --- Action pruning (RPG + goal relevance) ---
-    bool rpg_enabled = true;         ///< Run NumericRPG (lower bound + reachability)
     bool rpg_action_removal = true;  ///< Prune RPG-unreachable actions
     bool goal_relevance = true;      ///< Backward-prune goal-irrelevant actions
     int goal_relevance_max_iterations = 10; ///< Fixpoint limit for the prune loop

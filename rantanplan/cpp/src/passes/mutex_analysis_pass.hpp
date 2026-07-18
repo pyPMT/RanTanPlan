@@ -1,22 +1,21 @@
 #pragma once
 
 #include "pass.hpp"
-#include "h2_mutex_checker.hpp"
-#include "../analysis/numeric_relaxed_planning_graph.hpp"
 #include <vector>
 #include <unordered_set>
 
 namespace rantanplan {
 
 // ============================================================================
-// InvariantOraclePass
+// MutexAnalysisPass
 // ============================================================================
 //
-// Discovers state constraints (properties that hold in every reachable state)
-// from structural analysis of the grounded problem. These are injected into
-// the SMT solver at every timestep to prune infeasible assignments.
-//
-// Three categories of constraints are produced:
+// Discovers mutex groups (at-most-one / exactly-one invariants over boolean
+// fluents) from structural analysis of the grounded problem. These are
+// injected into the SMT solver at every timestep to prune infeasible
+// assignments. The numeric bounds, conservation laws, and object-fluent
+// domains that share StateConstraints with them are published earlier, by
+// ActionPruningPass.
 //
 // --- Mutex Groups (Tier 1 Syntactic Check) ---
 //
@@ -47,53 +46,27 @@ namespace rantanplan {
 // Exactly-one groups give Z3 the equivalent of finite-domain variables
 // (z3::atmost + z3::atleast). This is the primary driver of solver speedups.
 //
-// --- RPG Fixpoint Bounds ---
-//
-// For each numeric fluent, the Numeric Relaxed Planning Graph computes an
-// over-approximate interval [lower, upper] of reachable values. When these
-// are finite, we inject them as `fluent >= lower` and `fluent <= upper` at
-// every timestep. This prevents the solver from exploring states with
-// out-of-bounds numeric values (e.g., negative fuel, stock exceeding supply).
-//
-// --- Precondition-Derived Lower Bounds ---
-//
-// For numeric fluents where RPG widening produces -inf as the lower bound,
-// we attempt to recover `f >= 0` by syntactic analysis. The check verifies
-// that every action preserving the bound:
-//
-//   - INCREASE effects on f: safe (f can only go up).
-//   - DECREASE effects on f by delta: safe if the action's precondition
-//     contains `f >= delta` (same expression, verified via ExprID equality).
-//   - ASSIGN effects on f to constant c >= 0: safe.
-//   - Anything else (conditional effects, unguarded decreases): reject.
-//
-// This captures the common "resource non-negativity" pattern: fuel, energy,
-// supply fluents guarded by preconditions like `fuel >= distance * burn_rate`.
+// Candidates that fail Tier 1 get a second chance via the h² pairwise
+// reachability fixpoint (H2MutexChecker), and h²-verified groups over
+// different predicates of the same entity are merged into larger
+// exactly-one groups.
 //
 // ============================================================================
 
 /**
- * @brief Preprocessing pass that discovers state constraints.
+ * @brief Preprocessing pass that discovers mutex groups (no SMT).
  *
- * Phase 1 (no SMT):
- *   - Injects RPG fixpoint bounds as permanent constraints.
- *   - Discovers mutex groups via Tier 1 syntactic check (delete-add pattern).
- *
- * Results are stored on PreprocessedProblem::state_constraints for the encoder
- * to inject at every timestep.
+ * Results are appended to PreprocessedProblem::state_constraints.mutexes for
+ * the encoder to inject at every timestep.
  */
-class InvariantOraclePass : public Pass {
+class MutexAnalysisPass : public Pass {
 public:
-    InvariantOraclePass() = default;
+    MutexAnalysisPass() = default;
 
     void apply(PreprocessedProblem& result) const override;
-    std::string name() const override { return "InvariantOracle"; }
+    std::string name() const override { return "mutex-analysis"; }
 
 private:
-    /// Collect domain constraints for object fluents from RPG value sets.
-    std::vector<DomainConstraint> collect_object_domains(
-        const NumericRelaxedPlanningGraph& rpg) const;
-
     /// Generate mutex candidates by grouping boolean fluent instances
     /// by predicate and argument position.
     struct MutexCandidate {

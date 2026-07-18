@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <iomanip>
 #include <set>
 #include <sstream>
@@ -17,7 +18,7 @@ namespace rantanplan {
 void ActionPruningPass::apply(PreprocessedProblem& result) const {
     bool need_goal_relevance = opts_->goal_relevance;
 
-    ScopedTimer pass_timer("pass.action-pruning.time_ms");
+    ScopedTimer pass_timer;  // measuring-only; the pipeline records the stats key
     auto& stats = Stats::instance();
 
     bool include_cost_fluents = (opts_->mode == SearchMode::Optimal ||
@@ -28,6 +29,7 @@ void ActionPruningPass::apply(PreprocessedProblem& result) const {
 
     size_t initial_actions = result.problem.actions().size();
     std::unique_ptr<AchieversAnalysis> final_achievers;
+    std::unique_ptr<NumericRelaxedPlanningGraph> final_rpg;
     std::unique_ptr<AchieversAnalysis> achievers;  // persists across iterations for incremental reuse
     std::unordered_map<ExprID, Interval> final_bounds;
     std::vector<ConservationConstraint> final_conservations;
@@ -76,8 +78,8 @@ void ActionPruningPass::apply(PreprocessedProblem& result) const {
             }
         }
 
-        // Store RPG for downstream reuse
-        result.fixpoint_rpg = std::move(rpg);
+        // Keep the RPG of the current (possibly last) iteration
+        final_rpg = std::move(rpg);
 
         // 5. Backward prune: goal-relevance analysis
         if (need_goal_relevance) {
@@ -154,7 +156,7 @@ void ActionPruningPass::apply(PreprocessedProblem& result) const {
 
         result.lower_bound = std::max(result.lower_bound,
                                        rpg->get_minimum_steps_lower_bound());
-        result.fixpoint_rpg = std::move(rpg);
+        final_rpg = std::move(rpg);
 
         // Capture bounds before moving rpg_data
         final_bounds = rpg_data.state_variable_bounds;
@@ -173,27 +175,54 @@ void ActionPruningPass::apply(PreprocessedProblem& result) const {
     // bounds are now indexed to the final action set, not a pre-pruning one)
     bool need_sdac_bounds = result.problem.has_metric() &&
                             result.problem.has_state_dependent_costs();
-    if (need_sdac_bounds && result.fixpoint_rpg) {
-        int final_layer = static_cast<int>(result.fixpoint_rpg->get_layer_count()) - 1;
+    if (need_sdac_bounds && final_rpg) {
+        int final_layer = static_cast<int>(final_rpg->get_layer_count()) - 1;
         const auto& actions = result.problem.actions();
         result.sdac_cost_lower_bounds.reserve(actions.size());
         for (size_t i = 0; i < actions.size(); ++i) {
-            auto interval = result.fixpoint_rpg->evaluate_interval(
+            auto interval = final_rpg->evaluate_interval(
                 actions[i].cost_id(), final_layer);
             result.sdac_cost_lower_bounds.push_back(std::max(0.0, interval.lower));
         }
     }
 
-    // Store all results
+    // Publish artifacts. Bounds, conservation laws, and object-fluent domains
+    // go straight into the encoder-ready StateConstraints — this pass is
+    // their single publisher; MutexAnalysisPass later adds the mutex groups.
     result.achievers = std::move(final_achievers);
-    result.tightened_bounds = std::move(final_bounds);
-    result.conservation_laws = std::move(final_conservations);
+
+    auto& sc = result.state_constraints;
+    for (const auto& [eid, interval] : final_bounds) {
+        if (!result.problem.is_numeric_type(eid)) continue;
+        if (std::isfinite(interval.lower))
+            sc.bounds.push_back({eid, interval.lower, true});
+        if (std::isfinite(interval.upper))
+            sc.bounds.push_back({eid, interval.upper, false});
+    }
+    sc.conservations = std::move(final_conservations);
+    if (final_rpg) {
+        auto rpg_domains = final_rpg->get_object_fluent_domains();
+        for (auto& [eid, values] : rpg_domains) {
+            if (!values.empty()) {
+                sc.domains.push_back({eid, std::move(values)});
+            }
+        }
+    }
+
+    Logger::instance().component(VerbosityLevel::INFO, "ActionPruning", {
+        {"rpg_bounds", std::to_string(sc.bounds.size())},
+        {"conservation_laws", std::to_string(sc.conservations.size())},
+        {"domain_constraints", std::to_string(sc.domains.size())}
+    });
+    for (const auto& cc : sc.conservations) {
+        Logger::instance().info("  conservation: " + cc.label);
+    }
 
     // Log per-fluent bounds at verbose level
     if (Logger::instance().should_print(VerbosityLevel::VERBOSE) &&
-        !result.tightened_bounds.empty()) {
+        !final_bounds.empty()) {
         const auto& pool = result.problem.pool();
-        for (const auto& [eid, interval] : result.tightened_bounds) {
+        for (const auto& [eid, interval] : final_bounds) {
             if (!result.problem.is_numeric_type(eid)) continue;
             std::ostringstream oss;
             oss << std::fixed << std::setprecision(3);

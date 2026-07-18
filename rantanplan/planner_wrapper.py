@@ -35,7 +35,7 @@ class _RantanPlanBase(Engine):
         Engine.__init__(self)
 
         self._verbosity = options.get('verbosity')
-        self._strategy = options.get('strategy', 'seq')
+        self._strategy = options.get('strategy', 'els')
         self._max_steps = options.get('max_steps')
         self._persist_clauses = options.get('persist_clauses', False)
         self._symmetries = options.get('symmetries', False)
@@ -102,6 +102,7 @@ class _RantanPlanBase(Engine):
         supported_kind.set_fluents_type('REAL_FLUENTS')
         supported_kind.set_fluents_type('INT_FLUENTS')
         supported_kind.set_fluents_type('OBJECT_FLUENTS')
+        supported_kind.set_fluents_type('ARRAY_FLUENTS')
         supported_kind.set_initial_state('UNDEFINED_INITIAL_NUMERIC')
         supported_kind.set_conditions_kind('NEGATIVE_CONDITIONS')
         supported_kind.set_conditions_kind('DISJUNCTIVE_CONDITIONS')
@@ -113,11 +114,15 @@ class _RantanPlanBase(Engine):
         supported_kind.set_effects_kind('INCREASE_EFFECTS')
         supported_kind.set_effects_kind('DECREASE_EFFECTS')
         supported_kind.set_effects_kind('FLUENTS_IN_NUMERIC_ASSIGNMENTS')
+        supported_kind.set_effects_kind('STATIC_FLUENTS_IN_NUMERIC_ASSIGNMENTS')
+        supported_kind.set_effects_kind('STATIC_FLUENTS_IN_BOOLEAN_ASSIGNMENTS')
+        supported_kind.set_effects_kind('FLUENTS_IN_BOOLEAN_ASSIGNMENTS')
         supported_kind.set_effects_kind('STATIC_FLUENTS_IN_OBJECT_ASSIGNMENTS')
         supported_kind.set_effects_kind('FLUENTS_IN_OBJECT_ASSIGNMENTS')
         supported_kind.set_effects_kind('FORALL_EFFECTS')
         supported_kind.set_quality_metrics('FINAL_VALUE')
         supported_kind.set_quality_metrics('ACTIONS_COST')
+        supported_kind.set_quality_metrics('PLAN_LENGTH')
         supported_kind.set_actions_cost_kind('INT_NUMBERS_IN_ACTIONS_COST')
         supported_kind.set_actions_cost_kind('REAL_NUMBERS_IN_ACTIONS_COST')
         supported_kind.set_actions_cost_kind('FLUENTS_IN_ACTIONS_COST')
@@ -175,7 +180,16 @@ class _RantanPlanBase(Engine):
     # ── Problem preparation ──────────────────────────────────────────────
 
     def _validate_plan(self, problem: Problem, plan: SequentialPlan) -> bool:
+        # UP ships no plan validator for array-fluent problems, so attempting
+        # validation here only raises. Skip gracefully — array plans are checked
+        # externally (against the ArrayFluentsRemover-compiled equivalent) in the
+        # test suite. Native array support is compiled to scalar cells before
+        # solving, so the underlying search is validated like any scalar problem.
+        if problem.kind.has_array_fluents():
+            self._log("Plan validation: SKIPPED (UP has no array-fluent validator)")
+            return True
         try:
+            self._materialize_numeric_for_validator(problem)
             with PlanValidator(problem_kind=problem.kind, plan_kind=plan.kind) as validator:
                 validation_result = validator.validate(problem, plan)  # type: ignore[attr-defined]
 
@@ -196,58 +210,61 @@ class _RantanPlanBase(Engine):
             self._log_error(f"Plan validation failed with error: {e}")
             return False
 
-    def _initialize_fluents(self, task: Problem):
-        _env = get_environment()
-        _tm = _env.type_manager
-        _em = _env.expression_manager
-        task.initial_defaults.update({_tm.RealType():_em.Real(Fraction(0))})
-        task.initial_defaults.update({_tm.IntType() :_em.Int(0)})
-        task.initial_defaults.update({_tm.BoolType() :_em.Bool(False)})
+    def _materialize_numeric_for_validator(self, problem: Problem):
+        """Make every numeric fluent's initial value explicit for UP's validator.
 
-        all_fluent_expressions = []
-        for fluent in task.fluents:
-            fluent_expressions = list(get_all_fluent_exp(task, fluent))
-            all_fluent_expressions.extend(fluent_expressions)
-        fluentslist = all_fluent_expressions
+        UP's PlanValidator leaves a numeric fluent without an explicit initial
+        value *undefined* during simulation (UNDEFINED_INITIAL_NUMERIC) rather
+        than applying initial_defaults, then reports "fluents with undefined
+        values". The solver initialises them in the C++ CWA pass; this mirrors
+        that same rule (a declared default_initial_value, else 0 clamped into the
+        declared bounds) so the validator checks the plan against the state the
+        solver actually used. It runs *after* IR conversion, only on the
+        non-array validation path, so it never feeds the (sparse) IR.
 
-        initialized_fluents  = list(task.explicit_initial_values.keys())
-        unintialized_fluents = list(filter(lambda x: not x in initialized_fluents, fluentslist))
-
-        # Object fluents have no sensible default — they must be explicitly initialized.
-        # Bool/int/real (including bounded int/real) all get a computed default below.
-        obj_fluents_missing_init = [
-            fe for fe in unintialized_fluents
-            if not (fe.type.is_bool_type() or fe.type.is_int_type() or fe.type.is_real_type())
-        ]
-        if obj_fluents_missing_init:
-            names = [str(f) for f in obj_fluents_missing_init]
-            raise UPException(
-                f"Object fluent(s) missing initial value (no default exists): {', '.join(names)}. "
-                "All object fluents must be explicitly initialized in the problem's :init block.")
-
-        real_int_fluents_to_init = []
-        for fe in unintialized_fluents:
-            if fe.type.is_int_type() or fe.type.is_real_type():
-                real_int_fluents_to_init.append(fe)
-
-        if real_int_fluents_to_init:
-            self._log_warning(f"WARNING: Initializing {len(real_int_fluents_to_init)} real/integer fluents to 0")
-            self._log_warning("         This is not semantically correct but is done in practice for planning purposes.")
-
-        for fe in unintialized_fluents:
-            tpe = fe.type
-            if tpe.is_bool_type():
-                default = _em.Bool(False)
-            else:
-                # int/real, possibly bounded: clamp the 0 default into [lb, ub]
-                # (UP rejects assigning an out-of-range value to a bounded type).
+        (This enumerates via ``get_all_fluent_exp``, not ``problem.initial_values``:
+        the latter returns only explicitly-set values -- UP does not default
+        numeric fluents at all -- so it cannot supply the un-init instances that
+        are exactly the ones the validator leaves undefined.)"""
+        _em = get_environment().expression_manager
+        for fluent in problem.fluents:
+            tpe = fluent.type
+            if not (tpe.is_int_type() or tpe.is_real_type()):
+                continue
+            declared = problem.fluents_defaults.get(fluent)
+            for fe in get_all_fluent_exp(problem, fluent):
+                if fe in problem.explicit_initial_values:
+                    continue
+                if declared is not None:
+                    problem.set_initial_value(fe, declared)
+                    continue
                 v = 0
                 if tpe.lower_bound is not None and v < tpe.lower_bound:
                     v = tpe.lower_bound
                 if tpe.upper_bound is not None and v > tpe.upper_bound:
                     v = tpe.upper_bound
-                default = _em.Int(v) if tpe.is_int_type() else _em.Real(Fraction(v))
-            task.set_initial_value(fe, default)
+                problem.set_initial_value(
+                    fe, _em.Int(v) if tpe.is_int_type() else _em.Real(Fraction(v)))
+
+    def _set_validator_defaults(self, task: Problem):
+        """Declare the type-level defaults UP's *external* PlanValidator needs.
+
+        Solver-side initialization now lives entirely in C++: the CWA pass
+        materialises defaults over the reachable grounded fluents (closed-world
+        false for booleans; a declared default_initial_value, else 0 clamped
+        into the declared bounds, for numerics; a hard error for uninitialised
+        object fluents). Array cells inherit those rules after lowering.
+
+        This method does NOT feed the IR. It only lets UP's PlanValidator fill
+        unspecified fluents when it checks a returned plan on the non-array path
+        (array-fluent problems skip UP validation -- UP ships no validator for
+        them). Without it, the validator raises on any closed-world boolean."""
+        _env = get_environment()
+        _tm = _env.type_manager
+        _em = _env.expression_manager
+        task.initial_defaults.update({_tm.RealType(): _em.Real(Fraction(0))})
+        task.initial_defaults.update({_tm.IntType():  _em.Int(0)})
+        task.initial_defaults.update({_tm.BoolType(): _em.Bool(False)})
 
     def _compile_problem(self, problem: Problem):
         current_problem = problem
@@ -380,7 +397,7 @@ class _RantanPlanBase(Engine):
         self._check_no_nested_fluents(problem)
         self._check_supported_action_parameters(problem)
 
-        self._initialize_fluents(problem)
+        self._set_validator_defaults(problem)
         compiled_problem, compilation_result = self._compile_problem(problem)
 
         problem_ir = convert_problem(compiled_problem)
@@ -496,6 +513,21 @@ class _RantanPlanBase(Engine):
             raise UPException(
                 "The _rantanplan extension module is not built. Run "
                 "'pip install -e . --no-build-isolation' first.")
+
+        # Reject any problem using a feature not in supported_kind() up front,
+        # rather than crashing deep in conversion. Calling an engine by name
+        # bypasses UP's own supports() gate, so we enforce it here. This is an
+        # allow-list: supported_kind() must list every feature RantanPlan can
+        # handle, so an unlisted feature (e.g. DERIVED_FLUENTS / axioms) is
+        # rejected cleanly.
+        if not self.supports(problem.kind):
+            unsupported = problem.kind.features - self.supported_kind().features
+            return PlanGenerationResult(
+                PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, None, self.name,
+                log_messages=[LogMessage(
+                    LogLevel.ERROR,
+                    "RantanPlan does not support these problem features: "
+                    + ", ".join(sorted(unsupported)))])
 
         # The C++ log sink is installed for the duration of the call, on this
         # thread (the one that runs preprocess/solve -- the module requires

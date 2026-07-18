@@ -2,10 +2,8 @@
 
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 #include "../analysis/arithmetic_profile.hpp"
-#include "../grounding/interval.hpp"
 #include "../problem/problem.hpp"
 #include "landmark_data.hpp"
 #include "local_invariants.hpp"
@@ -20,7 +18,6 @@ namespace rantanplan {
 
 // Z3-using artifact classes appear only as forward declarations
 class AchieversAnalysis;
-class NumericRelaxedPlanningGraph;
 
 /**
  * @brief Output contract of the preprocessor — input to any backend.
@@ -45,10 +42,7 @@ struct PreprocessedProblem {
     std::vector<double> sdac_cost_lower_bounds; ///< SDAC cost lower bounds (from ActionPruningPass); empty if not SDAC
     ArithmeticProfile arithmetic_profile = ArithmeticProfile::LINEAR; ///< Numeric constraint class (from ArithmeticProfilePass)
     std::unique_ptr<AchieversAnalysis> achievers; ///< Pre-built achiever analysis (from ActionPruningPass); consumed by move
-    std::unique_ptr<NumericRelaxedPlanningGraph> fixpoint_rpg; ///< Fixpoint RPG for reuse across passes
-    std::unordered_map<ExprID, Interval> tightened_bounds; ///< Tightened numeric bounds (from ActionPruningPass)
-    std::vector<ConservationConstraint> conservation_laws; ///< Conservation laws (from ActionPruningPass)
-    StateConstraints state_constraints; ///< State constraints from InvariantOraclePass
+    StateConstraints state_constraints; ///< Bounds/conservations/domains from ActionPruningPass, mutexes from MutexAnalysisPass
     LandmarkData landmark_data; ///< Disjunctive action landmarks (from LandmarkAnalysisPass)
 
     // Out-of-line special members so the forward-declared artifact types

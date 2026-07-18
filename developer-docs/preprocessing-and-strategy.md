@@ -13,9 +13,9 @@
   `lower_bound`, the tightest horizon lower bound any pass established. This
   drives `Config::planner.start_timestep`, so search doesn't waste time on
   horizons already known too short.
-- **Strategy-independent artifacts** — tightened numeric bounds,
-  conservation laws, state constraints (mutexes), symmetry data, a
-  pre-built achiever analysis, and a fixpoint relaxed planning graph.
+- **Strategy-independent artifacts** — state constraints (numeric bounds,
+  conservation laws, object-fluent domains, mutex groups), symmetry data,
+  disjunctive action landmarks, and a pre-built achiever analysis.
 
 The header has one hard rule: **it must compile with no Z3 include path.**
 Artifact types that use Z3 internally (`AchieversAnalysis`,
@@ -44,13 +44,14 @@ second `solve()` call — this is enforced at the nanobind layer too (the
 flowchart LR
     P[Problem] --> IP[Int-param instantiation]
     IP --> QE[Quantifier expansion]
-    QE --> A["[Grounding]<br/>(optional)"]
+    QE --> AL["[Array lowering]<br/>(arrays only)"]
+    AL --> A["[Grounding]<br/>(optional)"]
     A --> B[CWA initial state]
     B --> C[Static fluent folding]
     C --> CN["[CNF normalization]<br/>(optional)"]
     CN --> D["Action pruning<br/>(RPG + goal relevance)"]
-    D --> E[Invariant oracle<br/>local reasoning]
-    E --> L[Landmark analysis]
+    D --> E[Mutex analysis]
+    E --> L["[Landmark analysis]<br/>(goal-relevance on)"]
     L --> F["[Symmetry analysis]<br/>(optional)"]
     F --> G[Arithmetic profile]
     G --> PP[PreprocessedProblem]
@@ -72,25 +73,93 @@ into one concrete effect per binding. Together they replace the old Python
 removal in C++ (see `docs/specs/numeric-action-parameters.md`). Both are no-ops on
 a problem with no integer parameters and no quantifiers.
 
+A third pre-grounding pass, `ArrayLoweringPass`, runs only when the problem has
+array fluents: it compiles constant-index array accesses into ordinary scalar
+cell fluents, so grounding stays array-free just as it stays quantifier-free
+(see [`grounding.md`](grounding.md)). It is a no-op — and leaves the ExprPool
+node order untouched — on a problem with no arrays.
+
 `Pass` (`passes/pass.hpp`) is deliberately minimal: `apply(PreprocessedProblem&)`
 and `name()` (for logging). Passes are **stateless** — every pass-specific
 knob is constructor-injected from `PreprocessorOptions`, not read from a
 singleton. To add a pass: subclass `Pass`, add it to `CMakeLists.txt`, and
 insert it at the right point in this list (the ordering constraints are
 documented inline at the insertion site in `solver_api.cpp` — for example,
-static fluent folding must run before the invariant oracle, or invariants
+static fluent folding must run before mutex analysis, or mutex groups
 would be computed over fluents the encoding won't emit).
 
-## Where the state constraints come from: `InvariantOraclePass`
+### A taxonomy of the passes
+
+The passes look uniform behind `apply(PreprocessedProblem&)`, but they do
+different *kinds* of work, along two orthogonal axes.
+
+**Mechanism** — what a pass does to the `PreprocessedProblem`:
+
+- **Transformers** rewrite `result.problem` (grounding, folding, pruning).
+- **Analyzers** leave the problem alone and write the verdict or artifact
+  fields.
+
+The `Pass` interface deliberately erases this distinction; the contract
+fields reveal it — `problem` is the transformers' output, everything else
+is the analyzers'.
+
+**Purpose** — why a pass exists:
+
+- **Shaping**: required for downstream ingestion; skipping one breaks a
+  later stage (the grounder can't handle int parameters or free effect
+  variables; downstream assumes every fluent has an initial value).
+- **Performance by rewriting**: the problem gets smaller or simpler, the
+  plan set is preserved; skipping only costs speed.
+- **Performance by annotation**: the problem is untouched; artifacts hint
+  the backend (mutexes, symmetries, landmarks, achievers).
+- **Deduction (verdict)**: partial solving — unsolvability proofs and
+  horizon lower bounds. Its consumer is the *driver* (`lower_bound` →
+  `start_timestep`), not the encoder, and it can end the run outright via
+  the short-circuit.
+- **Backend configuration**: classification that decides how the backend
+  must encode — `ArithmeticProfilePass`'s `all_integer` flag drives Int vs
+  Real sort selection, so it is soundness-relevant, not an optimization.
+- **Analysis-enabling rewriting**: `CnfNormalizationPass` rewrites
+  conditions not for the encoder (which translates arbitrary formulas) but
+  to give the achiever/landmark machinery clause-level granularity.
+
+Note that purpose attaches to *effects*, not passes: several passes do
+work in more than one category, which is why the table below has
+multi-entry rows.
+
+| Pass | Mechanism | Purpose |
+|---|---|---|
+| `IntParameterInstantiationPass` | transformer | shaping |
+| `QuantifierExpansionPass` | transformer | shaping |
+| `ArrayLoweringPass` | transformer | shaping (no-op without arrays) |
+| `GroundingPass` (optional) | transformer | shaping + rewriting + verdict — reachability grounding *is* pruning, and it sets `lower_bound`/`proven_unsolvable` |
+| `CWAInitialStatePass` | transformer | shaping (sole materialiser of default initial values) |
+| `StaticFluentPass` | transformer | performance by rewriting (also tightens later RPG bounds) |
+| `CnfNormalizationPass` (optional) | transformer | analysis-enabling rewriting |
+| `ActionPruningPass` | transformer + analyzer | rewriting + annotation + verdict — prunes, proves bounds/unsolvability, and publishes achievers, SDAC cost bounds, and the bounds/conservations/domains part of `state_constraints` |
+| `MutexAnalysisPass` | analyzer | performance by annotation |
+| `LandmarkAnalysisPass` (goal-relevance on) | analyzer | annotation + verdict (contributes to `lower_bound`) |
+| `SymmetryAnalysisPass` (optional) | analyzer | performance by annotation |
+| `ArithmeticProfilePass` | analyzer (mutates the problem's `all_integer` flag) | backend configuration — must run last |
+
+`passes/` also holds two non-`Pass` helpers: `bound_tightening.{hpp,cpp}`
+(syntactic bound tightening and conservation-law discovery, used by
+`ActionPruningPass`) and `h2_mutex_checker.{hpp,cpp}` (the h² pairwise
+reachability fixpoint, used by `MutexAnalysisPass`). They are analyses
+in the same sense as `analysis/`'s `NumericRelaxedPlanningGraph` or
+`AchieversAnalysis`, just colocated with their only consumers.
+
+## Where the state constraints come from
 
 The `state_constraints` the encoder re-asserts at every timestep
-([`the-encoding.md`](the-encoding.md)) — mutex groups, numeric bounds,
-object-fluent domains, conservation laws — are produced by
-`InvariantOraclePass` (`passes/invariant_oracle_pass.cpp`) in two phases.
+([`the-encoding.md`](the-encoding.md)) — numeric bounds, object-fluent
+domains, conservation laws, mutex groups — have two producers, each the
+single publisher of its part.
 
-**Phase A: harvest what earlier passes already proved.** The tightened
-numeric intervals from the fixpoint RPG become per-fluent bound
-constraints (`fuel(plane1) ≥ 0`, `fuel(plane1) ≤ 2326`); the RPG's
+**Bounds, domains, and conservation laws: `ActionPruningPass`.** The pass
+that builds the fixpoint RPG anyway publishes what the RPG proved, in
+encoder-ready form. The tightened numeric intervals become per-fluent
+bound constraints (`fuel(plane1) ≥ 0`, `fuel(plane1) ≤ 2326`); the RPG's
 reachable-value sets for object fluents become domain constraints; and
 **conservation laws** come from a syntactic scan (`bound_tightening.cpp`):
 a pair `(f, g)` is conserved if every action touching either one has
@@ -100,11 +169,12 @@ then `f + g` equals its initial value in every reachable state
 Conservation laws feed back into bounds too: from `f + g = C` and `g ≥ 0`
 follows `f ≤ C`.
 
-**Phase B: discover and verify mutex groups.** Candidate generation is
-purely syntactic: take each action-modified boolean predicate, group its
-ground instances by fixing one argument — all of `at(rob1, *)`, all of
-`in(person3, *)` — and keep groups of 2–20 members (capped at the 50
-largest). Every candidate must then survive verification:
+**Mutex groups: `MutexAnalysisPass`** (`passes/mutex_analysis_pass.cpp`).
+Candidate generation is purely syntactic: take each action-modified
+boolean predicate, group its ground instances by fixing one argument —
+all of `at(rob1, *)`, all of `in(person3, *)` — and keep groups of 2–20
+members (capped at the 50 largest). Every candidate must then survive
+verification:
 
 ```mermaid
 flowchart TD
@@ -139,25 +209,26 @@ flowchart TD
   merged and re-verified into one larger exactly-one group ("person0 is in
   exactly one place, counting being aboard a plane").
 
-You can watch both phases in any verbose run — zenotravel pfile13 gives
-`[InvOracle] rpg_bounds: 7 | conservation_laws: 0 | domain_constraints: 0`
-followed by `mutex_candidates: 32 | tier1_amo: 0 | h2_amo: 20 |
-exactly_one: 13` (see "Try it" below).
+You can watch both producers in any verbose run — zenotravel pfile13 gives
+`[ActionPruning] rpg_bounds: 7 | conservation_laws: 0 |
+domain_constraints: 0` followed by `[MutexAnalysis] mutex_candidates: 32 |
+tier1_amo: 0 | h2_amo: 20 | exactly_one: 13` (see "Try it" below).
 
 **Derived vs declared.** Everything above is *derived* — proven redundant
 facts the encoder may freely skip (they only ever cost speed). Problems may
 additionally carry *declared* state invariants, the bodies of PDDL
 `(:constraints (always φ))` blocks: these live on `Problem` itself
 (`state_invariants()`), not in `state_constraints`, precisely because they
-are trusted requirements that define plan validity and must survive every
-preprocessing option (including `--no-local-reasoning`, which disables this
-pass entirely). The encoder asserts them at every state including the goal
+are trusted requirements that define plan validity, not derived hints. The
+encoder asserts them at every state including the goal
 state, and `r2e` rejects problems that declare them. See the comment on
 `GroundedEncoder::encode_state_constraints` for the full contrast.
 
 ## Landmark analysis: `LandmarkAnalysisPass`
 
-Runs right after the invariant oracle. An AND/OR closure over the achiever
+Runs right after mutex analysis, and only when goal-relevance pruning is
+on — the achiever graph it walks is `ActionPruningPass`'s `achievers`
+artifact, which only exists then. An AND/OR closure over the achiever
 graph (goal conditions not satisfied initially are landmarks; a condition
 required by *all* achievers of a landmark is itself a landmark) produces
 `LandmarkData`: disjunctive action landmarks with a uniform count semantics
@@ -335,7 +406,7 @@ public:
             "Ground actions remaining: " +
             std::to_string(result.problem.action_count()));
     }
-    std::string name() const override { return "ActionCountPass"; }
+    std::string name() const override { return "action-count"; }
 };
 ```
 
@@ -407,22 +478,22 @@ header:
 class GreedyBestFirstPlanner {
 public:
     explicit GreedyBestFirstPlanner(PreprocessedProblem& pre)
-        : problem_(pre.problem), bounds_(pre.tightened_bounds) {}
+        : problem_(pre.problem), constraints_(pre.state_constraints) {}
 
     Plan search() {
         // States as fluent-value maps over problem_.actions()/fluents();
         // successor generation checks each Action's precondition_id()
         // against the current state via the shared ExprPool.
         // Heuristic fuel and pruning come from PreprocessedProblem's
-        // strategy-independent artifacts: bounds_ (tightened numeric
-        // bounds), pre.state_constraints (mutexes), pre.fixpoint_rpg
-        // (distance estimate) — no Z3 query needed for any of it.
+        // strategy-independent artifacts: constraints_.bounds (tightened
+        // numeric bounds), constraints_.mutexes, pre.landmark_data
+        // (distance estimates) — no Z3 query needed for any of it.
         ...
     }
 
 private:
     const Problem& problem_;
-    const std::unordered_map<ExprID, Interval>& bounds_;
+    const StateConstraints& constraints_;
 };
 ```
 
@@ -445,9 +516,6 @@ The verbose log's bracketed tags fire in the pipeline diagram's order —
 starting at `[Grounding]` here because zenotravel has no integer parameters or
 quantifiers, so the two front canonicalization passes are silent no-ops:
 `[Grounding]` → `[CWA]` → `[StaticFluent]` → `[ActionPruning]` (with
-`[RPG.Numeric]` and `[Achievers]` inside it) → `[InvOracle]` →
-`[ArithProfile]`. Then rerun with `--no-local-reasoning`: the `[InvOracle]`
-lines vanish (no mutexes, no exactly-one groups for the encoder to assert)
-and the `[NumericBounds]` intervals get looser — on zenotravel,
-`fuel(plane1)` drops from `[0, 2326]` to `[-inf, 2326]`, because the proof
-that fuel never goes negative was local reasoning's.
+`[RPG.Numeric]` and `[Achievers]` inside it, and ending with the
+`rpg_bounds`/`conservation_laws`/`domain_constraints` counts it publishes
+as state constraints) → `[MutexAnalysis]` → `[ArithProfile]`.

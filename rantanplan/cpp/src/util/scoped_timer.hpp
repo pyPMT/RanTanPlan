@@ -28,7 +28,15 @@ public:
     explicit ScopedTimer(const std::string& stats_key);
 
     /**
-     * @brief Destructor - records elapsed time to Stats
+     * @brief Construct a measuring-only timer that records nothing to Stats.
+     *
+     * For log lines that want an elapsed time without duplicating a stats
+     * key someone else already records (e.g. the pipeline's per-pass timer).
+     */
+    ScopedTimer();
+
+    /**
+     * @brief Destructor - records elapsed time to Stats (keyed timers only)
      */
     ~ScopedTimer();
 

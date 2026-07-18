@@ -279,7 +279,7 @@ private:
 }  // namespace
 
 void CnfNormalizationPass::apply(PreprocessedProblem& result) const {
-    ScopedTimer timer("cnf_normalization.time_ms");
+    ScopedTimer timer;  // measuring-only; the pipeline records the stats key
     const auto& problem = result.problem;
     ExprPool& pool = *problem.pool_ptr();
     CnfConverter converter(pool);

@@ -5,8 +5,8 @@
 #include "../problem/expr_enums.hpp"
 #include "../util/logger.hpp"
 
-#include <iostream>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace rantanplan {
 
@@ -150,6 +150,81 @@ static Action convert_action(IRLoadContext& ctx, const ir::ActionIR& ir_action) 
 }
 
 // ============================================================================
+// Array type registration (two-phase; see load_problem_from_ir)
+// ============================================================================
+
+/// The single renderer for an array type's table name, from one dimension's
+/// element name + size. C++ is the sole source of truth for these names: the
+/// converter sends only the structured shape (element_type + array_sizes), and
+/// both type registration below and per-fluent value-type resolution generate
+/// the name through this one function — so there is no cross-language string to
+/// keep in agreement.
+static std::string array_type_name(const std::string& element, int64_t size) {
+    return "array[" + std::to_string(size) + ", " + element + "]";
+}
+
+/// The whole-fluent (outermost) array type name, built innermost-first from the
+/// structured shape. Matches the outer name minted in register_array_type_names
+/// by construction (same renderer, same fields).
+static std::string array_value_type_name(const ir::FluentIR& ir_fluent) {
+    std::string element = ir_fluent.element_type;
+    for (auto it = ir_fluent.array_sizes.rbegin();
+         it != ir_fluent.array_sizes.rend(); ++it) {
+        element = array_type_name(element, *it);
+    }
+    return element;
+}
+
+/// One first-class array type per dimension. Array types are entries in the
+/// problem's type table, named via array_type_name and nested innermost-first.
+/// Registration is two-phase because the table is a `std::vector<Type>`: every
+/// name must be emplaced *before* any pointer into the table is taken (phase 1),
+/// and element links are wired only once those pointers are stable (phase 2).
+/// Each entry keeps the *index* of its type — indices survive vector growth,
+/// pointers do not — plus the element name to resolve against the map in phase 2.
+struct ArrayTypeEntry {
+    size_t type_index;
+    std::string element_name;
+    int64_t size;
+};
+
+/// Phase 1: emplace a nested array type per dimension for every array fluent,
+/// deduplicated by name. Must run before the name→pointer map is built; returns
+/// the entries to link in phase 2.
+static std::vector<ArrayTypeEntry> register_array_type_names(
+        std::vector<Type>& types, const ir::ProblemIR& ir_problem) {
+    std::vector<ArrayTypeEntry> array_types;
+    std::unordered_set<std::string> seen;
+    for (const auto& ir_fluent : ir_problem.fluents) {
+        if (ir_fluent.array_sizes.empty()) continue;
+        std::string element = ir_fluent.element_type;
+        for (auto it = ir_fluent.array_sizes.rbegin();
+             it != ir_fluent.array_sizes.rend(); ++it) {
+            std::string tname = array_type_name(element, *it);
+            if (seen.insert(tname).second) {
+                types.emplace_back(tname);
+                array_types.push_back({types.size() - 1, element, *it});
+            }
+            element = std::move(tname);
+        }
+    }
+    return array_types;
+}
+
+/// Phase 2: link each registered array type to its element type. Runs after the
+/// name→pointer map is built, so both the lookup and the stored pointer are
+/// stable.
+static void link_array_element_types(
+        std::vector<Type>& types,
+        const std::unordered_map<std::string, const Type*>& name_to_ptr,
+        const std::vector<ArrayTypeEntry>& array_types) {
+    for (const auto& entry : array_types) {
+        types[entry.type_index].set_array(name_to_ptr.at(entry.element_name),
+                                          entry.size);
+    }
+}
+
+// ============================================================================
 // Public API
 // ============================================================================
 
@@ -167,10 +242,17 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
         problem.types_->emplace_back(ir_type.name);
         problem.types_->back().set_parent_name(ir_type.parent);
     }
+    // Array types are first-class, one (nested) entry per dimension. Register
+    // all names before the name→pointer map is built (the table is a vector and
+    // cannot grow once pointers into it exist), then link element types once
+    // those pointers are stable — see register_array_type_names / link_...
+    std::vector<ArrayTypeEntry> array_types =
+        register_array_type_names(*problem.types_, ir_problem);
     for (auto& type : *problem.types_) {
         problem.type_name_to_ptr_[type.name()] = &type;
     }
     problem.resolve_type_hierarchy();
+    link_array_element_types(*problem.types_, problem.type_name_to_ptr_, array_types);
 
     IRLoadContext ctx{ir_problem, *problem.types_, problem.type_name_to_ptr_,
                       *problem.pool_, {}};
@@ -192,15 +274,34 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
             const Type* param_type = ctx.find_type(ir_param.type_name);
             params.emplace_back(ir_param.name, param_type);
         }
-        const Type* value_type = ctx.find_type(ir_fluent.value_type);
+        // An array fluent carries no value_type string; its type is the
+        // generated (registered) array type name derived from its structured
+        // shape. Scalar fluents resolve by their value_type string as before.
+        const std::string value_type_name = ir_fluent.array_sizes.empty()
+            ? ir_fluent.value_type
+            : array_value_type_name(ir_fluent);
+        const Type* value_type = ctx.find_type(value_type_name);
         if (!value_type) {
-            Logger::instance().error("Could not find type '" + ir_fluent.value_type +
+            Logger::instance().error("Could not find type '" + value_type_name +
                                      "' for fluent '" + ir_fluent.name + "'");
         }
         problem.fluents_.emplace_back(ir_fluent.name, value_type, params);
         if (ir_fluent.lower_bound || ir_fluent.upper_bound) {
             problem.fluents_.back().set_declared_bounds(ir_fluent.lower_bound,
                                                         ir_fluent.upper_bound);
+        }
+        // Undefined positions are per-fluent data, not part of the array type
+        // (two fluents of one array type may exclude different cells).
+        if (!ir_fluent.undefined_positions.empty()) {
+            problem.fluents_.back().set_array_undefined_positions(
+                ir_fluent.undefined_positions);
+        }
+        // Declared default_initial_value (constant node); consumed by the CWA
+        // pass (authoritative over the clamped-0/false fallback) and by the
+        // grounder's numeric bounds seeding.
+        if (ir_fluent.default_value) {
+            problem.fluents_.back().set_declared_default(
+                ctx.id(*ir_fluent.default_value));
         }
     }
     problem.build_fluent_mappings();

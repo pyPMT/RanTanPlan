@@ -40,16 +40,19 @@ H2MutexChecker::H2MutexChecker(const Problem& problem)
 
             if (ee.is_assign()) {
                 ExprID val = ee.value_id();
-                if (pool.is_true_constant(val)) {
-                    // Add effect (always include — conditional adds are treated
-                    // as potentially firing for over-approximation).
-                    ad.add_effects.push_back(idx);
-                } else if (pool.is_false_constant(val)) {
-                    // Delete effect — only count if unconditional.
-                    // Conditional deletes are ignored (fact assumed to persist).
+                // Over-approximate reachability: a constant-false assign is the
+                // only guaranteed delete (counted only when unconditional, since
+                // a conditional delete lets the fact persist). Everything else —
+                // constant-true, or an expression-valued assign like y := x or an
+                // array cell copy/swap that *may* evaluate true — is a may-add.
+                // Dropping a may-add would under-count reachable states and yield
+                // unsound mutexes.
+                if (pool.is_false_constant(val)) {
                     if (!ee.is_conditional()) {
                         ad.del_effects.push_back(idx);
                     }
+                } else {
+                    ad.add_effects.push_back(idx);
                 }
             }
         }

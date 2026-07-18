@@ -27,12 +27,14 @@ namespace rantanplan {
  * Contributes max(depth bounds) to PreprocessedProblem::lower_bound and
  * stores the full artifact in PreprocessedProblem::landmark_data.
  *
- * Requires: result.achievers (from ActionPruningPass).  No-op without it.
+ * Requires: result.achievers (from ActionPruningPass), which only exists
+ * when goal-relevance analysis is on — api::preprocess gates this pass on
+ * that same option.  No-op without achievers.
  */
 class LandmarkAnalysisPass : public Pass {
 public:
     void apply(PreprocessedProblem& result) const override;
-    std::string name() const override { return "LandmarkAnalysis"; }
+    std::string name() const override { return "landmark-analysis"; }
 };
 
 } // namespace rantanplan

@@ -83,7 +83,24 @@ static Interval evaluate_constant_expr_range(
 }
 
 NumericBoundsIndex::NumericBoundsIndex(const Problem& problem)
-    : problem_(problem) {}
+    : problem_(problem) {
+    // A numeric fluent may declare a default_initial_value; an instance absent
+    // from the initial state is then seeded at [d, d] rather than [0, 0], so
+    // the grounder's numeric pruning agrees with the initial state CWA later
+    // materialises. (Array cells inherit their array's scalar default.)
+    const auto& pool = problem_.pool();
+    for (const auto& fluent : problem_.fluents()) {
+        if (fluent.is_array() || !fluent.is_function()) continue;
+        auto dv = fluent.declared_default();
+        if (!dv) continue;
+        if (pool.payload_is_double(*dv)) {
+            declared_default_by_schema_[fluent.id()] = pool.payload_double(*dv);
+        } else if (pool.payload_is_int(*dv)) {
+            declared_default_by_schema_[fluent.id()] =
+                static_cast<double>(pool.payload_int(*dv));
+        }
+    }
+}
 
 void NumericBoundsIndex::initialize_from_initial_state() {
     const auto& pool = problem_.pool();
@@ -120,8 +137,8 @@ Interval NumericBoundsIndex::get_bounds(int fluent_schema_id,
     if (it != bounds_.end()) {
         return it->second;
     }
-    // Uninitialized numeric fluent defaults to [0, 0] per UP convention.
-    return Interval(0.0);
+    // Uninitialized numeric fluent defaults to [d, d] (declared default, else 0).
+    return Interval(schema_default(fluent_schema_id));
 }
 
 bool NumericBoundsIndex::update_bounds(int fluent_schema_id,
@@ -131,8 +148,8 @@ bool NumericBoundsIndex::update_bounds(int fluent_schema_id,
     auto it = bounds_.find(key);
 
     if (it == bounds_.end()) {
-        // First time seeing this fluent. Default is [0, 0].
-        Interval def(0.0);
+        // First time seeing this fluent. Default is [d, d] (declared, else 0).
+        Interval def(schema_default(fluent_schema_id));
         Interval merged = def.convex_union(new_interval);
         bounds_.emplace(key, merged);
         if (merged.lower < def.lower) lower_expansion_count_[key]++;

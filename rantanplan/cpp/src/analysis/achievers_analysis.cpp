@@ -870,23 +870,85 @@ std::unordered_set<size_t> AchieversAnalysis::compute_goal_relevant_action_indic
         }
     };
 
-    while (!frontier.empty()) {
+    // Value chaining: need can flow through a fluent's VALUE, not only through
+    // boolean sub-goals — a numeric condition is achieved *from* a numeric
+    // pre-state (`x == 3` via `x -= 2` needs `x == 5`), and an expression-valued
+    // effect reads its sources at execution time (`y := x`, `level -= step`).
+    // No boolean sub-goal represents either dependency, so discriminating among
+    // writers by direct achievement alone is unsound for pruning (see
+    // tests/api/regressions.py::test_goal_relevance_numeric_value_chaining and
+    // ::test_boolean_assign_from_fluent). Conservative sound rules:
+    //   (a) every writer of a NUMERIC fluent occurring in a relevant condition
+    //       is relevant (numeric achievement regresses through the value;
+    //       boolean conditions stay precise via the achiever path);
+    //   (b) every fluent — boolean or numeric — read by a relevant action's
+    //       effect expressions is value-relevant, and all its writers are
+    //       relevant, transitively.
+    std::unordered_map<ExprID, std::vector<const Action*>> writers_by_fluent;
+    for (const Action& a : problem.actions()) {
+        for (const auto& eff : a.effects()) {
+            ExprID f = eff.effect_expression().fluent_id();
+            if (f.valid()) {
+                writers_by_fluent[f].push_back(&a);
+            }
+        }
+    }
+
+    std::unordered_set<ExprID> value_relevant_fluents;
+    std::vector<ExprID> fluent_frontier;
+
+    auto enqueue_value_fluents = [&](ExprID expr, bool numeric_only) {
+        if (!expr.valid()) return;
+        FluentCollector collector(problem);
+        collector.collect_from_id(expr);
+        for (ExprID f : collector.get_fluents()) {
+            if (numeric_only && problem.is_bool_type(f)) continue;
+            if (value_relevant_fluents.insert(f).second) {
+                fluent_frontier.push_back(f);
+            }
+        }
+    };
+
+    // Marking an action relevant enqueues its boolean sub-goals (preconditions
+    // + conditional-effect guards) and the fluents its effect RHS expressions
+    // read (rule b). Constant-valued effects contribute nothing, so classical
+    // domains are unaffected.
+    auto mark_relevant = [&](const Action* a, std::vector<ExprID>& cond_out) {
+        if (!relevant_actions.insert(a).second) return;
+        enqueue_needed_conditions(*a, cond_out);
+        for (const auto& eff : a->effects()) {
+            enqueue_value_fluents(eff.effect_expression().value_id(),
+                                  /*numeric_only=*/false);
+        }
+    };
+
+    while (!frontier.empty() || !fluent_frontier.empty()) {
         std::vector<ExprID> next_frontier;
         for (ExprID cond : frontier) {
+            enqueue_value_fluents(cond, /*numeric_only=*/true);  // rule (a)
+
             auto ach_it = condition_to_achievers_.find(cond);
             if (ach_it == condition_to_achievers_.end()) continue;
 
             for (const Action& achiever : ach_it->second) {
                 auto ptr_it = action_id_to_ptr.find(achiever.id());
                 if (ptr_it == action_id_to_ptr.end()) continue;
-
-                if (relevant_actions.insert(ptr_it->second).second) {
-                    // New relevant action — enqueue its preconditions and its
-                    // conditional-effect guards.
-                    enqueue_needed_conditions(achiever, next_frontier);
-                }
+                mark_relevant(ptr_it->second, next_frontier);
             }
         }
+
+        // Writers of the fluents whose value became relevant above. The vector
+        // grows while iterating: RHS reads of newly relevant writers append to
+        // it and are handled in the same sweep.
+        for (size_t i = 0; i < fluent_frontier.size(); ++i) {
+            auto w_it = writers_by_fluent.find(fluent_frontier[i]);
+            if (w_it == writers_by_fluent.end()) continue;
+            for (const Action* writer : w_it->second) {
+                mark_relevant(writer, next_frontier);
+            }
+        }
+        fluent_frontier.clear();
+
         frontier = std::move(next_frontier);
     }
 

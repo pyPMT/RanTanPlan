@@ -74,7 +74,8 @@ public:
     /// instead of the encoding). No-op for encoders without frame axioms.
     virtual void set_lazy_frames(bool enabled) { (void)enabled; }
 
-    // State constraints (mutexes, bounds) from InvariantOraclePass
+    // State constraints (bounds/conservations/domains from ActionPruningPass,
+    // mutexes from MutexAnalysisPass)
     virtual z3::expr encode_state_constraints(int t) = 0;
 
     /// Receive state constraints from the pipeline result.

@@ -36,8 +36,8 @@ Use --list-strategies to see available strategies and their descriptions.
                        help="Path to the PDDL problem file")
 
     # Strategy selection
-    parser.add_argument("--strategy", type=str,
-                       help="Planning strategy to use")
+    parser.add_argument("--strategy", type=str, default="els",
+                       help="Planning strategy to use (default: els)")
     parser.add_argument("--mode",
                        choices=["satisficing", "optimal", "anytime"],
                        default=None,
@@ -219,10 +219,6 @@ def main():
     # Validate required arguments for solving
     if not args.domain or not args.problem:
         print("Error: --domain and --problem are required (or use --list-strategies)")
-        sys.exit(1)
-
-    if not args.strategy:
-        print("Error: --strategy is required")
         sys.exit(1)
 
     # Validate files

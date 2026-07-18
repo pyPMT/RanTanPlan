@@ -16,7 +16,10 @@ namespace rantanplan {
  * A pass reads and updates a PreprocessedProblem in place. It may transform
  * the problem, set a lower bound, or prove unsolvability.
  *
- * Passes are stateless — all state flows through PreprocessedProblem.
+ * Passes hold no mutable state — apply() is const and everything a pass
+ * computes flows through the PreprocessedProblem. Inputs beyond it (per-pass
+ * knobs from PreprocessorOptions, SymmetryAnalysisPass's pre-grounding
+ * snapshot) arrive at construction and stay read-only.
  */
 class Pass {
 public:

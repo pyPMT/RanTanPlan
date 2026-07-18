@@ -279,6 +279,29 @@ public:
         return intern(std::move(node));
     }
 
+    /// Intern a STATE_VARIABLE node: a FLUENT_SYMBOL head (payload = fluent
+    /// name) followed by its argument children. `type_id` is the fluent's value
+    /// type, used for both the head symbol and the state-variable node. `args`
+    /// defaults to empty for a nullary fluent (e.g. an array cell minted by
+    /// array lowering). This is the single place the state-variable node layout
+    /// (children[0] = FLUENT_SYMBOL, children[1..] = arguments) is constructed.
+    ExprID intern_state_variable(const std::string& fluent_name, int type_id,
+                                 const std::vector<ExprID>& args = {}) {
+        ExprNode head;
+        head.kind = static_cast<int>(ExprKind::FLUENT_SYMBOL);
+        head.type_id = type_id;
+        head.payload = fluent_name;
+        ExprID head_id = intern(std::move(head));
+
+        ExprNode sv;
+        sv.kind = static_cast<int>(ExprKind::STATE_VARIABLE);
+        sv.type_id = type_id;
+        sv.children.reserve(1 + args.size());
+        sv.children.push_back(head_id);
+        for (ExprID a : args) sv.children.push_back(a);
+        return intern(std::move(sv));
+    }
+
     /// Check if this is a boolean constant with value true.
     bool is_true_constant(ExprID id) const {
         if (!id.valid()) return false;

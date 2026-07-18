@@ -40,6 +40,8 @@ public:
 
     /// Seed from initial state: for each assignment where the fluent is an
     /// object fluent and the value is a CONSTANT (object name), add the value.
+    /// Then apply declared object-fluent defaults to any ground instance the
+    /// initial state left unset (see seed_declared_defaults).
     void initialize_from_initial_state();
 
     /// Add a reachable value for a ground object fluent instance.
@@ -57,6 +59,14 @@ public:
     const std::unordered_set<int>& get_values(
         int fluent_schema_id,
         const std::vector<int>& arg_obj_indices) const;
+
+    /// Decompose a STATE_VARIABLE ExprID for an object fluent.
+    /// Returns false if not an object fluent or decomposition fails.
+    /// Public so the grounder can decompose the *source* of a fluent-valued
+    /// object assign (b := a) and union its reachable values into the target.
+    bool decompose_object_fluent(ExprID eid,
+                                  int& out_schema_id,
+                                  std::vector<int>& out_arg_indices) const;
 
     /// Total number of (fluent_instance, value) pairs tracked.
     size_t total_entry_count() const { return total_entries_; }
@@ -96,15 +106,17 @@ private:
     static const std::vector<std::vector<int>> empty_tuples_;
     static const std::unordered_set<int> empty_values_;
 
-    /// Decompose a STATE_VARIABLE ExprID for an object fluent.
-    /// Returns false if not an object fluent or decomposition fails.
-    bool decompose_object_fluent(ExprID eid,
-                                  int& out_schema_id,
-                                  std::vector<int>& out_arg_indices) const;
-
     /// Resolve a value ExprID to an object index.
     /// The value must be a CONSTANT with a string payload (object name).
     bool resolve_value_object(ExprID value_eid, int& out_obj_index) const;
+
+    /// Apply each object fluent's declared default_initial_value to the ground
+    /// instances (cross-product of parameter-type object universes; the single
+    /// empty tuple for a nullary fluent) that the initial state left unset. The
+    /// CWA pass materialises these defaults only *after* grounding, so without
+    /// this the grounder would not see them and would prune every action guarded
+    /// by a defaulted object fluent.
+    void seed_declared_defaults();
 };
 
 } // namespace rantanplan

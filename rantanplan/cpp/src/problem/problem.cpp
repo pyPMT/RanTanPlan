@@ -277,6 +277,12 @@ void Problem::build_action_mappings() {
     }
 }
 
+void Problem::rebuild_derived_indices() {
+    build_fluent_mappings();
+    build_action_mappings();
+    collect_grounded_fluents();
+}
+
 void Problem::build_grounded_fluent_mappings() {
     grounded_fluent_to_index_.clear();
     for (size_t i = 0; i < grounded_fluents_.size(); ++i) {

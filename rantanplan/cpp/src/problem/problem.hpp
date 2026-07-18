@@ -40,6 +40,9 @@ enum class MetricKind { NONE, MINIMIZE_ACTION_COSTS, MINIMIZE_PLAN_LENGTH };
 class Problem {
     // Allow ir_io to access private members for deserialization
     friend Problem load_problem_from_ir(const ir::ProblemIR& ir_problem);
+    // Allow the grounder's array lowering to mint cell fluents and replace
+    // actions/goals/initial-state when compiling array accesses away.
+    friend Problem lower_arrays(const Problem& problem);
 
 public:
     // Constructors
@@ -266,6 +269,14 @@ private:
 
     void collect_grounded_fluents();
     void resolve_type_hierarchy();
+
+    /// Rebuild every derived index from the base component vectors (fluents,
+    /// actions, goals, initial state, invariants) in the canonical order. This
+    /// mirrors the finalisation tail of load_problem_from_ir; a Problem→Problem
+    /// transform (e.g. array lowering) calls it after replacing components so it
+    /// can never miss an index or get the order wrong. Keep in sync with the
+    /// finalisation steps in load_problem_from_ir (ir_io.cpp).
+    void rebuild_derived_indices();
 };
 
 } // namespace rantanplan

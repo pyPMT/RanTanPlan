@@ -1,10 +1,12 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <optional>
 #include "parameter.hpp"
 #include "type.hpp"
+#include "expr_pool.hpp"  // ExprID (declared_default_ references a pool constant)
 
 namespace rantanplan {
 
@@ -48,7 +50,41 @@ public:
     bool has_declared_bounds() const {
         return lower_bound_.has_value() || upper_bound_.has_value();
     }
-    
+
+    // Declared default_initial_value (UP `fluents_defaults`), as a CONSTANT
+    // ExprID in the problem's pool. Authoritative for cells/fluents missing an
+    // explicit initial value; the CWA pass falls back to clamped-0/false when
+    // it is unset. Array cells inherit their array fluent's default.
+    void set_declared_default(ExprID value) { declared_default_ = value; }
+    std::optional<ExprID> declared_default() const { return declared_default_; }
+
+    // Array fluents carry a first-class array value type (see Type::is_array);
+    // the per-dimension sizes and the leaf element type are derived from it.
+    // Undefined positions (full coordinate tuples) are per-fluent data, not
+    // part of the type: two fluents of one array type may exclude different
+    // cells. The lowering mints one scalar cell per defined position, of the
+    // leaf element type with the declared (element) bounds above.
+    bool is_array() const { return value_type_ && value_type_->is_array(); }
+    std::vector<int64_t> array_sizes() const {
+        std::vector<int64_t> sizes;
+        for (const Type* t = value_type_; t && t->is_array(); t = t->array_element()) {
+            sizes.push_back(t->array_size());
+        }
+        return sizes;
+    }
+    const Type* array_leaf_element_type() const {
+        const Type* t = value_type_;
+        while (t && t->is_array()) t = t->array_element();
+        return t;
+    }
+    void set_array_undefined_positions(
+            std::vector<std::vector<int64_t>> undefined_positions) {
+        array_undefined_positions_ = std::move(undefined_positions);
+    }
+    const std::vector<std::vector<int64_t>>& array_undefined_positions() const {
+        return array_undefined_positions_;
+    }
+
     // Convenience methods
     bool is_predicate() const {
         return value_type_ && value_type_->is_bool();
@@ -85,6 +121,8 @@ private:
     std::vector<Parameter> parameters_;
     std::optional<double> lower_bound_;
     std::optional<double> upper_bound_;
+    std::optional<ExprID> declared_default_;
+    std::vector<std::vector<int64_t>> array_undefined_positions_;
 };
 
 } // namespace rantanplan

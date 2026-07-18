@@ -1,12 +1,13 @@
 #include "cwa_initial_state_pass.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
+#include <stdexcept>
 #include <unordered_set>
 
 namespace rantanplan {
 
 void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
-    ScopedTimer timer("cwa.time_ms");
+    ScopedTimer timer;  // measuring-only; the pipeline records the stats key
 
     auto& problem = result.problem;
     auto pool = problem.pool_ptr();
@@ -17,31 +18,72 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
         assigned.insert(assignment.fluent_id());
     }
 
-    // Find grounded fluents missing from the initial state.
+    // Fill every grounded fluent missing from the initial state. This is the
+    // sole materialiser of default initial values (the Python wrapper no longer
+    // does it): a declared default_initial_value is authoritative (including an
+    // object/UserType default, which the ObjectFluentIndex has already seeded
+    // for the grounder); otherwise a boolean is closed-world false and a numeric
+    // is 0 clamped into its declared bounds. An object fluent with neither an
+    // explicit value nor a declared default is a hard error.
     std::vector<Assignment> defaults;
     for (ExprID eid : problem.grounded_fluents()) {
         if (assigned.count(eid)) continue;
 
-        // Determine the fluent's type and create the appropriate default constant.
-        const ExprNode& node = pool->get(eid);
-        int fluent_type_id = node.type_id;
+        int fluent_type_id = pool->get(eid).type_id;
         if (fluent_type_id < 0) continue;  // unknown type — skip
 
         const Type* type = problem.type_for_id(eid);
         if (!type) continue;
 
+        // Resolve the fluent schema (via its head symbol) for the declared
+        // default and bounds; array cells resolve to their cell fluent.
+        const Fluent* fluent = nullptr;
+        if (pool->is_state_variable(eid)) {
+            ExprID head = pool->head_symbol_id(eid);
+            if (pool->is_fluent_symbol(head)) {
+                fluent = problem.find_fluent(pool->payload_string(head));
+            }
+        }
+
+        // A declared default_initial_value is authoritative (a numeric value,
+        // boolean false, or an object constant; boolean-true defaults are
+        // rejected upstream and never reach here).
+        if (fluent && fluent->declared_default()) {
+            defaults.emplace_back(eid, *fluent->declared_default(), &problem.pool());
+            continue;
+        }
+
+        if (type->is_object()) {
+            throw std::runtime_error(
+                "Object fluent '" + pool->to_string(eid) + "' has no initial "
+                "value and object fluents have no default; it must be "
+                "initialized explicitly in the problem's initial state.");
+        }
+
+        // No declared default_initial_value: fall back to the implicit rule
+        // (the branch above already handled — and took precedence for — any
+        // UP-declared default). Booleans are closed-world false; numerics are 0
+        // clamped into the declared bounds. Unlike the declared-default branch,
+        // this synthesises a fresh constant node rather than reusing a UP node.
         ExprNode constant_node;
         constant_node.kind = static_cast<int>(ExprKind::CONSTANT);
         constant_node.type_id = fluent_type_id;
 
         if (type->is_bool()) {
             constant_node.payload = false;
-        } else if (type->is_int()) {
-            constant_node.payload = static_cast<int64_t>(0);
-        } else if (type->is_real()) {
-            constant_node.payload = 0.0;
         } else {
-            continue;  // object-typed fluent — no sensible default
+            // int/real: 0 clamped into the declared bounds — UP rejects an
+            // out-of-range initial value for a bounded type.
+            double v = 0.0;
+            if (fluent) {
+                if (auto lo = fluent->declared_lower_bound(); lo && v < *lo) v = *lo;
+                if (auto hi = fluent->declared_upper_bound(); hi && v > *hi) v = *hi;
+            }
+            if (type->is_int()) {
+                constant_node.payload = static_cast<int64_t>(v);
+            } else {
+                constant_node.payload = v;
+            }
         }
 
         ExprID value_id = pool->intern(std::move(constant_node));

@@ -71,8 +71,28 @@ struct FluentIR {
     std::vector<ParameterIR> parameters;
     /// Declared numeric bounds for bounded int/real value types (e.g.
     /// `integer[0, 15]`); unset for unbounded numeric or non-numeric fluents.
+    /// For array fluents these carry the *element* type's bounds (the grounder
+    /// mints cells of that element type), same as scalar bounded fluents.
     std::optional<double> lower_bound;
     std::optional<double> upper_bound;
+    /// Array shape (from an ArrayType value, e.g. `array[3, integer[0, 15]]`);
+    /// empty `array_sizes` means this is not an array fluent. `element_type` is
+    /// the leaf scalar type string ("up:integer", ...); `array_sizes` is the
+    /// per-dimension size list; `undefined_positions` are full coordinate
+    /// tuples the grounder must never mint as cells.
+    std::string element_type;
+    std::vector<int64_t> array_sizes;
+    std::vector<std::vector<int64_t>> undefined_positions;
+    /// Declared default_initial_value (UP `fluents_defaults`), as an index into
+    /// ProblemIR::nodes pointing to a CONSTANT node; unset when the fluent
+    /// declares no default. The CWA pass treats it as authoritative for cells
+    /// missing an explicit initial value (else it falls back to clamped-0 /
+    /// false). Array fluents carry one scalar default (UP stores array defaults
+    /// as scalars); the lowering stamps it onto every cell. Only numeric and
+    /// boolean-`false` defaults are carried — a boolean-`true` default is
+    /// rejected at conversion, and object defaults are ignored (object fluents
+    /// require explicit initialization).
+    std::optional<uint32_t> default_value;
 };
 
 struct EffectIR {

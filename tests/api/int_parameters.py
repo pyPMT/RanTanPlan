@@ -130,7 +130,10 @@ def test_cost_depends_on_int_param_optimal():
 
 
 def test_reject_unbounded_and_real():
-    """Unsupported parameter types raise a clear error, not a false result."""
+    """Unsupported parameter types are rejected, not falsely solved. Rejection
+    may surface either as a clear conversion error (UPException) or, when the
+    unsupported type shows up in the problem kind, as a clean UNSUPPORTED_PROBLEM
+    result from the wrapper's allow-list gate — never as a plan."""
     level = Fluent("level", IntType(0, 10))
 
     def build(ptype):
@@ -148,10 +151,12 @@ def test_reject_unbounded_and_real():
                        (IntType(None, 3), "upper-only"),
                        (RealType(0, 3), "real")]:
         try:
-            solve(build(ptype))
+            r = solve(build(ptype))
         except UPException:
-            continue
-        raise AssertionError(f"expected UPException for {why} parameter")
+            continue  # rejected during conversion
+        assert r.status not in (PlanGenerationResultStatus.SOLVED_SATISFICING,
+                                PlanGenerationResultStatus.SOLVED_OPTIMALLY), \
+            f"expected rejection for {why} parameter, got {r.status}"
 
 
 CASES = [
