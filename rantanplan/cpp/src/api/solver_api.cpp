@@ -25,6 +25,7 @@
 #include "passes/int_parameter_instantiation_pass.hpp"
 #include "passes/array_lowering_pass.hpp"
 #include "passes/set_lowering_pass.hpp"
+#include "passes/term_resolution_pass.hpp"
 #include "passes/grounding_pass.hpp"
 #include "passes/quantifier_expansion_pass.hpp"
 #include "passes/cwa_initial_state_pass.hpp"
@@ -81,6 +82,13 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
             "Set fluents require native grounding; --up-grounding is "
             "unsupported for set problems.");
     }
+    // Ghost parameters minted by TermResolutionPass are enumerated by the
+    // native grounder's equality join; the UP-grounding path never sees them.
+    if (!options.enable_grounding && rantanplan::has_nested_fluent_terms(problem)) {
+        throw std::invalid_argument(
+            "Nested fluent terms require native grounding; --up-grounding is "
+            "unsupported for problems with nested fluent terms.");
+    }
 
     // === PREPROCESSING PIPELINE ===
     //
@@ -126,6 +134,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
 
     rantanplan::IntParameterInstantiationPass int_parameter_instantiation_pass;
     rantanplan::QuantifierExpansionPass quantifier_expansion_pass;
+    rantanplan::TermResolutionPass term_resolution_pass;
     rantanplan::ArrayLoweringPass array_lowering_pass;
     rantanplan::SetLoweringPass set_lowering_pass;
     rantanplan::GroundingPass grounding_pass;
@@ -148,6 +157,12 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     // object grounding over quantifier-free actions.
     passes.push_back(&int_parameter_instantiation_pass);
     passes.push_back(&quantifier_expansion_pass);
+    // Term resolution must follow quantifier expansion (quantified variables
+    // are already enumerated) and precede the structured lowerings: a ghost
+    // equality pinned on an array cell (`card_at[r][c] = ?g`) is rewritten by
+    // ArrayLoweringPass like any other access, and a ghosted set element is an
+    // ordinary parameter for SetLoweringPass. No-op without nested terms.
+    passes.push_back(&term_resolution_pass);
     // Array lowering must follow quantifier expansion (indices become ground
     // constant arithmetic) and precede grounding (cells must exist before the
     // reachability fixpoint enumerates facts). No-op without array fluents.

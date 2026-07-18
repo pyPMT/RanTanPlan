@@ -258,20 +258,10 @@ class _FNodeToIR:
             children = [head] + [self.walk(e) for e in expression._content.payload]
             return self._add(_FUNCTION_APPLICATION, "", children=children)
 
-        # Scope guard: the element position of member/add/remove (arg 0) must not
-        # read a fluent -- `member(loc_of(t), S)` would make the element (and thus
-        # the lowered cell coordinate) state-dependent, which `⟦·⟧_e` cannot
-        # enumerate. Elements may only be constants, parameters, and quantified
-        # variables (the same line arrays drew for indices).
-        if expression.node_type in (OperatorKind.SET_MEMBER,
-                                    OperatorKind.SET_ADD,
-                                    OperatorKind.SET_REMOVE):
-            element = expression.arg(0)
-            if _index_contains_fluent(element):
-                raise UPException(
-                    f"State-dependent set elements are not supported: element "
-                    f"'{element}' reads a fluent. Set elements may only use "
-                    f"constants, parameters, and quantified variables.")
+        # A fluent-valued element of member/add/remove (`member(loc_of(t), S)`)
+        # is allowed: the C++ TermResolutionPass replaces it with a ghost
+        # parameter (pinned by an equality precondition) before set lowering,
+        # so the lowered cell coordinate is an ordinary parameter.
 
         # Whole-array equality against a literal (an ARRAY_CONSTANT operand,
         # e.g. n_puzzle's `Equals(puzzle, goal_blocks)` goal). Expand it

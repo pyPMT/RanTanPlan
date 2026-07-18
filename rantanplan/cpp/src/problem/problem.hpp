@@ -47,6 +47,10 @@ class Problem {
     // actions/goals/initial-state when compiling set operations away.
     friend Problem lower_sets(const Problem& problem);
 
+    // Ghost-parameter resolution of nested fluent terms replaces actions_
+    // in a copied problem (passes/term_resolution_pass.cpp).
+    friend Problem resolve_nested_terms(const Problem& problem);
+
 public:
     // Constructors
     Problem() = default;

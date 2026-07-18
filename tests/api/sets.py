@@ -485,21 +485,33 @@ def test_reject_nested_set_type():
     _assert_rejected(build)
 
 
-def test_reject_fluent_valued_element():
-    def build():
-        p = Problem("fe")
-        locof = Fluent("locof", Pkg, t=Truck)
-        S = Fluent("S", _st(Pkg))
-        p.add_fluent(locof); p.add_fluent(S, default_initial_value=_em().Set([]))
-        p.add_fluent(Fluent("g", BoolType()), default_initial_value=False)
-        t1 = Object("t1", Truck); p.add_object(t1)
-        _pkgs(p, ["a"])
-        a = InstantaneousAction("a", t=Truck)
-        a.add_precondition(_em().SetMember(locof(a.parameter("t")), S()))  # fluent element
-        a.add_effect(Fluent("g", BoolType())(), True)
-        p.add_action(a)
-        return p
-    _assert_rejected(build)
+def test_fluent_valued_element():
+    """`member(locof(t), S)` — a fluent-valued element, formerly rejected at
+    conversion — is resolved by the C++ TermResolutionPass into a ghost
+    parameter pinned by an equality precondition before set lowering
+    (docs/nesting-status-and-gaps.md §4.2), so it now solves. The simulator
+    oracle does not evaluate object fluents, so this asserts plan shape
+    directly (the ghost machinery itself is UP-validated in
+    tests/api/nested_terms.py)."""
+    p = Problem("fe")
+    locof = Fluent("locof", Pkg, t=Truck)
+    S = Fluent("S", _st(Pkg))
+    g = Fluent("g", BoolType())
+    p.add_fluent(locof)
+    p.add_fluent(S, default_initial_value=_em().Set([]))
+    p.add_fluent(g, default_initial_value=False)
+    t1 = Object("t1", Truck); p.add_object(t1)
+    pa, = _pkgs(p, ["a"])
+    p.set_initial_value(locof(t1), pa)
+    p.set_initial_value(S(), _em().Set([_em().ObjectExp(pa)]))
+    pick = InstantaneousAction("pick", t=Truck)
+    pick.add_precondition(_em().SetMember(locof(pick.parameter("t")), S()))
+    pick.add_effect(g(), True)
+    p.add_action(pick)
+    p.add_goal(g())
+    r = solve(p)
+    assert r.plan is not None, f"fluent-valued element did not solve ({r.status})"
+    assert "pick" in [ai.action.name for ai in r.plan.actions]
 
 
 def test_reject_array_of_set():
@@ -555,7 +567,7 @@ CASES = [
     test_reject_set_typed_parameter,
     test_reject_int_element_set,
     test_reject_nested_set_type,
-    test_reject_fluent_valued_element,
+    test_fluent_valued_element,
     test_reject_array_of_set,
     test_up_grounding_rejected,
 ]

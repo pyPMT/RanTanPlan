@@ -317,55 +317,51 @@ class _RantanPlanBase(Engine):
 
     @staticmethod
     def _check_no_nested_fluents(problem: Problem):
-        """Reject function composition (nested fluent terms) which is not supported.
+        """Reject the nested-fluent shapes term resolution does not support.
 
-        Detects patterns like (city-of (vehicle-location ?t)) where one fluent
-        application appears as an argument to another fluent application.
+        Nested fluent terms in *action* expressions — (city-of
+        (vehicle-location ?t)) — are compiled away by the C++
+        TermResolutionPass (ghost parameters pinned by equality
+        preconditions), but only for object-valued inner terms: an inner term
+        of int/real/bool type is the state-dependent-index axis and is still
+        rejected. Goals have no action to host a ghost parameter, so any
+        nesting there is rejected with a rewrite hint.
         """
-        def has_nested_fluent(node, inside_fluent=False):
+        def contains_fluent(node):
             if node.is_fluent_exp():
-                if inside_fluent:
-                    return node
+                return True
+            return any(contains_fluent(arg) for arg in node.args)
+
+        def check(node, where, in_action):
+            if node.is_fluent_exp():
                 for arg in node.args:
-                    result = has_nested_fluent(arg, inside_fluent=True)
-                    if result is not None:
-                        return result
-                return None
+                    if contains_fluent(arg):
+                        if not in_action:
+                            raise UPException(
+                                f"Nested fluent term {arg} in {where} is not "
+                                f"supported: only action expressions can host "
+                                f"a ghost parameter. Rewrite with an explicit "
+                                f"Exists over the inner term's value.")
+                        if not arg.type.is_user_type():
+                            raise UPException(
+                                f"Nested fluent term {arg} in {where} has "
+                                f"non-object type '{arg.type}'; only "
+                                f"object-valued nested fluent terms are "
+                                f"supported.")
             for arg in node.args:
-                result = has_nested_fluent(arg, inside_fluent)
-                if result is not None:
-                    return result
-            return None
+                check(arg, where, in_action)
 
         for action in problem.actions:
             for prec in action.preconditions:
-                nested = has_nested_fluent(prec)
-                if nested is not None:
-                    raise UPException(
-                        f"Function composition (nested fluent terms) is not supported. "
-                        f"Action '{action.name}' precondition contains nested fluent: {nested}. "
-                        f"Rewrite using auxiliary parameters or boolean predicates.")
+                check(prec, f"action '{action.name}' precondition", True)
             for effect in action.effects:
-                nested = has_nested_fluent(effect.value)
-                if nested is not None:
-                    raise UPException(
-                        f"Function composition (nested fluent terms) is not supported. "
-                        f"Action '{action.name}' effect value contains nested fluent: {nested}. "
-                        f"Rewrite using auxiliary parameters or boolean predicates.")
-                nested = has_nested_fluent(effect.fluent)
-                if nested is not None:
-                    raise UPException(
-                        f"Function composition (nested fluent terms) is not supported. "
-                        f"Action '{action.name}' effect fluent contains nested fluent: {nested}. "
-                        f"Rewrite using auxiliary parameters or boolean predicates.")
+                check(effect.fluent, f"action '{action.name}' effect target", True)
+                check(effect.value, f"action '{action.name}' effect value", True)
+                check(effect.condition,
+                      f"action '{action.name}' effect condition", True)
 
         for goal in problem.goals:
-            nested = has_nested_fluent(goal)
-            if nested is not None:
-                raise UPException(
-                    f"Function composition (nested fluent terms) is not supported. "
-                    f"Goal contains nested fluent: {nested}. "
-                    f"Rewrite using auxiliary parameters or boolean predicates.")
+            check(goal, "a goal", False)
 
     @staticmethod
     def _check_supported_action_parameters(problem: Problem):
