@@ -523,6 +523,33 @@ def test_reject_array_of_set():
     _assert_rejected(build)
 
 
+def test_symmetries_with_set_fluents():
+    """`--symmetries` used to crash on set problems: the detection snapshot
+    was taken before SetLoweringPass, so its Z3 equivalence formula met raw
+    SET_* nodes ("Wrong number of arguments ... set_constant"). The snapshot
+    is now taken after the canonicalize lowerings (all-scalar, still lifted,
+    pre-StaticFluent), so detection runs and sees the interchangeable
+    packages. Pins solve + simulator validity with symmetries enabled."""
+    from unified_planning.shortcuts import OneshotPlanner
+    p = Problem("sym_sets")
+    held = Fluent("held", _st(Pkg), t=Truck)
+    p.add_fluent(held, default_initial_value=_em().Set([]))
+    t1 = Object("t1", Truck); p.add_object(t1)
+    _pkgs(p, ["a", "b"])
+    load = InstantaneousAction("load", t=Truck, pk=Pkg)
+    t, pk = load.parameter("t"), load.parameter("pk")
+    load.add_precondition(Not(_em().SetMember(pk, held(t))))
+    load.add_effect(held(t), _em().SetAdd(pk, held(t)))
+    p.add_action(load)
+    p.add_goal(GE(_em().SetCardinality(held(t1)), Int(2)))
+    with OneshotPlanner(name="rantanplan",
+                        params={"verbosity": "silent",
+                                "symmetries": True}) as pl:
+        r = pl.solve(p)
+    assert r.plan is not None, f"symmetries+sets did not solve ({r.status})"
+    assert _simulate_ok(p, r.plan), "plan fails set-semantics simulation"
+
+
 def test_up_grounding_rejected():
     """--up-grounding is rejected for set problems (membership cells are only
     validated through native grounding)."""
@@ -569,5 +596,6 @@ CASES = [
     test_reject_nested_set_type,
     test_fluent_valued_element,
     test_reject_array_of_set,
+    test_symmetries_with_set_fluents,
     test_up_grounding_rejected,
 ]
