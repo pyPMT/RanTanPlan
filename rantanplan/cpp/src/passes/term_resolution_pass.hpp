@@ -12,10 +12,23 @@ class Problem;
 /// set member/add/remove.
 bool has_nested_fluent_terms(const Problem& problem);
 
+/// True if any action expression contains a state-dependent array index: an
+/// `ARRAY_INDEX` whose index expression reads state (`a[ptr]`, `a[b[i]]`).
+bool has_state_dependent_indices(const Problem& problem);
+
 /// Rewrite every action so no nested fluent term remains (ghost parameters +
 /// pinning equality preconditions). Returns the rewritten problem (shared
 /// ExprPool); no-op inputs come back unchanged action-by-action.
 Problem resolve_nested_terms(const Problem& problem);
+
+/// Compile state-dependent array indices away by per-position instance
+/// splitting (docs/specs/undefinedness-semantics.md, regime R2): for each
+/// state-dependent index expression `e` on a dimension of size n, one
+/// instance per position p with precondition `e = p` and the index replaced
+/// by the constant, plus one boundary instance (`e < 0 ∨ e ≥ n`, index
+/// replaced by the out-of-bounds constant n) that ArrayLoweringPass then
+/// resolves per Def. 9 at compile time. Innermost indices split first.
+Problem split_state_dependent_indices(const Problem& problem);
 
 /**
  * @brief Resolve nested fluent terms (FSTRIPS composition) via ghost

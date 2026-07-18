@@ -18,6 +18,7 @@ rejected — that is the N2 axis, covered in tests/api/arrays.py).
 """
 from unified_planning.shortcuts import (
     Fluent, InstantaneousAction, Problem, BoolType, UserType, Object, Equals,
+    And,
 )
 from unified_planning.exceptions import UPException
 from unified_planning.engines.results import PlanGenerationResultStatus
@@ -280,30 +281,200 @@ def test_array_cell_inner_term():
     assert "go" in [ai.action.name for ai in res.plan.actions]
 
 
-def test_goal_nested_rejected():
-    """A nested term in a goal has no action to host the ghost — the wrapper
-    raises a clear UPException with the exists-rewrite hint (the check runs
-    before conversion, outside the INTERNAL_ERROR net)."""
+def test_goal_nested_term_expanded():
+    """A nested term in a *goal* has no action to host a ghost — it is
+    expanded by value-universe disjunction instead
+    (`⋁_o (loc(r1) = o ∧ safe(o))`). The robot starts in an unsafe room, so
+    achieving the goal needs a move — pinning that the expansion tracks
+    state, not just the initial value."""
     p = Problem("nested_goal")
     r1 = Object("r1", Robot)
     p.add_object(r1)
-    ra, = _rooms(p, ["ra"])
+    ra, rb = _rooms(p, ["ra", "rb"])
     loc = Fluent("loc", Room, r=Robot)
     safe = Fluent("safe", BoolType(), m=Room)
     p.add_fluent(loc)
     p.add_fluent(safe, default_initial_value=False)
     p.set_initial_value(loc(r1), ra)
-    p.set_initial_value(safe(ra), True)
-    noop = InstantaneousAction("noop")
-    p.add_action(noop)
-    p.add_goal(safe(loc(r1)))  # nested in goal
+    p.set_initial_value(safe(rb), True)
 
+    move = InstantaneousAction("move", r=Robot, to=Room)
+    move.add_effect(loc(move.parameter("r")), move.parameter("to"))
+    p.add_action(move)
+    p.add_goal(safe(loc(r1)))  # nested in goal — expanded, not rejected
+
+    res = solve(p)
+    assert res.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+        f"expected SOLVED, got {res.status}"
+    assert "move" in [ai.action.name for ai in res.plan.actions]
+    assert_valid(p, res.plan)
+
+
+# ── N2: state-dependent array indices (per-position instance splitting,
+# docs/specs/undefinedness-semantics.md regime R2) ──────────────────────────
+
+
+def _int_array_problem(name, values, ptr_init, ptr_hi=None):
+    """A 3-cell int array `arr`, an int pointer fluent `ptr`, and a `done`
+    flag. `ptr_hi` widens ptr's declared range beyond the array (OOB states
+    expressible)."""
+    from unified_planning.shortcuts import ArrayType, IntType
+    em = _em()
+    p = Problem(name)
+    arr = Fluent("arr", ArrayType(3, IntType(0, 9)))
+    ptr = Fluent("ptr", IntType(0, ptr_hi if ptr_hi is not None else 2))
+    done = Fluent("done", BoolType())
+    p.add_fluent(arr, default_initial_value=0)
+    p.add_fluent(ptr, default_initial_value=0)
+    p.add_fluent(done, default_initial_value=False)
+    p.set_initial_value(arr, values)
+    p.set_initial_value(ptr, ptr_init)
+    return p, arr, ptr, done, em
+
+
+def _em():
+    from unified_planning.environment import get_environment
+    return get_environment().expression_manager
+
+
+def test_state_dependent_index_read():
+    """`arr[ptr] = 7` as a precondition: ptr=1 and arr[1]=7 initially, so the
+    split instance `ptr = 1 ∧ arr[1] = 7` fires."""
+    from unified_planning.shortcuts import Int
+    p, arr, ptr, done, em = _int_array_problem("n2_read", [3, 7, 5], 1)
+    a = InstantaneousAction("probe")
+    a.add_precondition(Equals(em.ArrayIndex(arr(), ptr()), Int(7)))
+    a.add_effect(done(), True)
+    p.add_action(a)
+    p.add_goal(done())
+    res = solve(p)
+    assert res.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+        f"expected SOLVED, got {res.status}"
+    assert "probe" in [ai.action.name for ai in res.plan.actions]
+
+
+def test_state_dependent_index_read_blocks():
+    """The mirror case: ptr points at a cell that does NOT hold 7, so no
+    in-range instance is applicable and the problem is unsolvable (the split
+    must not let the ghost position drift from ptr's actual value)."""
+    from unified_planning.shortcuts import Int
+    p, arr, ptr, done, em = _int_array_problem("n2_read_blocks", [3, 7, 5], 2)
+    a = InstantaneousAction("probe")
+    a.add_precondition(Equals(em.ArrayIndex(arr(), ptr()), Int(7)))
+    a.add_effect(done(), True)
+    p.add_action(a)
+    p.add_goal(done())
+    res = solve(p)
+    assert res.status == PlanGenerationResultStatus.UNSOLVABLE_PROVEN, \
+        f"expected UNSOLVABLE_PROVEN, got {res.status}"
+
+
+def test_state_dependent_index_write_up_rejected():
+    """`arr[ptr] := 9` — a write through a state-dependent index. The C++
+    split resolves this shape (same machinery as reads), but the
+    x-unified-planning model layer refuses to construct a fluent-containing
+    effect target (`UPProblemDefinitionError`), exactly as for nested-fluent
+    write targets. Pins the upstream behaviour; flips when the fork starts
+    accepting it."""
+    from unified_planning.shortcuts import ArrayType, IntType, Int
+    from unified_planning.exceptions import UPProblemDefinitionError
+    em = _em()
+    arr = Fluent("arr", ArrayType(3, IntType(0, 9)))
+    ptr = Fluent("ptr", IntType(0, 2))
+    a = InstantaneousAction("stamp")
     try:
-        solve(p)
-    except UPException as e:
-        assert "goal" in str(e).lower(), f"unexpected message: {e}"
+        a.add_effect(em.ArrayIndex(arr(), ptr()), Int(9))
+    except UPProblemDefinitionError:
         return
-    raise AssertionError("expected a UPException for a nested goal term")
+    raise AssertionError(
+        "UP now accepts state-dependent index write targets — add the "
+        "end-to-end solve coverage (the split already handles targets).")
+
+
+def test_state_dependent_index_oob_inapplicable():
+    """Non-strict read-of-⊥: ptr's declared range exceeds the array and the
+    initial state pins it out of bounds (ptr = 5, array size 3). The
+    unconditional read makes every in-range instance inapplicable and the
+    boundary instance is discarded (unconditional ⊥) — unsolvable, not an
+    error."""
+    from unified_planning.shortcuts import Int
+    p, arr, ptr, done, em = _int_array_problem(
+        "n2_oob", [3, 7, 5], 5, ptr_hi=9)
+    a = InstantaneousAction("probe")
+    a.add_precondition(Equals(em.ArrayIndex(arr(), ptr()), Int(7)))
+    a.add_effect(done(), True)
+    p.add_action(a)
+    p.add_goal(done())
+    res = solve(p)
+    assert res.status == PlanGenerationResultStatus.UNSOLVABLE_PROVEN, \
+        f"expected UNSOLVABLE_PROVEN, got {res.status}"
+
+
+def test_boundary_or_absorption():
+    """Def-9 OR absorption at runtime: precondition `arr[ptr] = 7 ∨ done0`
+    with ptr out of bounds. The boundary instance rewrites the ⊥ read per
+    Def. 9, keeping the other disjunct — the action stays applicable via
+    `done0` even though the read is undefined."""
+    from unified_planning.shortcuts import Int, Or
+    p, arr, ptr, done, em = _int_array_problem(
+        "n2_or", [3, 7, 5], 5, ptr_hi=9)
+    done0 = Fluent("done0", BoolType())
+    p.add_fluent(done0, default_initial_value=False)
+    p.set_initial_value(done0(), True)
+    a = InstantaneousAction("probe")
+    a.add_precondition(Or(Equals(em.ArrayIndex(arr(), ptr()), Int(7)),
+                          done0()))
+    a.add_effect(done(), True)
+    p.add_action(a)
+    p.add_goal(done())
+    res = solve(p)
+    assert res.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+        f"expected SOLVED (OR absorbs the ⊥ read), got {res.status}"
+
+
+def test_inner_state_dependent_index():
+    """`arr[idx[0]]` — the index is itself an array read: the inner constant
+    access resolves through the split equality (`idx[0] = p`)."""
+    from unified_planning.shortcuts import ArrayType, IntType, Int
+    em = _em()
+    p = Problem("n2_inner")
+    arr = Fluent("arr", ArrayType(3, IntType(0, 9)))
+    idx = Fluent("idx", ArrayType(2, IntType(0, 2)))
+    done = Fluent("done", BoolType())
+    p.add_fluent(arr, default_initial_value=0)
+    p.add_fluent(idx, default_initial_value=0)
+    p.add_fluent(done, default_initial_value=False)
+    p.set_initial_value(arr, [3, 7, 5])
+    p.set_initial_value(idx, [2, 0])
+    a = InstantaneousAction("probe")
+    a.add_precondition(Equals(
+        em.ArrayIndex(arr(), em.ArrayIndex(idx(), Int(0))), Int(5)))
+    a.add_effect(done(), True)
+    p.add_action(a)
+    p.add_goal(done())
+    res = solve(p)
+    assert res.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+        f"expected SOLVED, got {res.status}"
+
+
+def test_index_after_pointer_move():
+    """Two-step: an action moves ptr onto the 7-cell, then the probe fires —
+    the split equality must track state change, not just the initial value."""
+    from unified_planning.shortcuts import Int
+    p, arr, ptr, done, em = _int_array_problem("n2_move", [3, 7, 5], 0)
+    step = InstantaneousAction("advance")
+    step.add_effect(ptr(), Int(1))
+    p.add_action(step)
+    a = InstantaneousAction("probe")
+    a.add_precondition(Equals(em.ArrayIndex(arr(), ptr()), Int(7)))
+    a.add_effect(done(), True)
+    p.add_action(a)
+    p.add_goal(done())
+    res = solve(p)
+    assert res.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+        f"expected SOLVED, got {res.status}"
+    names = [ai.action.name for ai in res.plan.actions]
+    assert "advance" in names and "probe" in names, f"unexpected plan: {names}"
 
 
 CASES = [
@@ -315,5 +486,12 @@ CASES = [
     test_shared_inner_term,
     test_nested_after_move,
     test_array_cell_inner_term,
-    test_goal_nested_rejected,
+    test_goal_nested_term_expanded,
+    test_state_dependent_index_read,
+    test_state_dependent_index_read_blocks,
+    test_state_dependent_index_write_up_rejected,
+    test_state_dependent_index_oob_inapplicable,
+    test_boundary_or_absorption,
+    test_inner_state_dependent_index,
+    test_index_after_pointer_move,
 ]

@@ -111,17 +111,6 @@ def _array_shape(tpe):
     return _up_type_str(leaf), sizes, leaf
 
 
-def _index_contains_fluent(node) -> bool:
-    """True if an array-index expression reads a fluent (state variable).
-
-    Scope guard (docs/native-arrays-plan.md): array indices must be built from
-    constants, parameters, quantified variables, and arithmetic over them --
-    never fluents. `a[f]` / `a[b[i]]` would make the index state-dependent."""
-    if node.is_fluent_exp():
-        return True
-    return any(_index_contains_fluent(arg) for arg in node.args)
-
-
 class _FNodeToIR:
     """Flattens FNode DAGs into the shared node pool.
 
@@ -235,16 +224,10 @@ class _FNodeToIR:
         if expression.node_type == OperatorKind.ARRAY_CONSTANT:
             raise UPException(
                 "Array constants outside the initial state are not supported yet.")
-        if expression.is_array_index():
-            # arg(0) is the array (a fluent / nested access); arg(1) is the index,
-            # which must not depend on state (see _index_contains_fluent).
-            index_expr = expression.arg(1)
-            if _index_contains_fluent(index_expr):
-                raise UPException(
-                    f"State-dependent array indices are not supported: index "
-                    f"'{index_expr}' reads a fluent. Array indices may only use "
-                    f"constants, parameters, quantified variables, and "
-                    f"arithmetic over them.")
+        # A state-dependent array index (`a[ptr]` — arg(1) reads a fluent) is
+        # allowed: the C++ TermResolutionPass compiles it away by per-position
+        # instance splitting before array lowering
+        # (docs/specs/undefinedness-semantics.md, regime R2).
 
         if expression.node_type == OperatorKind.SET_CONSTANT:
             # A set literal `{c1..ck}` (empty for `{}`). Its elements live in the

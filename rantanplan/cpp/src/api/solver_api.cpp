@@ -83,11 +83,14 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
             "unsupported for set problems.");
     }
     // Ghost parameters minted by TermResolutionPass are enumerated by the
-    // native grounder's equality join; the UP-grounding path never sees them.
-    if (!options.enable_grounding && rantanplan::has_nested_fluent_terms(problem)) {
+    // native grounder's equality join, and its index splits assume the native
+    // pipeline; the UP-grounding path never sees either.
+    if (!options.enable_grounding &&
+        (rantanplan::has_nested_fluent_terms(problem) ||
+         rantanplan::has_state_dependent_indices(problem))) {
         throw std::invalid_argument(
-            "Nested fluent terms require native grounding; --up-grounding is "
-            "unsupported for problems with nested fluent terms.");
+            "Nested fluent terms / state-dependent indices require native "
+            "grounding; --up-grounding is unsupported for such problems.");
     }
 
     // === PREPROCESSING PIPELINE ===

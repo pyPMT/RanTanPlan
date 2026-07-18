@@ -319,49 +319,44 @@ class _RantanPlanBase(Engine):
     def _check_no_nested_fluents(problem: Problem):
         """Reject the nested-fluent shapes term resolution does not support.
 
-        Nested fluent terms in *action* expressions — (city-of
-        (vehicle-location ?t)) — are compiled away by the C++
-        TermResolutionPass (ghost parameters pinned by equality
-        preconditions), but only for object-valued inner terms: an inner term
-        of int/real/bool type is the state-dependent-index axis and is still
-        rejected. Goals have no action to host a ghost parameter, so any
-        nesting there is rejected with a rewrite hint.
+        Nested fluent terms — (city-of (vehicle-location ?t)) — are compiled
+        away by the C++ TermResolutionPass: ghost parameters for
+        object-valued inner terms in action expressions, per-position
+        instance splitting for state-dependent array indices, and
+        value-universe expansion for object-valued inner terms in goals
+        (docs/specs/undefinedness-semantics.md). What remains rejected here
+        is an inner term of int/real/bool type in a *fluent argument*
+        position (as opposed to an array index slot); state-dependent
+        indices in goals are rejected C++-side.
         """
         def contains_fluent(node):
             if node.is_fluent_exp():
                 return True
             return any(contains_fluent(arg) for arg in node.args)
 
-        def check(node, where, in_action):
+        def check(node, where):
             if node.is_fluent_exp():
                 for arg in node.args:
-                    if contains_fluent(arg):
-                        if not in_action:
-                            raise UPException(
-                                f"Nested fluent term {arg} in {where} is not "
-                                f"supported: only action expressions can host "
-                                f"a ghost parameter. Rewrite with an explicit "
-                                f"Exists over the inner term's value.")
-                        if not arg.type.is_user_type():
-                            raise UPException(
-                                f"Nested fluent term {arg} in {where} has "
-                                f"non-object type '{arg.type}'; only "
-                                f"object-valued nested fluent terms are "
-                                f"supported.")
+                    if contains_fluent(arg) and not arg.type.is_user_type():
+                        raise UPException(
+                            f"Nested fluent term {arg} in {where} has "
+                            f"non-object type '{arg.type}'; only "
+                            f"object-valued nested fluent terms are "
+                            f"supported.")
             for arg in node.args:
-                check(arg, where, in_action)
+                check(arg, where)
 
         for action in problem.actions:
             for prec in action.preconditions:
-                check(prec, f"action '{action.name}' precondition", True)
+                check(prec, f"action '{action.name}' precondition")
             for effect in action.effects:
-                check(effect.fluent, f"action '{action.name}' effect target", True)
-                check(effect.value, f"action '{action.name}' effect value", True)
+                check(effect.fluent, f"action '{action.name}' effect target")
+                check(effect.value, f"action '{action.name}' effect value")
                 check(effect.condition,
-                      f"action '{action.name}' effect condition", True)
+                      f"action '{action.name}' effect condition")
 
         for goal in problem.goals:
-            check(goal, "a goal", False)
+            check(goal, "a goal")
 
     @staticmethod
     def _check_supported_action_parameters(problem: Problem):

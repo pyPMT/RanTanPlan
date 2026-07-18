@@ -74,19 +74,31 @@ into one concrete effect per binding. Together they replace the old Python
 removal in C++ (see `docs/specs/numeric-action-parameters.md`). Both are no-ops on
 a problem with no integer parameters and no quantifiers.
 
-A third pre-grounding pass, `ArrayLoweringPass`, runs only when the problem has
+A third pre-grounding pass, `TermResolutionPass`, runs when actions contain
+**nested fluent terms** (a fluent application as an argument of another —
+`safe(loc(r))`, FSTRIPS composition) or **state-dependent array indices**
+(`a[ptr]`). It compiles the first into fresh "ghost" action parameters pinned
+by equality preconditions (`loc(r) = ?g`), which the grounder's equality join
+then enumerates over the term's *reachable* values, and the second into
+per-position instance splits with a Def-9 boundary instance (see
+[`grounding.md`](grounding.md) for both mechanisms and the undefinedness
+semantics). It must precede the structured lowerings — a ghost equality
+pinned on an array cell is lowered like any other access. A no-op on a
+problem with neither shape.
+
+A fourth, `ArrayLoweringPass`, runs only when the problem has
 array fluents: it compiles constant-index array accesses into ordinary scalar
 cell fluents, so grounding stays array-free just as it stays quantifier-free
 (see [`grounding.md`](grounding.md)). It is a no-op on a problem with no
 arrays.
 
-A fourth, `SetLoweringPass`, is its set-fluent analogue: it compiles set fluents
+A fifth, `SetLoweringPass`, is its set-fluent analogue: it compiles set fluents
 into boolean membership cells `s(e, args)` and rewrites every `SET_*` operation
 through one membership formula `⟦S⟧_e` (`member` → the cell atom, `cardinality`
 → `COUNT`, effects by a shape case-split: add/remove-chain-on-self → a single
 cell, monotone union-onto-self → conditional adds, else a per-cell expression
-assign), leaving grounding set-free. Also a no-op — and node-order-preserving —
-without set fluents. The two run adjacent; arrays and sets don't interact
+assign), leaving grounding set-free. Also a no-op without set fluents. The
+lowerings run adjacent; arrays and sets don't interact
 (set-of-array / array-of-set is rejected at conversion), so their relative order
 is free.
 
