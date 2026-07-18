@@ -1,5 +1,6 @@
 #include "quantifier_expansion_pass.hpp"
 #include "../problem/const_fold.hpp"
+#include "../problem/expr_builder.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
 #include "../util/stats.hpp"
@@ -22,7 +23,7 @@ using VarAssignment = std::unordered_map<std::string, ExprID>;
 class QuantifierExpander {
 public:
     QuantifierExpander(const Problem& problem, ExprPool& pool)
-        : problem_(problem), pool_(pool) {}
+        : problem_(problem), pool_(pool), builder_(pool) {}
 
     /// Expand every quantifier in a condition `id`; returns `id` unchanged when
     /// there is nothing to expand.
@@ -118,7 +119,7 @@ private:
             changed |= (nc != c);
             c = nc;
         }
-        return changed ? reintern(id, kids) : id;
+        return changed ? builder_.reintern(id, std::move(kids)) : id;
     }
 
     // ── Shared: domains and substitution ─────────────────────────────────
@@ -169,59 +170,19 @@ private:
     // ── Node construction ────────────────────────────────────────────────
 
     ExprID combine(bool forall, const std::vector<ExprID>& parts) {
-        // Empty domain: forall is vacuously true, exists is false — i.e. the
-        // boolean constant is exactly `forall` (e.g. an empty type or lo > hi range).
-        if (parts.empty()) return pool_.intern_bool_constant(forall);
-        if (parts.size() == 1) return parts.front();
-        ExprOperator op = forall ? ExprOperator::AND : ExprOperator::OR;
-        ExprID head = forall
-            ? op_head(and_head_, ExprOperator::AND, "and")
-            : op_head(or_head_, ExprOperator::OR, "or");
-        ExprNode node;
-        node.kind = static_cast<int>(ExprKind::FUNCTION_APPLICATION);
-        node.op = static_cast<int>(op);
-        node.type_id = -1;
-        node.children.reserve(parts.size() + 1);
-        node.children.push_back(head);
-        for (ExprID p : parts) node.children.push_back(p);
-        return pool_.intern(std::move(node));
-    }
-
-    ExprID op_head(ExprID& cache, ExprOperator op, const char* symbol) {
-        if (!cache.valid()) {
-            ExprNode node;
-            node.kind = static_cast<int>(ExprKind::FUNCTION_SYMBOL);
-            node.op = static_cast<int>(op);
-            node.payload = std::string(symbol);
-            cache = pool_.intern(std::move(node));
-        }
-        return cache;
+        // Empty domain → forall vacuously true / exists false; a single part
+        // stands alone — all handled by the builder's constant folding.
+        return forall ? builder_.make_and(parts) : builder_.make_or(parts);
     }
 
     ExprID make_object_constant(int obj_idx) {
         const Object& obj = problem_.object(obj_idx);
-        ExprNode node;
-        node.kind = static_cast<int>(ExprKind::CONSTANT);
-        const Type* t = obj.type();
-        if (t) node.type_id = static_cast<int>(t - &problem_.types()[0]);
-        node.payload = obj.name();
-        return pool_.intern(std::move(node));
-    }
-
-    ExprID reintern(ExprID id, const std::vector<ExprID>& children) {
-        ExprNode node;
-        node.kind = static_cast<int>(pool_.kind(id));
-        node.op = static_cast<int>(pool_.op(id));
-        node.type_id = pool_.type_id(id);
-        node.payload = pool_.payload(id);
-        node.children = children;
-        return pool_.intern(std::move(node));
+        return builder_.object_constant(obj.name(), problem_.type_id_of(obj.type()));
     }
 
     const Problem& problem_;
     ExprPool& pool_;
-    ExprID and_head_ = EXPR_NULL;
-    ExprID or_head_ = EXPR_NULL;
+    ExprBuilder builder_;
     size_t expanded_ = 0;
     size_t effects_expanded_ = 0;
 };

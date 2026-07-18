@@ -146,6 +146,7 @@ add_library(rantanplan_core STATIC
     src/passes/symmetry_analysis_pass.cpp
     src/passes/int_parameter_instantiation_pass.cpp
     src/passes/array_lowering_pass.cpp
+    src/passes/set_lowering_pass.cpp
     src/passes/grounding_pass.cpp
     src/passes/quantifier_expansion_pass.cpp
     src/passes/cwa_initial_state_pass.cpp

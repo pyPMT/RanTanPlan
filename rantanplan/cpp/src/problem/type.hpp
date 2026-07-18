@@ -6,6 +6,13 @@
 
 namespace rantanplan {
 
+/// The single positive discriminator for a Type's shape. Set once at
+/// construction from the type name (BOOL/INT/REAL, else OBJECT) and overridden
+/// to ARRAY/SET by set_array/set_set. Adding a new kind adds one enumerator and
+/// its is_*() accessor — no existing predicate (notably is_object) needs to
+/// change, unlike a definition-by-exclusion.
+enum class TypeKind { OBJECT, BOOL, INT, REAL, ARRAY, SET };
+
 class Type {
 public:
     Type() = default;
@@ -25,11 +32,12 @@ public:
     // Subtype check (traverse up the hierarchy)
     bool is_subtype_of(const Type* supertype) const;
 
-    // Primitive type helpers
-    bool is_bool() const { return name_ == "bool" || name_ == "up:bool"; }
-    bool is_int() const { return name_ == "int" || name_ == "up:int" || name_ == "integer" || name_ == "up:integer"; }
-    bool is_real() const { return name_ == "real" || name_ == "up:real"; }
-    bool is_object() const { return !is_bool() && !is_int() && !is_real() && !is_array(); }
+    // Kind discriminator (all shape predicates read this one field).
+    TypeKind kind() const { return kind_; }
+    bool is_bool() const { return kind_ == TypeKind::BOOL; }
+    bool is_int() const { return kind_ == TypeKind::INT; }
+    bool is_real() const { return kind_ == TypeKind::REAL; }
+    bool is_object() const { return kind_ == TypeKind::OBJECT; }
 
     // Numeric bounds are deliberately NOT part of the type. A bounded integer
     // (UP's IntType(lb, ub), e.g. integer[0, 15]) is the base `int` type here,
@@ -63,13 +71,25 @@ public:
     // are emplaced into the type table *before* the name->pointer map is built,
     // so vector reallocation never dangles a Type*, and element pointers are
     // linked in a second pass once every entry has a stable address.
-    bool is_array() const { return array_element_ != nullptr; }
+    bool is_array() const { return kind_ == TypeKind::ARRAY; }
     const Type* array_element() const { return array_element_; }
     int64_t array_size() const { return array_size_; }
     void set_array(const Type* element, int64_t size) {
         array_element_ = element;
         array_size_ = size;
+        kind_ = TypeKind::ARRAY;
     }
+
+    // Set types (name "set{<element>}") are first-class type-table entries,
+    // registered at IR load from each set fluent's element type. Unlike an
+    // array a set has no fixed size (the element domain bounds it), so a set
+    // type carries only its element. Set fluents are lowered into boolean
+    // membership cells by SetLoweringPass before grounding; no later consumer
+    // sees a set type. Nested set types are rejected at conversion, so
+    // set_element_ is always a scalar/object type.
+    bool is_set_type() const { return kind_ == TypeKind::SET; }
+    const Type* set_element() const { return set_element_; }
+    void set_set(const Type* element) { set_element_ = element; kind_ = TypeKind::SET; }
 
 private:
     std::string name_;
@@ -77,6 +97,8 @@ private:
     std::string parent_name_;
     const Type* array_element_ = nullptr;
     int64_t array_size_ = 0;
+    const Type* set_element_ = nullptr;
+    TypeKind kind_ = TypeKind::OBJECT;
 };
 
 } // namespace rantanplan

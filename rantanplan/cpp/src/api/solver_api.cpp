@@ -24,6 +24,7 @@
 #include "passes/symmetry_analysis_pass.hpp"
 #include "passes/int_parameter_instantiation_pass.hpp"
 #include "passes/array_lowering_pass.hpp"
+#include "passes/set_lowering_pass.hpp"
 #include "passes/grounding_pass.hpp"
 #include "passes/quantifier_expansion_pass.hpp"
 #include "passes/cwa_initial_state_pass.hpp"
@@ -74,6 +75,12 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
             "Array fluents require native grounding; --up-grounding is "
             "unsupported for array problems.");
     }
+    // Set membership cells are likewise only validated through native grounding.
+    if (!options.enable_grounding && rantanplan::has_set_fluents(problem)) {
+        throw std::invalid_argument(
+            "Set fluents require native grounding; --up-grounding is "
+            "unsupported for set problems.");
+    }
 
     // === PREPROCESSING PIPELINE ===
     //
@@ -120,6 +127,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     rantanplan::IntParameterInstantiationPass int_parameter_instantiation_pass;
     rantanplan::QuantifierExpansionPass quantifier_expansion_pass;
     rantanplan::ArrayLoweringPass array_lowering_pass;
+    rantanplan::SetLoweringPass set_lowering_pass;
     rantanplan::GroundingPass grounding_pass;
     rantanplan::CWAInitialStatePass cwa_pass;
     rantanplan::StaticFluentPass static_fluent_pass;
@@ -144,6 +152,13 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     // constant arithmetic) and precede grounding (cells must exist before the
     // reachability fixpoint enumerates facts). No-op without array fluents.
     passes.push_back(&array_lowering_pass);
+    // Set lowering has the same placement rationale as array lowering (after
+    // quantifier expansion, before grounding): it rewrites set fluents into
+    // ordinary boolean membership cells with a prepended element parameter, and
+    // the grounder then grounds them like any object-parameterised predicate.
+    // Sets and arrays don't interact (mixing is rejected at conversion), so the
+    // relative order is free. No-op without set fluents.
+    passes.push_back(&set_lowering_pass);
     if (options.enable_grounding) {
         passes.push_back(&grounding_pass);
     }

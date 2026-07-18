@@ -1,4 +1,5 @@
 #include "cnf_normalization_pass.hpp"
+#include "../problem/expr_builder.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
 #include "../util/stats.hpp"
@@ -22,20 +23,11 @@ constexpr size_t kMaxClauseBudget = 4096;  ///< absolute cap regardless of input
 /// result, so rejected (over-budget) conversions cost no interning.
 class CnfConverter {
 public:
-    explicit CnfConverter(ExprPool& pool) : pool_(pool) {
-        // Harvest operator head symbols so rebuilt applications intern
-        // identically to loader-built ones (same head ⇒ same ExprID).
-        for (int32_t i = 0; i < static_cast<int32_t>(pool.size()); ++i) {
-            ExprID id{i};
-            if (!pool.is_function_symbol(id)) continue;
-            switch (pool.op(id)) {
-                case ExprOperator::AND: if (!and_head_.valid()) and_head_ = id; break;
-                case ExprOperator::OR:  if (!or_head_.valid())  or_head_ = id;  break;
-                case ExprOperator::NOT: if (!not_head_.valid()) not_head_ = id; break;
-                default: break;
-            }
-        }
-    }
+    // The builder's op_head interns the standard operator spelling ("and"/…),
+    // which dedups with the loader's normalised heads — so rebuilt applications
+    // intern identically to loader-built ones (the guarantee the old head-symbol
+    // harvest gave, now for free).
+    explicit CnfConverter(ExprPool& pool) : pool_(pool), builder_(pool) {}
 
     /// CNF-normalize expr; returns expr unchanged when it is already in CNF
     /// or when distribution would exceed the clause budget.
@@ -170,7 +162,7 @@ private:
         }
 
         // Atom (state variable, comparison, unknown op, …) → unit clause
-        out.push_back(Clause{negated ? make_not(e) : e});
+        out.push_back(Clause{negated ? builder_.make_not(e) : e});
         return out.size() <= budget;
     }
 
@@ -213,7 +205,7 @@ private:
     /// Add lit to clause unless already present; returns false when the
     /// clause becomes tautological (contains lit's complement).
     bool add_literal(Clause& clause, ExprID lit) {
-        ExprID comp = is_not_app(lit) ? pool_.argument(lit, 0) : make_not(lit);
+        ExprID comp = is_not_app(lit) ? pool_.argument(lit, 0) : builder_.make_not(lit);
         for (ExprID existing : clause) {
             if (existing == comp) return false;
             if (existing == lit) return true;
@@ -232,46 +224,14 @@ private:
             if (clause.empty()) return pool_.intern_bool_constant(false);
             parts.push_back(clause.size() == 1
                                 ? clause[0]
-                                : make_app(ExprOperator::OR, or_head(), clause, -1));
+                                : builder_.make_app(ExprOperator::OR, clause, -1));
         }
         if (parts.size() == 1) return parts[0];
-        return make_app(ExprOperator::AND, and_head(), parts, root_type_id);
-    }
-
-    ExprID make_not(ExprID e) {
-        return make_app(ExprOperator::NOT, not_head(), {e}, -1);
-    }
-
-    ExprID make_app(ExprOperator op, ExprID head, const std::vector<ExprID>& args, int type_id) {
-        ExprNode node;
-        node.kind = static_cast<int>(ExprKind::FUNCTION_APPLICATION);
-        node.op = static_cast<int>(op);
-        node.type_id = type_id;
-        node.children.reserve(args.size() + 1);
-        node.children.push_back(head);
-        for (ExprID a : args) node.children.push_back(a);
-        return pool_.intern(std::move(node));
-    }
-
-    ExprID and_head() { return op_head(and_head_, ExprOperator::AND, "up:and"); }
-    ExprID or_head() { return op_head(or_head_, ExprOperator::OR, "up:or"); }
-    ExprID not_head() { return op_head(not_head_, ExprOperator::NOT, "up:not"); }
-
-    ExprID op_head(ExprID& cache, ExprOperator op, const char* symbol) {
-        if (!cache.valid()) {
-            ExprNode node;
-            node.kind = static_cast<int>(ExprKind::FUNCTION_SYMBOL);
-            node.op = static_cast<int>(op);
-            node.payload = std::string(symbol);
-            cache = pool_.intern(std::move(node));
-        }
-        return cache;
+        return builder_.make_app(ExprOperator::AND, parts, root_type_id);
     }
 
     ExprPool& pool_;
-    ExprID and_head_ = EXPR_NULL;
-    ExprID or_head_ = EXPR_NULL;
-    ExprID not_head_ = EXPR_NULL;
+    ExprBuilder builder_;
     size_t rewritten_ = 0;
     size_t bailed_ = 0;
 };

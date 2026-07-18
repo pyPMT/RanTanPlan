@@ -2,6 +2,7 @@
 
 #include "../problem/const_fold.hpp"
 #include "../problem/expr_enums.hpp"
+#include "../problem/expr_walk.hpp"
 #include "../util/logger.hpp"
 
 #include <map>
@@ -186,7 +187,6 @@ private:
     /// Mint one scalar cell fluent + state variable per defined array position,
     /// in fluent-declaration order and row-major position order.
     void mint_cells() {
-        const auto& types = problem_.types();
         for (const Fluent& f : problem_.fluents()) {
             if (!f.is_array()) continue;
 
@@ -195,7 +195,7 @@ private:
                 throw std::runtime_error("Array fluent '" + f.name() +
                                          "' has no resolved element type.");
             }
-            int elem_type_id = static_cast<int>(elem_type - &types[0]);
+            int elem_type_id = problem_.type_id_of(elem_type);
 
             ArrayInfo info;
             info.sizes = f.array_sizes();
@@ -449,20 +449,6 @@ std::optional<Action> lower_action(const Action& action, ArrayLowerer& lowerer,
     return out;
 }
 
-// ---------------------------------------------------------------------------
-// ARRAY_INDEX survival check.
-// ---------------------------------------------------------------------------
-
-void walk_check(ExprID eid, const ExprPool& pool, std::unordered_set<ExprID>& seen) {
-    if (!eid.valid() || !seen.insert(eid).second) return;
-    if (pool.is_function_application(eid) && pool.op(eid) == ExprOperator::ARRAY_INDEX) {
-        throw std::runtime_error(
-            "Array lowering invariant violated: an ARRAY_INDEX node survived "
-            "grounding (" + pool.to_string(eid) + ").");
-    }
-    for (ExprID c : pool.children(eid)) walk_check(c, pool, seen);
-}
-
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -584,23 +570,13 @@ Problem lower_arrays(const Problem& problem) {
 
 void assert_no_array_index(const Problem& problem) {
     const ExprPool& pool = problem.pool();
-    std::unordered_set<ExprID> seen;
-    for (const Action& a : problem.actions()) {
-        if (a.has_precondition()) walk_check(a.precondition_id(), pool, seen);
-        if (a.has_explicit_cost()) walk_check(a.cost_id(), pool, seen);
-        for (const auto& eff : a.effects()) {
-            const auto& ee = eff.effect_expression();
-            walk_check(ee.fluent_id(), pool, seen);
-            walk_check(ee.value_id(), pool, seen);
-            if (ee.is_conditional()) walk_check(ee.condition_id(), pool, seen);
-        }
-    }
-    for (const Goal& g : problem.goals()) walk_check(g.goal_id(), pool, seen);
-    for (ExprID inv : problem.state_invariants()) walk_check(inv, pool, seen);
-    for (const Assignment& asn : problem.initial_state()) {
-        walk_check(asn.fluent_id(), pool, seen);
-        walk_check(asn.value_id(), pool, seen);
-    }
+    for_each_expression(problem, [&](ExprID eid) {
+        if (pool.is_function_application(eid) &&
+            pool.op(eid) == ExprOperator::ARRAY_INDEX)
+            throw std::runtime_error(
+                "Array lowering invariant violated: an ARRAY_INDEX node survived "
+                "grounding (" + pool.to_string(eid) + ").");
+    });
 }
 
 } // namespace rantanplan

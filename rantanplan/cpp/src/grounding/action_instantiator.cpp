@@ -17,12 +17,7 @@ static ExprID make_object_constant(ExprPool& pool,
     // NOTE: Leave node.op as default (-1) to match intern_nodes() in ir_io.cpp,
     // which does NOT set op for CONSTANT nodes.
 
-    // Derive type_id via pointer arithmetic (Type* points into types_ vector).
-    const Type* obj_type = obj.type();
-    if (obj_type) {
-        node.type_id = static_cast<int>(obj_type - &problem.types()[0]);
-    }
-
+    node.type_id = problem.type_id_of(obj.type());
     node.payload = obj.name();
     return pool.intern(node);
 }

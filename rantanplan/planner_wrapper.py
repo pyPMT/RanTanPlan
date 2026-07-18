@@ -103,6 +103,7 @@ class _RantanPlanBase(Engine):
         supported_kind.set_fluents_type('INT_FLUENTS')
         supported_kind.set_fluents_type('OBJECT_FLUENTS')
         supported_kind.set_fluents_type('ARRAY_FLUENTS')
+        supported_kind.set_fluents_type('SET_FLUENTS')
         supported_kind.set_initial_state('UNDEFINED_INITIAL_NUMERIC')
         supported_kind.set_conditions_kind('NEGATIVE_CONDITIONS')
         supported_kind.set_conditions_kind('DISJUNCTIVE_CONDITIONS')
@@ -180,13 +181,18 @@ class _RantanPlanBase(Engine):
     # ── Problem preparation ──────────────────────────────────────────────
 
     def _validate_plan(self, problem: Problem, plan: SequentialPlan) -> bool:
-        # UP ships no plan validator for array-fluent problems, so attempting
-        # validation here only raises. Skip gracefully — array plans are checked
-        # externally (against the ArrayFluentsRemover-compiled equivalent) in the
-        # test suite. Native array support is compiled to scalar cells before
-        # solving, so the underlying search is validated like any scalar problem.
+        # UP ships no plan validator for array- or set-fluent problems, so
+        # attempting validation here only raises. Skip gracefully — such plans
+        # are checked externally in the test suite (arrays against the
+        # ArrayFluentsRemover-compiled equivalent; sets against a set-semantics
+        # simulator). Native array/set support is compiled to scalar cells /
+        # boolean membership cells before solving, so the underlying search is
+        # validated like any scalar problem.
         if problem.kind.has_array_fluents():
             self._log("Plan validation: SKIPPED (UP has no array-fluent validator)")
+            return True
+        if problem.kind.has_set_fluents():
+            self._log("Plan validation: SKIPPED (UP has no set-fluent validator)")
             return True
         try:
             self._materialize_numeric_for_validator(problem)

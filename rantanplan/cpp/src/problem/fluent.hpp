@@ -85,6 +85,16 @@ public:
         return array_undefined_positions_;
     }
 
+    // Set fluents carry a first-class set value type (see Type::is_set_type).
+    // A set fluent is lowered into a boolean membership fluent (an element
+    // parameter prepended to the signature) by SetLoweringPass before grounding;
+    // no downstream consumer sees a set-typed fluent. Nested set types are
+    // rejected at conversion, so the element type is always scalar/object.
+    bool is_set_fluent() const { return value_type_ && value_type_->is_set_type(); }
+    const Type* set_element_type() const {
+        return value_type_ ? value_type_->set_element() : nullptr;
+    }
+
     // Convenience methods
     bool is_predicate() const {
         return value_type_ && value_type_->is_bool();
