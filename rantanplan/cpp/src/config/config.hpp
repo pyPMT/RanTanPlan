@@ -58,6 +58,14 @@ public:
         int max_steps = 500;
         int start_timestep = 0;  ///< Starting timestep for search (can be set by RPG lower bound)
         std::string horizon_schedule = "linear";  ///< Schedule type: linear|arithmetic|geometric|doubling
+
+        // Windowed-commitment planner tunables (els-wc). Config-only, no CLI
+        // flags; see docs/windowed-commitment-planner.md §8.3.  Deliberately
+        // few and scale-free: episode budgets, lookahead depths and
+        // stagnation tolerance all follow universal schedules (Luby slices,
+        // Luby lookahead, EMA trend) instead of instance-tuned cutoffs.
+        int wc_window       = 8;     ///< Base window length w0
+        int wc_candidates   = 6;     ///< Candidate frontiers per generation round (C)
     } planner;
 
     struct Symmetry {

@@ -47,6 +47,7 @@ QUICK_STRATEGIES = [
     "elsc-dt",    # ExistsCycle module + DoubleTail planner
     "elsc-fp",    # ExistsCycle + FrameAxiom modules
     "cgb",        # ExistsCycle module + CGB planner (core-guided activation)
+    "els-wc",     # ExistsCycle module + WindowedCommitment planner
 ]
 
 TIMEOUT = 60  # seconds per test

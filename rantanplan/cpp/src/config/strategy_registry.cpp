@@ -83,6 +83,10 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
         // Core-guided activation (optional-occurrence loop)
         {"cgb",       {{E::Grounded, S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::CGB},
                        "Core-guided lazy activation (stripped optional-occurrence loop)"}},
+
+        // Windowed commitment (stepping-stone search with monolithic fallback)
+        {"els-wc",    {{E::Grounded, S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::WindowedCommitment},
+                       "Exists-step, lazy semantic interference, windowed-commitment planner"}},
     };
     return registry;
 }

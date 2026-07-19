@@ -30,8 +30,10 @@ enum class InterferenceKind { None, EagerSyntactic, EagerSemantic, LazySyntactic
 /// Planner backend: Sequential/DoubleTail drive satisficing search with a
 /// growing horizon; BranchAndBound is the cost-optimal/anytime search;
 /// CGB activates ground actions lazily under Exists semantics, with
-/// growth named by unsat cores.
-enum class PlannerKind { Sequential, DoubleTail, BranchAndBound, CGB };
+/// growth named by unsat cores; WindowedCommitment solves short windows
+/// from concrete anchors and commits stepping stones under assumptions,
+/// falling back to the monolithic incremental search on exhaustion.
+enum class PlannerKind { Sequential, DoubleTail, BranchAndBound, CGB, WindowedCommitment };
 
 /// Composable propagator module kinds.
 enum class PropagatorModuleKind { ForallEager, ForallLazy, ExistsCycle, FrameAxiom };
@@ -68,6 +70,14 @@ inline PlannerKind resolve_planner_kind(SearchMode mode, const StrategySpec& spe
         std::string mode_str = (mode == SearchMode::Optimal) ? "optimal" : "anytime";
         throw std::invalid_argument(
             "Mode '" + mode_str + "' is incompatible with the CGB strategy.");
+    }
+    if (spec.planner == PlannerKind::WindowedCommitment) {
+        // Structurally satisficing-only: committed prefixes are not improving
+        // plans, so the anytime/optimal callback contract cannot be honored.
+        std::string mode_str = (mode == SearchMode::Optimal) ? "optimal" : "anytime";
+        throw std::invalid_argument(
+            "Mode '" + mode_str + "' is incompatible with windowed-commitment "
+            "strategies. Use --mode satisficing (the default).");
     }
     return PlannerKind::BranchAndBound;
 }

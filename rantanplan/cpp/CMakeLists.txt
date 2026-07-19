@@ -116,6 +116,7 @@ add_library(rantanplan_core STATIC
     src/planners/double_tail_planner.cpp
     src/planners/branch_and_bound_planner.cpp
     src/planners/cgb_planner.cpp
+    src/planners/windowed_commitment_planner.cpp
     src/planners/formula_exporter.cpp
     src/encoders/abstract_suffix_encoder.cpp
     src/planners/propagators/propagator_strategy.cpp

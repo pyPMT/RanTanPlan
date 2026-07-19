@@ -48,6 +48,12 @@ public:
     /// Modules call this instead of add() directly.
     void module_add(const z3::expr& e);
 
+    /// Modules call this to redirect the pending case split (phase hints).
+    /// Thin wrapper over user_propagator_base::next_split.
+    bool module_next_split(const z3::expr& e, unsigned idx, Z3_lbool phase) {
+        return next_split(e, idx, phase);
+    }
+
     /// Register the Z3 decide callback.  Called by modules that need
     /// on_decide notifications (e.g. logging).  Safe to call multiple times;
     /// the Z3 registration happens at most once.

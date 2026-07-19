@@ -3,6 +3,7 @@
 #include "../problem/problem.hpp"
 #include "../problem/action.hpp"
 #include "../problem/effect_expression.hpp"
+#include "../problem/state_valuation.hpp"
 #include "../z3core/z3_variable_factory.hpp"
 #include "../z3core/grounded_encoding_visitor.hpp"
 #include "../config/config.hpp"
@@ -12,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
+#include <optional>
 #include <cmath>
 #include "../grounding/interval.hpp"
 
@@ -158,6 +160,16 @@ public:
      * @param problem The planning problem (grounded)
      */
     explicit NumericRelaxedPlanningGraph(const Problem& problem);
+
+    /**
+     * @brief Construct with an initial-state override (windowed planning).
+     *
+     * When @p initial_override is present, layer 0 is taken from the given
+     * valuation instead of the problem's initial state; nothing else changes.
+     * Used by WindowedCommitmentPlanner to score candidate frontier states.
+     */
+    NumericRelaxedPlanningGraph(const Problem& problem,
+                                std::optional<StateValuation> initial_override);
     ~NumericRelaxedPlanningGraph() = default;
 
     // Disable copying (Z3 context is not copyable)
@@ -258,6 +270,10 @@ private:
     // ========================================================================
 
     const Problem& problem_;
+
+    /// When present, layer 0 is initialized from this valuation instead of
+    /// the problem's initial state (windowed planning anchor states).
+    std::optional<StateValuation> initial_override_;
 
     // ========================================================================
     // MEMBER VARIABLES - State Tracking
