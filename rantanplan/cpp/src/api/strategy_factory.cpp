@@ -17,6 +17,8 @@
 #include "../planners/double_tail_planner.hpp"
 #include "../planners/branch_and_bound_planner.hpp"
 #include "../planners/cgb_planner.hpp"
+#include "../planners/anchor_search_planner.hpp"
+#include "../planners/anchor_search_warm_planner.hpp"
 
 #include "../planners/propagators/modules/exists_cycle_module.hpp"
 #include "../planners/propagators/modules/forall_mutex_module.hpp"
@@ -248,6 +250,12 @@ std::unique_ptr<BasePlanner> StrategyFactory::create_planner(
             break;
         case PlannerKind::CGB:
             planner = std::make_unique<CGBPlanner>(problem, encoder, ctx);
+            break;
+        case PlannerKind::AnchorSearch:
+            planner = std::make_unique<AnchorSearchPlanner>(problem, encoder, ctx);
+            break;
+        case PlannerKind::AnchorSearchWarm:
+            planner = std::make_unique<AnchorSearchWarmPlanner>(problem, encoder, ctx);
             break;
     }
     if (!planner) {

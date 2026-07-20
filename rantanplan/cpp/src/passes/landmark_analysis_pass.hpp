@@ -1,6 +1,10 @@
 #pragma once
 
 #include "pass.hpp"
+#include "../preprocessing/landmark_data.hpp"
+#include "../analysis/achievers_analysis.hpp"
+#include <functional>
+#include <optional>
 
 /**
  * @file landmark_analysis_pass.hpp
@@ -33,6 +37,22 @@ namespace rantanplan {
  */
 class LandmarkAnalysisPass : public Pass {
 public:
+    /// Condition satisfaction at the evaluation state.
+    using SatisfiedFn = std::function<bool(ExprID)>;
+    /// Numeric fluent value at the evaluation state (nullopt = unknown).
+    using FluentValueFn = std::function<std::optional<double>(ExprID)>;
+
+    /// The closure itself, reusable from ANY state: `satisfied` and
+    /// `fluent_value` answer for the evaluation state (apply() feeds the
+    /// initial state; the windowed-commitment planner re-runs this at each
+    /// committed anchor — landmarks of the REMAINING task).  Returns the
+    /// landmark set, orderings, count structure, and the depth lower bound
+    /// (in data.depth_lower_bound) from that state.
+    static LandmarkData compute(const Problem& problem,
+                                const AchieversAnalysis& achievers,
+                                const SatisfiedFn& satisfied,
+                                const FluentValueFn& fluent_value);
+
     void apply(PreprocessedProblem& result) const override;
     std::string name() const override { return "landmark-analysis"; }
 };

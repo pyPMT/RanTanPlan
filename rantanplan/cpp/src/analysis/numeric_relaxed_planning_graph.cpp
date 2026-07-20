@@ -128,7 +128,13 @@ bool NumericRelaxedPlanningGraph::LayerState::operator==(const LayerState& other
 // ============================================================================
 
 NumericRelaxedPlanningGraph::NumericRelaxedPlanningGraph(const Problem& problem)
+    : NumericRelaxedPlanningGraph(problem, std::nullopt) {
+}
+
+NumericRelaxedPlanningGraph::NumericRelaxedPlanningGraph(
+    const Problem& problem, std::optional<StateValuation> initial_override)
     : problem_(problem),
+      initial_override_(std::move(initial_override)),
       ctx_(),
       variable_factory_(ctx_),
       grounded_visitor_(ctx_, &problem, &variable_factory_),
@@ -260,6 +266,44 @@ void NumericRelaxedPlanningGraph::classify_fluents() {
 }
 
 void NumericRelaxedPlanningGraph::initialize_layer_0() {
+    // Anchor-state override (windowed planning): layer 0 comes from the
+    // given valuation, keyed directly by grounded fluent id.  The override
+    // is consumed here — it is only the parking spot between construction
+    // and build() — so it does not outlive layer 0's initialization.
+    if (initial_override_) {
+        LayerState initial_layer;
+        const StateValuation valuation = std::move(*initial_override_);
+        initial_override_.reset();
+        const auto& values = valuation.values;
+        for (size_t fluent_id = 0; fluent_id < values.size(); ++fluent_id) {
+            const auto& v = values[fluent_id];
+            int id = static_cast<int>(fluent_id);
+            switch (v.kind) {
+                case StateValuation::Kind::Boolean:
+                    initial_layer.boolean_reachability[id] =
+                        v.bool_value ? BooleanReachability::TRUE_ONLY
+                                     : BooleanReachability::FALSE_ONLY;
+                    break;
+                case StateValuation::Kind::Numeric:
+                    initial_layer.numeric_bounds[id] = NumericBounds(v.numeric_value);
+                    break;
+                case StateValuation::Kind::Object:
+                    if (v.object_index >= 0) {
+                        initial_layer.object_value_sets[id].insert(v.object_index);
+                    }
+                    break;
+                case StateValuation::Kind::Unset:
+                    break;  // same as a fluent absent from the initial state
+            }
+        }
+        layer_states_.push_back(std::move(initial_layer));
+        action_layers_.push_back(std::vector<const Action*>());
+        Logger::instance().debug("Layer 0 initialized from state override:");
+        Logger::instance().debug("  - Boolean fluents: " + std::to_string(layer_states_[0].boolean_reachability.size()));
+        Logger::instance().debug("  - Numeric fluents: " + std::to_string(layer_states_[0].numeric_bounds.size()));
+        return;
+    }
+
     // Initialize layer 0 from fully-defined initial state
     // PATTERN BORROWED FROM GroundedEncoder::encode_initial_state()
 

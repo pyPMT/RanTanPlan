@@ -30,8 +30,10 @@ enum class InterferenceKind { None, EagerSyntactic, EagerSemantic, LazySyntactic
 /// Planner backend: Sequential/DoubleTail drive satisficing search with a
 /// growing horizon; BranchAndBound is the cost-optimal/anytime search;
 /// CGB activates ground actions lazily under Exists semantics, with
-/// growth named by unsat cores.
-enum class PlannerKind { Sequential, DoubleTail, BranchAndBound, CGB };
+/// growth named by unsat cores; AnchorSearch (els-wc2) is greedy best-first
+/// search over concrete anchor states with an SMT successor oracle, made
+/// complete by an interleaved bounded-horizon sweep from the initial state.
+enum class PlannerKind { Sequential, DoubleTail, BranchAndBound, CGB, AnchorSearch, AnchorSearchWarm };
 
 /// Composable propagator module kinds.
 enum class PropagatorModuleKind { ForallEager, ForallLazy, ExistsCycle, FrameAxiom };
@@ -68,6 +70,22 @@ inline PlannerKind resolve_planner_kind(SearchMode mode, const StrategySpec& spe
         std::string mode_str = (mode == SearchMode::Optimal) ? "optimal" : "anytime";
         throw std::invalid_argument(
             "Mode '" + mode_str + "' is incompatible with the CGB strategy.");
+    }
+    if (spec.planner == PlannerKind::AnchorSearch) {
+        // Structurally satisficing-only: the greedy layer commits concrete
+        // prefixes that are not improving plans, so the anytime/optimal
+        // callback contract cannot be honored.
+        std::string mode_str = (mode == SearchMode::Optimal) ? "optimal" : "anytime";
+        throw std::invalid_argument(
+            "Mode '" + mode_str + "' is incompatible with the anchor-search "
+            "(els-wc2) strategy. Use --mode satisficing (the default).");
+    }
+    if (spec.planner == PlannerKind::AnchorSearchWarm) {
+        // Same satisficing-only structure as AnchorSearch (els-wc2).
+        std::string mode_str = (mode == SearchMode::Optimal) ? "optimal" : "anytime";
+        throw std::invalid_argument(
+            "Mode '" + mode_str + "' is incompatible with the anchor-search "
+            "(els-wc3) strategy. Use --mode satisficing (the default).");
     }
     return PlannerKind::BranchAndBound;
 }

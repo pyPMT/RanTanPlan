@@ -83,6 +83,17 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
         // Core-guided activation (optional-occurrence loop)
         {"cgb",       {{E::Grounded, S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::CGB},
                        "Core-guided lazy activation (stripped optional-occurrence loop)"}},
+
+        // Anchor search (els-wc2): greedy best-first over concrete states with
+        // an SMT successor oracle, completed by a bounded-horizon root sweep.
+        {"els-wc2",   {{E::Grounded, S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::AnchorSearch},
+                       "Exists-step, lazy semantic interference, anchor-search planner"}},
+
+        // Anchor search (els-wc3): the single-warm-solver redesign — one
+        // incremental solver, step-0 pinned per anchor via check-assumptions,
+        // two modes (DISCOVER/WIDEN) with a backbone completeness lane.
+        {"els-wc3",   {{E::Grounded, S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::AnchorSearchWarm},
+                       "Exists-step anchor search on one warm solver (two modes)"}},
     };
     return registry;
 }

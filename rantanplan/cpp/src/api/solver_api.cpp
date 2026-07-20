@@ -313,6 +313,21 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
 
     planner->set_propagator_strategy(std::move(propagator));
 
+    // Propagator factory for planners that spawn extra solvers (AnchorSearch's
+    // per-expansion oracle solvers and its sweep lanes). Captures spec by
+    // value; problem and encoder outlive the planner within this solve.
+    planner->set_propagator_factory(
+        [spec, &problem, &encoder](z3::solver& s) {
+            auto p = rantanplan::StrategyFactory::create_propagator(
+                spec, s, problem, *encoder);
+            auto& cfg = rantanplan::Config::instance();
+            if (cfg.has_log_file()) {
+                p->add_module(std::make_unique<rantanplan::LoggingModule>(
+                    cfg.logging.log_file, cfg.planner.strategy));
+            }
+            return p;
+        });
+
     if (on_plan) {
         planner->set_intermediate_plan_callback(on_plan);
     }

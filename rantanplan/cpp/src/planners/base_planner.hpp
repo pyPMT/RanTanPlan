@@ -10,6 +10,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -123,6 +124,17 @@ public:
     /// Set the propagator strategy for this planner.
     void set_propagator_strategy(std::unique_ptr<PropagatorStrategy> propagator);
 
+    /// Factory for propagators bound to a *different* solver — planners that
+    /// spawn extra solvers (AnchorSearch's per-expansion oracle solvers and
+    /// its persistent sweep lanes) need one, since a PropagatorStrategy
+    /// attaches to its solver at construction. Wired by the driver next to
+    /// set_propagator_strategy.
+    using PropagatorFactory =
+        std::function<std::unique_ptr<PropagatorStrategy>(z3::solver&)>;
+    void set_propagator_factory(PropagatorFactory factory) {
+        propagator_factory_ = std::move(factory);
+    }
+
     /// Get the name of the current propagator strategy.
     std::string get_propagator_strategy_name() const;
 
@@ -145,6 +157,7 @@ protected:
     z3::context& ctx_;
     z3::solver solver_;
     std::unique_ptr<PropagatorStrategy> propagator_strategy_;
+    PropagatorFactory propagator_factory_;
 
     /// Horizon schedule; concrete planners initialise this from Config in their constructor.
     HorizonSchedule schedule_;

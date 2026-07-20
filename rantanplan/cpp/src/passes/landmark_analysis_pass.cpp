@@ -197,25 +197,13 @@ std::optional<double> linear_contribution(const ExprPool& pool,
 
 } // namespace
 
-void LandmarkAnalysisPass::apply(PreprocessedProblem& result) const {
-    if (!result.achievers) {
-        Logger::instance().info("[Landmarks     ]  skipped (no achievers analysis)");
-        return;
-    }
-
-    const Problem& problem = result.problem;
+LandmarkData LandmarkAnalysisPass::compute(const Problem& problem,
+                                           const AchieversAnalysis& achievers,
+                                           const SatisfiedFn& satisfied,
+                                           const FluentValueFn& fluent_value) {
     const ExprPool& pool = problem.pool();
-    const AchieversAnalysis& achievers = *result.achievers;
-    std::unordered_map<int, ExprID> init_value;  // fluent ExprID.id -> value
-    for (const Assignment& a : problem.initial_state()) {
-        init_value[a.fluent_id().id] = a.value_id();
-    }
-    auto init_fluent_value = [&](ExprID fluent) -> std::optional<double> {
-        auto it = init_value.find(fluent.id);
-        if (it == init_value.end()) return std::nullopt;
-        return eval_const_num(pool, it->second);
-    };
-    // Static fluents (modified by no action) are constants in disguise.
+    // Static fluents (modified by no action) are constants in disguise —
+    // their value at the evaluation state equals their initial value.
     std::unordered_set<int> modified_fluents;
     for (const Action& a : problem.actions()) {
         for (const Effect& e : a.effects()) {
@@ -224,7 +212,7 @@ void LandmarkAnalysisPass::apply(PreprocessedProblem& result) const {
     }
     StaticFold fold_static = [&](ExprID fluent) -> std::optional<double> {
         if (modified_fluents.count(fluent.id)) return std::nullopt;
-        return init_fluent_value(fluent);
+        return fluent_value(fluent);
     };
 
     std::unordered_map<int, const Action*> action_by_id;
@@ -232,18 +220,14 @@ void LandmarkAnalysisPass::apply(PreprocessedProblem& result) const {
         action_by_id[a.id()] = &a;
     }
 
-    LandmarkData& data = result.landmark_data;
+    LandmarkData data;
     std::unordered_map<int, int> landmark_index;  // condition ExprID.id -> index
     std::unordered_set<ExprID> seen;
-
-    // Exact init-state evaluation, computed once by the achievers analysis.
-    const auto& init_sat = achievers.get_init_satisfied_conditions();
-    auto init_satisfied = [&](ExprID cond) { return init_sat.count(cond) > 0; };
 
     // AND/OR closure from the goal conditions, recording natural orderings.
     std::vector<std::pair<ExprID, int>> queue;  // (condition, parent landmark index)
     for (ExprID g : achievers.get_goal_conditions()) {
-        if (!init_satisfied(g) && seen.insert(g).second) {
+        if (!satisfied(g) && seen.insert(g).second) {
             queue.push_back({g, -1});
         }
     }
@@ -278,7 +262,7 @@ void LandmarkAnalysisPass::apply(PreprocessedProblem& result) const {
             double e_init = lt->constant;
             bool init_known = true;
             for (const auto& [fid, cf] : lt->coeffs) {
-                auto v = init_fluent_value(cf.first);
+                auto v = fluent_value(cf.first);
                 if (!v) { init_known = false; break; }
                 e_init += cf.second * *v;
             }
@@ -328,7 +312,7 @@ void LandmarkAnalysisPass::apply(PreprocessedProblem& result) const {
             for (auto& [pid, hits] : prec_hits) {
                 if (hits < num_achievers) continue;
                 ExprID p = prec_ids.at(pid);
-                if (init_satisfied(p)) continue;
+                if (satisfied(p)) continue;
                 if (seen.insert(p).second) {
                     queue.push_back({p, index});
                 } else {
@@ -347,24 +331,57 @@ void LandmarkAnalysisPass::apply(PreprocessedProblem& result) const {
 
     // Depth lower bound: even with every contributing achiever firing
     // cumulatively at every step, covering the deficit needs this many steps.
-    int informative = 0;  // landmarks with real (non-default) count structure
     for (const LandmarkInfo& info : data.landmarks) {
         double step_mass = 0.0;
-        bool default_like = info.residual == 1.0;
         for (double lambda : info.contributions) {
             step_mass += lambda;
-            default_like = default_like && lambda == 1.0;
         }
         if (step_mass <= 0) continue;
-        if (!default_like) informative++;
         int bound = static_cast<int>(
             std::ceil(info.residual / step_mass - 1e-9));
         if (bound > data.depth_lower_bound) {
             data.depth_lower_bound = bound;
         }
     }
+    return data;
+}
+
+void LandmarkAnalysisPass::apply(PreprocessedProblem& result) const {
+    if (!result.achievers) {
+        Logger::instance().info("[Landmarks     ]  skipped (no achievers analysis)");
+        return;
+    }
+
+    const Problem& problem = result.problem;
+    const ExprPool& pool = problem.pool();
+    std::unordered_map<int, ExprID> init_value;  // fluent ExprID.id -> value
+    for (const Assignment& a : problem.initial_state()) {
+        init_value[a.fluent_id().id] = a.value_id();
+    }
+    // Exact init-state evaluation, computed once by the achievers analysis.
+    const auto& init_sat = result.achievers->get_init_satisfied_conditions();
+
+    result.landmark_data = compute(
+        problem, *result.achievers,
+        [&](ExprID cond) { return init_sat.count(cond) > 0; },
+        [&](ExprID fluent) -> std::optional<double> {
+            auto it = init_value.find(fluent.id);
+            if (it == init_value.end()) return std::nullopt;
+            return eval_const_num(pool, it->second);
+        });
+
+    LandmarkData& data = result.landmark_data;
     if (data.depth_lower_bound > result.lower_bound) {
         result.lower_bound = data.depth_lower_bound;
+    }
+
+    int informative = 0;  // landmarks with real (non-default) count structure
+    for (const LandmarkInfo& info : data.landmarks) {
+        bool default_like = info.residual == 1.0;
+        for (double lambda : info.contributions) {
+            default_like = default_like && lambda == 1.0;
+        }
+        if (!default_like) informative++;
     }
 
     Stats::instance().set("landmarks.count", static_cast<double>(data.landmarks.size()));

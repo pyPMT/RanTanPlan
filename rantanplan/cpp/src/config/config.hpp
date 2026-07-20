@@ -58,6 +58,14 @@ public:
         int max_steps = 500;
         int start_timestep = 0;  ///< Starting timestep for search (can be set by RPG lower bound)
         std::string horizon_schedule = "linear";  ///< Schedule type: linear|arithmetic|geometric|doubling
+
+        // Windowed-commitment / anchor-search planner tunables (els-wc,
+        // els-wc2). Config-only, no CLI flags. Deliberately few and
+        // scale-free: window length and candidate count are the only knobs;
+        // everything else is driven by logical signals (cores, landmarks,
+        // structural exhaustion), never by tuned cutoffs.
+        int wc_window       = 8;     ///< Base window length w0
+        int wc_candidates   = 6;     ///< Candidate frontiers per generation round (C)
     } planner;
 
     struct Symmetry {
