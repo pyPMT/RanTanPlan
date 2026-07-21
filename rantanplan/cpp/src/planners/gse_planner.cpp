@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
+#include <functional>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -172,6 +174,16 @@ public:
     }
 
     int num_ordinary() const { return N_; }
+    /// M6i-b: C3 clauses elided as vacuous (same-constant writers, no contributors).
+    long long protection_skipped() const { return protection_skipped_; }
+    /// M6i-a: link candidates dropped because their constant output cannot
+    /// satisfy the reader's guard.
+    long long support_dropped() const { return support_dropped_; }
+    /// M6b: fluents given the timeline realisation this round.
+    long long timeline_fluents() const { return timeline_fluents_; }
+    /// M6i-a: reads whose support set emptied — b is provably inapplicable.
+    /// Short-circuits the search, so it is counted and logged, never silent.
+    long long support_empty() const { return support_empty_; }
 
     /// Assert the whole encoding onto `solver`.
     void build(z3::solver& solver);
@@ -206,6 +218,9 @@ private:
     std::vector<z3::expr> occ_;
     std::vector<z3::expr> tau_;
     int N_ = 0, B_ = 0, T_ = 0;
+    long long protection_skipped_ = 0;
+    long long support_dropped_ = 0;
+    long long support_empty_ = 0;
     std::unordered_map<int, std::vector<int>> inst_of_;  // action id -> instance idxs
 
     // v(b,f): per instance, fluent -> seen-value var.
@@ -215,8 +230,22 @@ private:
     // amt(c,f): fluent -> contributor instance -> amount var/const.
     std::unordered_map<ExprID, std::unordered_map<int, z3::expr>> amt_;
 
+    /// M6b: one fluent's segment chain.  `V[k]` is the fluent's value after the
+    /// k-th occurring writer; `seg_of(rank)` counts the writers before a rank,
+    /// which is both a writer's slot index (minus one) and a reader's segment.
+    struct Timeline {
+        int K = 0;
+        std::vector<z3::expr> V;                                ///< V[0..K]
+        std::function<z3::expr(z3::expr)> seg_of;               ///< rank -> #writers before it
+    };
+    std::unordered_map<ExprID, Timeline> timelines_;
+    long long timeline_fluents_ = 0;
+
     // Writer/contributor entries per fluent (ordinary instances + effect index).
-    struct Entry { int inst; int effect_index; bool negated; };
+    // `const_write` is the interned ExprID of the effect's RHS when that RHS is a
+    // CONSTANT, else EXPR_NULL.  The ExprPool interns, so two writers assigning
+    // the same constant share an ExprID — that identity is what P1(b) tests.
+    struct Entry { int inst; int effect_index; bool negated; ExprID const_write = EXPR_NULL; };
     std::unordered_map<ExprID, std::vector<Entry>> writer_entries_;
     std::unordered_map<ExprID, std::vector<Entry>> add_entries_;
 
@@ -235,6 +264,16 @@ private:
     void build_instances(const std::unordered_map<int, int>& copies);
     z3::expr translate(ExprID e, const std::unordered_map<ExprID, z3::expr>& subst);
     z3::expr init_value(ExprID f);
+    /// The interned ExprID of f's initial value when it is a CONSTANT, else
+    /// EXPR_NULL (M6i-b treats the virtual bottom writer like any other).
+    ExprID init_const_id(ExprID f);
+    /// M6i-a: does a *top-level conjunct* of `guard` pin Boolean fluent `f` to a
+    /// constant?  Top-level conjunction only — a conjunct must hold whenever the
+    /// guard does, which is exactly what licenses restricting the support set.
+    /// `f` under a disjunction or a negated conjunction yields nullopt.
+    std::optional<bool> required_bool(ExprID guard, ExprID f) const;
+    /// The pinned value of `f` in instance `b`'s own guard (goal, for top).
+    std::optional<bool> required_bool_for(int b, ExprID f) const;
     const std::unordered_map<ExprID, z3::expr>& subst_of(int inst) const { return v_[inst]; }
 };
 
@@ -286,6 +325,109 @@ z3::expr Round::init_value(ExprID f) {
     }
     if (problem_.is_bool_type(f)) return ctx_.bool_val(false);  // CWA
     return make_num(0);
+}
+
+/// Estimated formula cost of the two realisations of one fluent.
+///
+/// Both the per-fluent realisation choice (M6b) and the formula-size guard must
+/// use this: if they disagree, the guard rejects instances the encoder would
+/// have built cheaply, or admits ones it cannot.
+///
+/// `link` models M6i-b exactly — protection between same-constant writers is
+/// never emitted, so those ordered pairs are subtracted.  That is why the choice
+/// cannot be a raw density threshold: on a *monotone* fluent (every writer
+/// assigns the same value) M6i-b already drives `link` to ~0, and a timeline
+/// would replace a free structure with `w²` channelling.
+struct RealisationCost {
+    long long link = 0;
+    long long timeline = -1;  ///< -1 when inapplicable (fluent has contributors)
+    /// A timeline is chosen only when links are *non-viable*, not merely larger.
+    ///
+    /// Measured: timelines are sound but propagate far worse than links — the
+    /// link form gives Z3 clauses it can unit-propagate, the timeline gives it
+    /// pseudo-Boolean arithmetic (`Σ ite(...) = k`) it must solve.  With a pure
+    /// `timeline < link` rule, obj-blocks went 5.06 s → timeout and gripper
+    /// stalled, while depots (link cost ~8.2 M for one fluent, refused outright)
+    /// only *builds* with timelines.  So size alone is the wrong criterion; the
+    /// floor keeps links wherever they are affordable.
+    ///
+    /// Provisional constant — a measurement subject, not a conclusion.
+    static constexpr long long kLinkCostFloor = 1000000;
+    bool prefer_timeline() const {
+        if (getenv("GSE_NO_TIMELINE")) return false;
+        return timeline >= 0 && timeline < link && link > kLinkCostFloor;
+    }
+    long long best() const { return prefer_timeline() ? timeline : link; }
+};
+
+/// `class_sizes` are the counts of writer instances sharing a constant output
+/// (bottom included when its initial value is constant).
+RealisationCost realisation_cost(long long w_inst, long long reads, long long d_inst,
+                                 const std::vector<long long>& class_sizes) {
+    RealisationCost c;
+    const long long threats = w_inst + 1;  // + bottom
+    long long prot = threats * (threats - 1);
+    for (long long n : class_sizes) prot -= n * (n - 1);
+    if (prot < 0) prot = 0;
+    c.link = reads * (prot + threats * d_inst) + 4;
+    // Timeline: O(w·K) channelling once per fluent, plus O(K) per read.
+    // Only for contributor-free fluents — otherwise the value rule would
+    // instantiate the interval sum per segment (r·K·d), worse than links' r·d.
+    if (d_inst == 0 && w_inst > 0) c.timeline = w_inst * w_inst + reads * (w_inst + 1);
+    return c;
+}
+
+/// The interned ExprID of f's initial value when it is a CONSTANT, else
+/// EXPR_NULL.  Shared by the encoding (bottom's output) and the formula-size
+/// estimator, which must agree on what counts as a same-constant writer.
+ExprID init_const_id_of(const Problem& problem, ExprID f) {
+    for (const Assignment& asn : problem.initial_state()) {
+        if (asn.fluent_id() == f) {
+            ExprID v = asn.value_id();
+            return problem.pool().kind(v) == ExprKind::CONSTANT ? v : EXPR_NULL;
+        }
+    }
+    // No explicit assignment (CWA default).  Conservative: no skip.  Harmless —
+    // a CWA-default Boolean is false and its writers assign true, so the pair
+    // would not have been skipped anyway.
+    return EXPR_NULL;
+}
+
+ExprID Round::init_const_id(ExprID f) { return init_const_id_of(problem_, f); }
+
+std::optional<bool> Round::required_bool(ExprID guard, ExprID f) const {
+    if (guard == EXPR_NULL) return std::nullopt;
+    if (guard == f) return true;
+    if (!pool_.is_function_application(guard)) return std::nullopt;
+    ExprOperator op = pool_.op(guard);
+    if (op == ExprOperator::AND) {
+        // Two conjuncts pinning f to different values make the guard
+        // unsatisfiable; returning either is then harmless.
+        for (ExprID a : pool_.arguments(guard))
+            if (auto r = required_bool(a, f)) return r;
+        return std::nullopt;
+    }
+    if (op == ExprOperator::NOT) {
+        auto args = pool_.arguments(guard);
+        if (!args.empty() && args[0] == f) return false;
+    }
+    return std::nullopt;
+}
+
+std::optional<bool> Round::required_bool_for(int b, ExprID f) const {
+    if (!problem_.is_bool_type(f)) return std::nullopt;
+    if (b == B_) return std::nullopt;
+    if (b == T_) {
+        for (const Goal& g : problem_.goals())
+            if (auto r = required_bool(g.goal_id(), f)) return r;
+        return std::nullopt;
+    }
+    const Action* a = inst_[b].action;
+    if (!a || !a->has_precondition()) return std::nullopt;
+    // Note: the pin applies to v(b,f) wherever else b reads f (e.g. an effect
+    // RHS), because it is the same variable and the guard is asserted under
+    // occ(b) alongside every other use.
+    return required_bool(a->precondition_id(), f);
 }
 
 z3::expr Round::translate(ExprID e, const std::unordered_map<ExprID, z3::expr>& subst) {
@@ -389,8 +531,13 @@ void Round::build(z3::solver& solver) {
         auto fit = cls_.fluents.find(f);
         if (fit == cls_.fluents.end()) continue;
         for (const GseEffectRef& wr : fit->second.writers) {
+            ExprID cw = EXPR_NULL;
+            if (wr.value_kind == ValueKind::CONSTANT) {
+                cw = problem_.action(wr.action_id).effect(wr.effect_index)
+                         .effect_expression().value_id();
+            }
             for (int inst : inst_of_[wr.action_id])
-                writer_entries_[f].push_back({inst, wr.effect_index, false});
+                writer_entries_[f].push_back({inst, wr.effect_index, false, cw});
         }
         for (const GseEffectRef& ad : fit->second.adds) {
             for (int inst : inst_of_[ad.action_id])
@@ -425,6 +572,94 @@ void Round::build(z3::solver& solver) {
         }
     }
 
+    // --- M6b: per-fluent timeline chains (idea.md §5.1) ---
+    //
+    // The link realisation costs `r_f·w_f²` because every read re-derives "no
+    // other writer in between" against every writer pair.  A timeline pays the
+    // writer-ordering cost *once per fluent* and gives each read an O(K) segment
+    // attachment instead:  writers occupy a packed, rank-ordered slot chain, and
+    // a read attaches to the segment whose bracketing ranks straddle its own.
+    // Cost becomes `w_f² + r_f·K_f`.
+    //
+    // Scope (deliberate):
+    //  - Contributor-free fluents only.  With contributors the value rule would
+    //    be `V(k) + intervalsum(rank_at(k), τ(b))`, instantiating the sum per
+    //    segment (`r·K·d`) — worse than the link form's `r·d`.  With d = 0 the
+    //    rule collapses to `v(b,f) = V(seg)`.  The measured offenders
+    //    (`(available hoist1)`, `(available rover1)`) are all contributor-free.
+    //  - Chosen per fluent by comparing estimated costs, NOT by a density
+    //    threshold.  M6i-b already zeroes link protection on monotone fluents,
+    //    so a naive "writer-dense ⇒ timeline" rule made rover/pfile14 strictly
+    //    worse (back to the heap cap): it paid w² channelling where links were
+    //    already free.
+    auto read_count_of = [&](ExprID f) -> long long {
+        long long n = 0;
+        for (int b = 0; b < N_ + 2; ++b)
+            if (b != B_ && v_[b].count(f)) ++n;
+        return n;
+    };
+    for (ExprID f : read_fluents) {
+        const std::vector<Entry>& wents = writer_entries_[f];
+        if (!add_entries_[f].empty()) continue;  // needs d = 0
+        if (wents.empty()) continue;
+
+        std::unordered_map<ExprID, long long> cls_sizes;
+        ExprID bi = init_const_id(f);
+        if (bi != EXPR_NULL) cls_sizes[bi] += 1;
+        for (const Entry& e : wents)
+            if (e.const_write != EXPR_NULL) cls_sizes[e.const_write] += 1;
+        std::vector<long long> sizes;
+        sizes.reserve(cls_sizes.size());
+        for (const auto& [id, n] : cls_sizes) sizes.push_back(n);
+
+        RealisationCost rc = realisation_cost(static_cast<long long>(wents.size()),
+                                              read_count_of(f), 0, sizes);
+        if (!rc.prefer_timeline()) continue;
+
+        Timeline tl;
+        const int K = static_cast<int>(wents.size());
+        tl.K = K;
+        std::string fid = std::to_string(f.id);
+
+        // Segment values: V(k) is f's value after the k-th occurring writer.
+        tl.V.push_back(w_[f].at(B_));  // V(0) = I(f)
+        for (int k = 1; k <= K; ++k)
+            tl.V.push_back(value_var(f, "Vt_" + fid + "_" + std::to_string(k)));
+
+        // A writer's slot and a reader's segment are *defined terms* over τ, not
+        // free variables:
+        //     slot(a) = 1 + |{a' : occ(a') ∧ τ(a') < τ(a)}|
+        //     seg(b)  =     |{a  : occ(a)  ∧ τ(a)  < τ(b)}|
+        //
+        // The first cut gave each writer a free `slot` Int constrained to agree
+        // with τ (plus packing/monotonicity/occupancy).  That is a *redundant
+        // permutation* the solver has to search alongside τ, and it was
+        // catastrophic: gripper (34 instances) went from instant to a >30 s
+        // timeout even though the formula got smaller.  As counting sums both
+        // are functionally determined once τ is fixed, so they propagate instead
+        // of branching — and packing, occupancy, rank_at and the idle-slot rule
+        // all disappear with them.
+        auto writers_before = [&](z3::expr rank) {
+            z3::expr acc = ctx_.int_val(0);
+            for (const Entry& e : wents)
+                acc = acc + z3::ite(occ_[e.inst] && (tau_[e.inst] < rank), ctx_.int_val(1), ctx_.int_val(0));
+            return acc;
+        };
+
+        // A writer that occurs pins the value of its own segment.  `τ(a') < τ(a)`
+        // is strict, so a writer never counts itself.
+        for (const Entry& e : wents) {
+            z3::expr slot = writers_before(tau_[e.inst]) + ctx_.int_val(1);
+            for (int k = 1; k <= K; ++k)
+                solver.add(z3::implies(occ_[e.inst] && (slot == ctx_.int_val(k)),
+                                       tl.V[k] == w_[f].at(e.inst)));
+        }
+        tl.seg_of = writers_before;
+
+        timelines_.emplace(f, std::move(tl));
+        ++timeline_fluents_;
+    }
+
     // --- Value reconstruction per read (C2/C3/C4) ---
     auto interval_sum = [&](ExprID f, int b, z3::expr lo_excl) -> z3::expr {
         // Sum of contributions c with lo_excl < tau(c) < tau(b), c != b.
@@ -452,15 +687,96 @@ void Round::build(z3::solver& solver) {
                 continue;
             }
 
-            // Candidate last-writers: bottom + ordinary writer instances != b.
-            std::vector<int> cand;
-            cand.push_back(B_);
-            for (const Entry& e : wents) if (e.inst != b) cand.push_back(e.inst);
+            // M6b: timeline realisation — attach the read to a segment instead of
+            // linking it to a writer.  seg(b) = k iff the slot-k writer is the
+            // last one before b, i.e. rank_at(k) < τ(b) < rank_at(k+1).  Those
+            // brackets are mutually exclusive and exhaustive because rank_at is
+            // strictly increasing over occupied slots and N+2 afterwards, so
+            // exactly-one plus the forward implication pins the right segment.
+            // No C3 protection at all: "no writer in between" is now a property
+            // of the chain, not a quadratic over writer pairs.
+            auto tlit = timelines_.find(f);
+            if (tlit != timelines_.end()) {
+                // seg(b) = number of occurring writers strictly before b, so
+                // V(seg(b)) is the output of the last one.  Strictness excludes
+                // b's own write when b both reads and writes f — the case that
+                // made the first cut return UNSAT on refinery.  No C3 protection
+                // at all: "no writer in between" is now arithmetic on the count,
+                // not a quadratic over writer pairs.
+                const Timeline& tl = tlit->second;
+                z3::expr seg = tl.seg_of(tau_[b]);
+                for (int k = 0; k <= tl.K; ++k)
+                    solver.add(z3::implies(occ_[b] && (seg == ctx_.int_val(k)), vbf == tl.V[k]));
+                continue;
+            }
+
+            // Threat set: bottom + every ordinary writer instance != b.  C3 must
+            // range over ALL of these however the *support* set below is
+            // restricted — a writer that cannot supply the value the guard wants
+            // can still clobber it, so shrinking one set must not shrink the
+            // other (M6i-a).
+            std::vector<int> threats;
+            threats.push_back(B_);
+            for (const Entry& e : wents) if (e.inst != b) threats.push_back(e.inst);
+
+            const bool no_contrib = add_entries_[f].empty();
+            std::unordered_map<int, ExprID> const_write;
+            const_write.emplace(B_, init_const_id(f));
+            for (const Entry& e : wents) const_write.emplace(e.inst, e.const_write);
+            auto const_write_of = [&](int x) {
+                auto it = const_write.find(x);
+                return it == const_write.end() ? EXPR_NULL : it->second;
+            };
+
+            // M6i-b — threat restriction.  Protection between two writers that
+            // assign the *same constant* is vacuous when f has no contributors:
+            // whichever of them is last, the value b sees is identical, so C4
+            // stays correct.  Dropping the clause is a pure relaxation, and on a
+            // monotone predicate (one only ever assigned true, e.g. rover's
+            // `(available ?r)`) it removes the entire r_f·w_f² quadratic.
+            auto same_constant = [&](int x, int y) {
+                if (!no_contrib) return false;
+                ExprID cx = const_write_of(x), cy = const_write_of(y);
+                return cx != EXPR_NULL && cx == cy;
+            };
+
+            // M6i-a — support restriction.  If the guard pins f to a constant,
+            // the last writer must have left that value there, so writers whose
+            // constant output differs cannot be the support.  Unlike M6i-b this
+            // *strengthens* the formula, so it is confined to what the argument
+            // licenses: Boolean fluents (hence no contributors, so the value b
+            // sees is exactly the last writer's output), and writers whose RHS is
+            // a known constant — a dynamic-RHS writer could produce anything and
+            // is always kept.
+            std::vector<int> support;
+            std::optional<bool> req = required_bool_for(b, f);
+            if (req.has_value()) {
+                for (int a : threats) {
+                    ExprID cw = const_write_of(a);
+                    if (cw != EXPR_NULL && pool_.payload_is_bool(cw) &&
+                        pool_.payload_bool(cw) != *req) {
+                        ++support_dropped_;
+                        continue;
+                    }
+                    support.push_back(a);
+                }
+            } else {
+                support = threats;
+            }
+
+            if (support.empty()) {
+                // Nothing can supply the demanded value: b is provably
+                // inapplicable.  (Sound — every dropped writer had a constant
+                // output that differs, and bottom's initial value differs too.)
+                ++support_empty_;
+                solver.add(!occ_[b]);
+                continue;
+            }
 
             // Link vars.
             std::unordered_map<int, z3::expr> L;
             z3::expr_vector at_least(ctx_);
-            for (int a : cand) {
+            for (int a : support) {
                 std::string nm = "L_" + std::to_string(a) + "_" + std::to_string(b) + "_" + std::to_string(f.id);
                 z3::expr la = ctx_.bool_const(nm.c_str());
                 L.emplace(a, la);
@@ -470,14 +786,15 @@ void Round::build(z3::solver& solver) {
             }
             // C2 existence + exclusivity (guarded by occ(b)).
             solver.add(z3::implies(occ_[b], z3::mk_or(at_least)));
-            for (size_t x = 0; x < cand.size(); ++x)
-                for (size_t y = x + 1; y < cand.size(); ++y)
-                    solver.add(!L.at(cand[x]) || !L.at(cand[y]));
+            for (size_t x = 0; x < support.size(); ++x)
+                for (size_t y = x + 1; y < support.size(); ++y)
+                    solver.add(!L.at(support[x]) || !L.at(support[y]));
 
-            for (int a : cand) {
-                // C3 protection.
-                for (int c : cand) {
+            for (int a : support) {
+                // C3 protection — over the full threat set.
+                for (int c : threats) {
                     if (c == a) continue;
+                    if (same_constant(a, c)) { ++protection_skipped_; continue; }
                     z3::expr promote = (tau_[b] <= tau_[c]);
                     z3::expr demote = (tau_[c] < tau_[a]);
                     solver.add(z3::implies(L.at(a) && occ_[c], demote || promote));
@@ -615,7 +932,7 @@ Plan GsePlanner::search() {
 
     // ---- M1: static classification + E1 metrics + applicability guard ----
     cls_ = gse_classify(problem_);
-    gse_record_e1_stats(problem_, cls_);
+    GseCostProfile cost = gse_record_e1_stats(problem_, cls_);
 
     auto reason = gse_applicability_reason(problem_, cls_, GseScope::M4);
     {
@@ -627,8 +944,12 @@ Plan GsePlanner::search() {
            << " pure_additive=" << stats.get("gse.fluents.pure_additive")
            << " mixed=" << stats.get("gse.fluents.mixed")
            << " wf_max=" << stats.get("gse.numeric.wf_max")
+           << " bool_wf_max=" << stats.get("gse.bool.wf_max")
            << " df_max=" << stats.get("gse.numeric.df_max")
            << " rf_max=" << stats.get("gse.reads.rf_max")
+           << " est_terms=" << static_cast<long long>(cost.est_terms)
+           << " top=" << (cost.top_fluent.empty() ? "-" : cost.top_fluent)
+           << ":" << static_cast<long long>(cost.top_terms)
            << " self_ref=" << stats.get("gse.self_referential")
            << " dyn_amt=" << (cls_.any_dynamic_amount ? 1 : 0)
            << " dyn_wr=" << (cls_.any_dynamic_writer ? 1 : 0)
@@ -678,15 +999,48 @@ Plan GsePlanner::search() {
         auto it = copies_.find(aid);
         return it == copies_.end() ? 1 : it->second;
     };
-    // Per-read cost ~ protection (w^2) + interval sums (w*d), w = writer copies
-    // (+bottom), d = contributor copies.
-    auto fluent_read_cost = [&](ExprID f) -> long long {
+    // Per-read cost ~ protection (ordered writer pairs) + interval sums (w*d).
+    //
+    // This models M6i-b exactly: protection between two writers assigning the
+    // *same constant* is never emitted, so those ordered pairs are subtracted.
+    // On a monotone predicate (every writer assigns the same value) the whole
+    // protection term therefore vanishes, which is the point — the previous
+    // `w*w` estimate ignored both M6i analyses and would keep rejecting
+    // instances whose formula they have already shrunk.
+    //
+    // It deliberately does NOT model M6i-a's further support restriction, so the
+    // result stays an upper bound on what gets emitted.  The guard is a
+    // memory-safety net; it must never be optimistic.
+    auto fluent_total_cost = [&](ExprID f, long long reads) -> long long {
         auto it = cls_.fluents.find(f);
-        if (it == cls_.fluents.end()) return 1;
-        long long w = 1, d = 0;
-        for (const auto& wr : it->second.writers) w += copies_of(wr.action_id);
-        for (const auto& ad : it->second.adds) d += copies_of(ad.action_id);
-        return w * w + w * d + 4;
+        if (it == cls_.fluents.end()) return reads;
+        const GseFluentClass& fc = it->second;
+
+        long long d = 0;
+        for (const auto& ad : fc.adds) d += copies_of(ad.action_id);
+        const bool no_contrib = fc.adds.empty();
+
+        // Partition writer instances by the constant they assign; bottom joins
+        // its own initial value's class.  Non-constant writers join no class.
+        std::unordered_map<ExprID, long long> classes;
+        if (no_contrib) {
+            ExprID bi = init_const_id_of(problem_, f);
+            if (bi != EXPR_NULL) classes[bi] += 1;
+        }
+        long long w_inst = 0;
+        for (const auto& wr : fc.writers) {
+            long long k = copies_of(wr.action_id);
+            w_inst += k;
+            if (no_contrib && wr.value_kind == ValueKind::CONSTANT) {
+                ExprID cw = problem_.action(wr.action_id).effect(wr.effect_index)
+                                .effect_expression().value_id();
+                classes[cw] += k;
+            }
+        }
+        std::vector<long long> sizes;
+        sizes.reserve(classes.size());
+        for (const auto& [id, n] : classes) sizes.push_back(n);
+        return realisation_cost(w_inst, reads, d, sizes).best();
     };
 
     while (true) {
@@ -699,17 +1053,21 @@ Plan GsePlanner::search() {
         // at the initialised budget should solve without doubling the instances.
         bool cg_round = core_guided && round > 1;
 
-        // Formula-size guard (memory protection).
-        long long est = 0;
+        // Formula-size guard (memory protection).  Costed per *fluent*, since a
+        // timeline's channelling is paid once per fluent while its attachment is
+        // per read — a per-read cost cannot express that.
+        std::unordered_map<ExprID, long long> reads_of;
         for (const Action& a : problem_.actions()) {
             long long k = copies_of(a.id()) + (cg_round ? 1 : 0);
             auto rit = cls_.action_reads.find(a.id());
             if (rit == cls_.action_reads.end()) continue;
             std::unordered_set<ExprID> seen;
             for (ExprID f : rit->second)
-                if (seen.insert(f).second) est += k * fluent_read_cost(f);
+                if (seen.insert(f).second) reads_of[f] += k;
         }
-        for (ExprID f : cls_.goal_reads) est += fluent_read_cost(f);
+        for (ExprID f : cls_.goal_reads) reads_of[f] += 1;
+        long long est = 0;
+        for (const auto& [f, r] : reads_of) est += fluent_total_cost(f, r);
         if (est > kMaxTerms) {
             log.info("GSE: estimated formula size " + std::to_string(est) +
                      " terms exceeds cap " + std::to_string(kMaxTerms) +
@@ -788,9 +1146,19 @@ Plan GsePlanner::search() {
             break;
         }
 
+        stats.set("gse.m6i_b.protection_skipped", static_cast<double>(r.protection_skipped()));
+        stats.set("gse.m6i_a.support_dropped", static_cast<double>(r.support_dropped()));
+        stats.set("gse.m6i_a.support_empty", static_cast<double>(r.support_empty()));
+        stats.set("gse.m6b.timeline_fluents", static_cast<double>(r.timeline_fluents()));
+        if (r.support_empty() > 0)
+            log.info("GSE: " + std::to_string(r.support_empty()) +
+                     " read(s) had no possible supporter — those instances forced dormant.");
         log.info("GSE round " + std::to_string(round) + ": copies=" +
                  std::to_string(total_copies) + " instances=" +
-                 std::to_string(r.num_ordinary()) + " -> " +
+                 std::to_string(r.num_ordinary()) + " skipped_c3=" +
+                 std::to_string(r.protection_skipped()) + " dropped_links=" +
+                 std::to_string(r.support_dropped()) + " timelines=" +
+                 std::to_string(r.timeline_fluents()) + " -> " +
                  (res == z3::sat ? "SAT" : res == z3::unsat ? "UNSAT" : "UNKNOWN") +
                  " (" + std::to_string(solve_s) + "s)");
 

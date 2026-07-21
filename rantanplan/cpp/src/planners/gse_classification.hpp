@@ -102,8 +102,19 @@ std::optional<std::string> gse_applicability_reason(const Problem& problem,
                                                      const GseClassification& c,
                                                      GseScope scope);
 
-/// Record the E1 metrics through the Stats singleton (surface via --stats-file).
-void gse_record_e1_stats(const Problem& problem, const GseClassification& c);
+/// Encoding-cost proxy per fluent: `r_f · (w_f² + w_f·d_f)` — the C3 protection
+/// and C4 interval-sum terms a read of that fluent costs, mirroring the planner's
+/// own `fluent_read_cost`.  `w_f` counts the virtual bottom writer.
+struct GseCostProfile {
+    double est_terms = 0.0;   ///< Σ_f r_f·(w_f² + w_f·d_f) at one copy per action
+    std::string top_fluent;   ///< the single worst fluent, rendered
+    double top_terms = 0.0;   ///< that fluent's share of est_terms
+};
+
+/// Record the E1 metrics through the Stats singleton (surface via --stats-file)
+/// and return the cost profile (its top-offender name is a string, so it goes to
+/// the log line rather than the numeric-only Stats map).
+GseCostProfile gse_record_e1_stats(const Problem& problem, const GseClassification& c);
 
 /// Whether two touches of the same fluent statically interfere (C1): order can
 /// matter unless both sides only contribute (additions commute) with neither

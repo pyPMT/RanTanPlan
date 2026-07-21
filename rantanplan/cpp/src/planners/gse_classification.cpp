@@ -289,13 +289,19 @@ double median_of(std::vector<int> v) {
 }
 }  // namespace
 
-void gse_record_e1_stats(const Problem& problem, const GseClassification& c) {
+GseCostProfile gse_record_e1_stats(const Problem& problem, const GseClassification& c) {
     auto& stats = Stats::instance();
 
     int assign_only = 0, pure_additive = 0, mixed = 0;
     int n_bool = 0, n_numeric = 0, n_object = 0;
     int self_ref = 0;
     std::vector<int> wf, df, rf_numeric, rf_all;
+    // Boolean fluents are ASSIGN_ONLY, so *every* effect on them is a writer and
+    // they drive the `Σ_f r_f·w_f²` protection blowup.  The numeric-only `wf`
+    // below cannot see them, which is why the M1 gate passed rover/pfile14
+    // (wf_max=0) on an instance that then died of writer density.
+    std::vector<int> wf_bool;
+    GseCostProfile profile;
 
     for (const auto& [f, fc] : c.fluents) {
         switch (fc.category) {
@@ -312,6 +318,17 @@ void gse_record_e1_stats(const Problem& problem, const GseClassification& c) {
             wf.push_back(static_cast<int>(fc.writers.size()));
             df.push_back(static_cast<int>(fc.adds.size()));
             rf_numeric.push_back(fc.reads());
+        }
+        if (fc.is_bool) wf_bool.push_back(static_cast<int>(fc.writers.size()));
+
+        // Encoding-cost proxy at one copy per action (+1 for the bottom writer).
+        double w = static_cast<double>(fc.writers.size()) + 1.0;
+        double d = static_cast<double>(fc.adds.size());
+        double terms = static_cast<double>(fc.reads()) * (w * w + w * d);
+        profile.est_terms += terms;
+        if (terms > profile.top_terms) {
+            profile.top_terms = terms;
+            profile.top_fluent = problem.pool().to_string(f);
         }
     }
 
@@ -332,14 +349,19 @@ void gse_record_e1_stats(const Problem& problem, const GseClassification& c) {
     stats.set("gse.numeric.df_median", median_of(df));
     stats.set("gse.numeric.rf_max", max_of(rf_numeric));
     stats.set("gse.numeric.rf_median", median_of(rf_numeric));
+    stats.set("gse.bool.wf_max", max_of(wf_bool));
+    stats.set("gse.bool.wf_median", median_of(wf_bool));
     stats.set("gse.reads.rf_max", max_of(rf_all));
     stats.set("gse.reads.rf_median", median_of(rf_all));
+    stats.set("gse.cost.est_terms", profile.est_terms);
+    stats.set("gse.cost.top_terms", profile.top_terms);
     stats.set("gse.self_referential", self_ref);
     stats.set("gse.conditional_effects", c.any_conditional_effect ? 1 : 0);
     stats.set("gse.dynamic_amount", c.any_dynamic_amount ? 1 : 0);
     stats.set("gse.dynamic_writer", c.any_dynamic_writer ? 1 : 0);
     stats.set("gse.nonlinear", c.any_nonlinear ? 1 : 0);
     stats.set("gse.instances_k1", static_cast<double>(problem.actions().size()));
+    return profile;
 }
 
 } // namespace rantanplan
