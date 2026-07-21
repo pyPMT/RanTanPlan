@@ -282,6 +282,18 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
             "Use a grounded/chained strategy instead.");
     }
 
+    // GSE has no step boundaries to assert (always phi) at (F5): it reconstructs
+    // per-read values along a partial order, with no global state at any point.
+    // Reject rather than silently drop the requirement.
+    if (!problem.state_invariants().empty() &&
+        spec.planner == rantanplan::PlannerKind::GSE) {
+        throw std::invalid_argument(
+            "Strategy '" + config.planner.strategy + "' (GSE encoding) does not "
+            "support declared state invariants ((:constraints (always ...))): the "
+            "partial-order encoding has no step boundaries to assert them at. "
+            "Use a step-based strategy instead.");
+    }
+
     ir::ResultIR result;
     auto add_info = [&result](const std::string& message) {
         result.log_messages.push_back(ir::LogMessageIR{1 /* INFO */, message});

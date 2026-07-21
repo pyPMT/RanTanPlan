@@ -131,6 +131,30 @@ void CLIParser::parse(Config& config, int argc, char* argv[]) {
         else if (arg == "--symmetries") {
             config.symmetry.enable_symmetries = true;
         }
+        // GSE planner options
+        else if (arg == "--gse-initial-copies") {
+            if (i + 1 < argc) config.gse.initial_copies = std::stoi(argv[++i]);
+            else throw std::invalid_argument("--gse-initial-copies requires a value");
+        }
+        else if (arg == "--gse-max-instances") {
+            if (i + 1 < argc) config.gse.max_instances = std::stoi(argv[++i]);
+            else throw std::invalid_argument("--gse-max-instances requires a value");
+        }
+        else if (arg == "--gse-uniform-growth") {
+            config.gse.core_guided = false;
+        }
+        else if (arg == "--gse-uniform-every") {
+            if (i + 1 < argc) config.gse.uniform_every = std::stoi(argv[++i]);
+            else throw std::invalid_argument("--gse-uniform-every requires a value");
+        }
+        else if (arg == "--gse-max-memory-mb") {
+            if (i + 1 < argc) config.gse.max_memory_mb = std::stoi(argv[++i]);
+            else throw std::invalid_argument("--gse-max-memory-mb requires a value");
+        }
+        else if (arg == "--gse-max-terms") {
+            if (i + 1 < argc) config.gse.max_terms = std::stoll(argv[++i]);
+            else throw std::invalid_argument("--gse-max-terms requires a value");
+        }
         // Logging options
         else if (arg == "--log-file") {
             if (i + 1 < argc) {

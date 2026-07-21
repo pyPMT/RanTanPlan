@@ -64,6 +64,16 @@ public:
         bool enable_symmetries = false;  ///< Enable symmetry detection
     } symmetry;
 
+    /// GSE (generalised support / partial-order causal-link) planner knobs.
+    struct Gse {
+        int initial_copies = 1;     ///< Starting k_a (copies per ground action)
+        int max_instances = 200;    ///< Stop growing the budget past this many copies/action
+        bool core_guided = true;    ///< M3: grow copies named by unsat cores (else uniform +1)
+        int uniform_every = 8;      ///< M3: force a uniform-growth round every N rounds (0=never)
+        int max_memory_mb = 2048;   ///< Hard Z3 heap cap for GSE rounds (0 = unlimited)
+        long long max_terms = 3'000'000;  ///< Refuse to build a round estimated above this
+    } gse;
+
     struct FormulaExport {
         bool export_formula = false;      ///< Enable formula export mode
         int timestep = -1;                ///< Timestep to export formula for

@@ -83,6 +83,10 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
         // Core-guided activation (optional-occurrence loop)
         {"cgb",       {{E::Grounded, S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::CGB},
                        "Core-guided lazy activation (stripped optional-occurrence loop)"}},
+
+        // Generalised support encoding (partial-order causal-link, horizon-free)
+        {"gse",       {{E::Grounded, S::Sequential, I::None,             {},                       K::GSE},
+                       "Partial-order causal-link (generalised support) encoding — prototype"}},
     };
     return registry;
 }

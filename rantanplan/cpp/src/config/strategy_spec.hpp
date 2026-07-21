@@ -30,8 +30,9 @@ enum class InterferenceKind { None, EagerSyntactic, EagerSemantic, LazySyntactic
 /// Planner backend: Sequential/DoubleTail drive satisficing search with a
 /// growing horizon; BranchAndBound is the cost-optimal/anytime search;
 /// CGB activates ground actions lazily under Exists semantics, with
-/// growth named by unsat cores.
-enum class PlannerKind { Sequential, DoubleTail, BranchAndBound, CGB };
+/// growth named by unsat cores; GSE is the horizon-free partial-order
+/// causal-link (generalised support) encoding, iterating an instance budget.
+enum class PlannerKind { Sequential, DoubleTail, BranchAndBound, CGB, GSE };
 
 /// Composable propagator module kinds.
 enum class PropagatorModuleKind { ForallEager, ForallLazy, ExistsCycle, FrameAxiom };
@@ -68,6 +69,14 @@ inline PlannerKind resolve_planner_kind(SearchMode mode, const StrategySpec& spe
         std::string mode_str = (mode == SearchMode::Optimal) ? "optimal" : "anytime";
         throw std::invalid_argument(
             "Mode '" + mode_str + "' is incompatible with the CGB strategy.");
+    }
+    if (spec.planner == PlannerKind::GSE) {
+        // GSE is satisficing-only until M6e (D9): its budget loop searches by
+        // instance count, not cost, and the cost objective is not yet encoded.
+        std::string mode_str = (mode == SearchMode::Optimal) ? "optimal" : "anytime";
+        throw std::invalid_argument(
+            "Mode '" + mode_str + "' is incompatible with the GSE strategy "
+            "(satisficing only).");
     }
     return PlannerKind::BranchAndBound;
 }
