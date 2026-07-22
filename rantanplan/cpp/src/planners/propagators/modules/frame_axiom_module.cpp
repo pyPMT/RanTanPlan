@@ -255,8 +255,7 @@ void FrameAxiomModule::register_timestep_variables(int timestep) {
 }
 
 void FrameAxiomModule::register_frame_variables(int t) {
-    auto* grounded = dynamic_cast<GroundedEncoder*>(shared_->encoder);
-    if (!grounded) return;
+    GroundedEncoder* grounded = shared_->encoder;
 
     const auto& epc_index = grounded->get_epc_index();
     const Z3VariableFactory& vf = *shared_->variable_factory;

@@ -6,7 +6,7 @@
 
 namespace rantanplan {
 
-BasePlanner::BasePlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx)
+BasePlanner::BasePlanner(const Problem& problem, GroundedEncoder& encoder, z3::context& ctx)
     : problem_(problem), encoder_(encoder), ctx_(ctx), solver_(ctx),
       propagator_strategy_(nullptr) {
 }
@@ -164,14 +164,11 @@ void BasePlanner::collect_statistics() {
     stats.set("memory.current_mb", MemoryTracker::instance().get_current_memory_mb());
 }
 
-void BasePlanner::add_timestep_constraints(z3::solver& solver, BaseEncoder& encoder,
-                                           PropagatorStrategy& propagator, int timestep,
-                                           bool prefix_monotone) {
+void BasePlanner::add_timestep_constraints(z3::solver& solver, GroundedEncoder& encoder,
+                                           PropagatorStrategy& propagator, int timestep) {
     solver.add(encoder.encode_actions(timestep));
     solver.add(encoder.encode_frames(timestep));
-    if (prefix_monotone) {
-        solver.add(encoder.encode_prefix_monotone(timestep));
-    }
+    solver.add(encoder.encode_prefix_monotone(timestep));
     solver.add(encoder.encode_symmetries(timestep));
     solver.add(encoder.encode_state_constraints(timestep));
 

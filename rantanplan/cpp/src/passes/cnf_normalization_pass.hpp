@@ -15,7 +15,7 @@ namespace rantanplan {
  * formulas (normalizing before folding can blow up exponentially on
  * quantifier-expanded conditions).
  *
- * Clause-level conditions give AchieversAnalysis — and the landmark/cgb
+ * Clause-level conditions give AchieversAnalysis — and the landmark
  * machinery built on it — finer condition granularity than opaque nested
  * formulas provide.
  *

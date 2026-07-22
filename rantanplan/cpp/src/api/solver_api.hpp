@@ -89,13 +89,4 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result,
                    const PlanCallback& on_plan = {},
                    InterruptSlot* interrupt_slot = nullptr);
 
-/**
- * @brief Export the SMT formula for a fixed timestep instead of solving.
- *
- * Bypasses preprocessing entirely — operates on the raw loaded problem.
- * Timestep and strategy come from Config's formula-export section.
- * Returns the formula text; throws std::invalid_argument on bad options.
- */
-std::string export_formula(const Problem& problem);
-
 } // namespace rantanplan::api

@@ -3,7 +3,7 @@
 #include "../analysis/arithmetic_profile.hpp"
 #include "../problem/problem.hpp"
 #include "../problem/plan.hpp"
-#include "../encoders/base_encoder.hpp"
+#include "../encoders/grounded_encoder.hpp"
 #include "propagators/propagator_strategy.hpp"
 #include <z3++.h>
 #include <algorithm>
@@ -75,9 +75,9 @@ struct HorizonSchedule {
 /**
  * @brief Base interface for all planner implementations
  *
- * This interface abstracts different planning strategies (e.g., sequential single-ended,
- * double-tail/double-ended). The planner type is part of the strategy configuration,
- * allowing strategies to control both the encoding and the search approach.
+ * This interface abstracts different planning strategies (e.g., incremental-horizon
+ * satisficing, branch-and-bound optimal). The planner type is part of the strategy
+ * configuration, allowing strategies to control both the encoding and the search approach.
  */
 class BasePlanner {
 public:
@@ -137,11 +137,11 @@ public:
 
 protected:
     /// Construct with shared planner dependencies.
-    BasePlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx);
+    BasePlanner(const Problem& problem, GroundedEncoder& encoder, z3::context& ctx);
 
     // Shared state across all planners (declaration order matters for init).
     const Problem& problem_;
-    BaseEncoder& encoder_;
+    GroundedEncoder& encoder_;
     z3::context& ctx_;
     z3::solver solver_;
     std::unique_ptr<PropagatorStrategy> propagator_strategy_;
@@ -188,12 +188,10 @@ protected:
     /// Uses get_solver() to access the derived class's solver.
     void collect_statistics();
 
-    /// Add standard timestep constraints: actions, frames, symmetries, parallelism,
-    /// and propagator variable registration. Optionally includes prefix-monotone
-    /// constraints (omitted by DoubleTailPlanner).
-    static void add_timestep_constraints(z3::solver& solver, BaseEncoder& encoder,
-                                         PropagatorStrategy& propagator, int timestep,
-                                         bool prefix_monotone = true);
+    /// Add standard timestep constraints: actions, frames, prefix-monotone,
+    /// symmetries, parallelism, and propagator variable registration.
+    static void add_timestep_constraints(z3::solver& solver, GroundedEncoder& encoder,
+                                         PropagatorStrategy& propagator, int timestep);
 };
 
 } // namespace rantanplan

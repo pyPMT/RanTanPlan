@@ -2,7 +2,7 @@
 
 #include "../../problem/problem.hpp"
 #include "../../z3core/z3_variable_factory.hpp"
-#include "../../encoders/base_encoder.hpp"
+#include "../../encoders/grounded_encoder.hpp"
 #include "../../encoders/grounded_encoder.hpp"
 #include "../../analysis/interference_analysis.hpp"
 #include "../../problem/visitors/fluent_collector.hpp"
@@ -35,7 +35,7 @@ struct PropagatorSharedState {
     const Z3VariableFactory* variable_factory = nullptr;
     const ParallelismStrategy* parallelism = nullptr;
     const InterferenceOracle* interference = nullptr;
-    BaseEncoder* encoder = nullptr;
+    GroundedEncoder* encoder = nullptr;
     z3::solver* solver = nullptr;
 
     // Action trail (push/pop managed by CompositePropagator)

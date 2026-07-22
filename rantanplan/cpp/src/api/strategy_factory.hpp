@@ -2,7 +2,7 @@
 
 #include "../config/strategy_spec.hpp"
 #include "../problem/problem.hpp"
-#include "../encoders/base_encoder.hpp"
+#include "../encoders/grounded_encoder.hpp"
 #include "../planners/base_planner.hpp"
 #include "../planners/propagators/propagator_strategy.hpp"
 #include "../encoders/parallelism/parallelism_strategy.hpp"
@@ -31,12 +31,9 @@ namespace rantanplan {
 /// the caller (api::solve).
 class StrategyFactory {
 public:
-    /// Validate that a spec is internally consistent and compatible with
-    /// the given configuration options.
+    /// Validate that a spec is internally consistent.
     /// Throws std::invalid_argument with a clear message on failure.
-    static void validate(const StrategySpec& spec,
-                         const std::string& strategy_name,
-                         const std::string& horizon_schedule);
+    static void validate(const StrategySpec& spec);
 
     /// Adjust a strategy spec for problem-specific constraints (e.g. SDAC +
     /// exists-step downgrade). Mutates spec in place and logs adjustments.
@@ -44,24 +41,23 @@ public:
 
     /// Build a fully wired encoder: interference analyzer (timed as
     /// backend.interference_ms) into parallelism strategy into encoder.
-    static std::unique_ptr<BaseEncoder> create_encoder(
+    static std::unique_ptr<GroundedEncoder> create_encoder(
         const StrategySpec& spec, const Problem& problem, z3::context& ctx);
 
     /// As above, plus routes the preprocessing artifacts the encoder
     /// consumes: symmetry data (copied) and state constraints (moved).
-    static std::unique_ptr<BaseEncoder> create_encoder(
+    static std::unique_ptr<GroundedEncoder> create_encoder(
         const StrategySpec& spec, PreprocessedProblem& pre, z3::context& ctx);
 
     static std::unique_ptr<PropagatorStrategy> create_propagator(
         const StrategySpec& spec, z3::solver& solver,
-        const Problem& problem, BaseEncoder& encoder);
+        const Problem& problem, GroundedEncoder& encoder);
 
     /// Create the planner and route its artifacts: arithmetic profile,
-    /// then BasePlanner::consume_artifacts (CGB takes achievers, B&B
-    /// takes SDAC cost bounds).
+    /// then BasePlanner::consume_artifacts (B&B takes SDAC cost bounds).
     static std::unique_ptr<BasePlanner> create_planner(
         const StrategySpec& spec, PreprocessedProblem& pre,
-        BaseEncoder& encoder, z3::context& ctx);
+        GroundedEncoder& encoder, z3::context& ctx);
 };
 
 } // namespace rantanplan

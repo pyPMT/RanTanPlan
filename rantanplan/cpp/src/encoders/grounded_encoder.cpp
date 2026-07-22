@@ -142,12 +142,6 @@ z3::expr GroundedEncoder::encode_cumulative_effects(int t) {
     return ctx_.bool_val(true);
 }
 
-void GroundedEncoder::ensure_action_variables(int t) {
-    for (const Action& action : problem_.actions()) {
-        variable_factory_.get_action_variable(action, t);
-    }
-}
-
 /**
  * @brief Encodes frame axioms for a specific time step
  *
@@ -367,15 +361,14 @@ z3::expr GroundedEncoder::encode_symmetries(int t) {
 //  - state_constraints_: DERIVED by the preprocessor (RPG bounds, domains,
 //    and conservation laws from ActionPruningPass; mutex groups from
 //    MutexAnalysisPass).  Proven redundant, so
-//    skipping them anywhere is sound (options off, final state uncovered,
-//    R2E's no-op override) — they only ever cost speed.
+//    skipping them anywhere is sound (options off, final state uncovered)
+//    — they only ever cost speed.
 //  - problem_.state_invariants(): DECLARED by the user via
 //    `(:constraints (always f))`.  Trusted requirements that define plan
 //    validity — never skippable, by anyone.  Hence: read from the problem
 //    (immune to oracle options and its state_constraints_ overwrite),
 //    asserted at t+1 here plus state 0 in encode_initial_state so every
-//    state 0..h+1 including the GOAL state is covered exactly once, and
-//    R2E (whose override skips this method) is rejected at solve time.
+//    state 0..h+1 including the GOAL state is covered exactly once.
 //
 // The differing timestep conventions (derived at t, declared at t+1) are
 // NOT semantic: derived constraints could equally use the exactly-once

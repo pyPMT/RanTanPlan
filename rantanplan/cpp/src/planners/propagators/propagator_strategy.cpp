@@ -6,7 +6,7 @@ namespace rantanplan {
 
 PropagatorStrategy::PropagatorStrategy(z3::solver& solver,
                                        const Problem& problem,
-                                       BaseEncoder& encoder)
+                                       GroundedEncoder& encoder)
     : z3::user_propagator_base(&solver) {
     register_fixed();
     register_final();

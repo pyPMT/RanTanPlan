@@ -1,36 +1,28 @@
-#include "interference_analysis.hpp"
+#include "syntactic_interference.hpp"
+#include "../problem/visitors/fluent_polarity_collector.hpp"
 
 namespace rantanplan {
 
-
-void InterferenceOracle::analyze_all_actions() {
-    if (!problem_) {
-        return;
-    }
-
-    // Clear any existing analysis
-    action_analysis_.clear();
-
-    // Analyze each action and store the results
-    for (const Action& action : problem_->actions()) {
+SyntacticInterference::SyntacticInterference(const Problem& problem)
+    : problem_(problem) {
+    for (const Action& action : problem_.actions()) {
         action_analysis_[action] = analyze_action(action);
     }
 }
 
-InterferenceOracle::ActionAnalysis InterferenceOracle::analyze_action(const Action& action) const {
+SyntacticInterference::ActionAnalysis SyntacticInterference::analyze_action(const Action& action) const {
     ActionAnalysis analysis;
-    // Analyze preconditions and effects
     analyze_preconditions(action, analysis);
     analyze_effects(action, analysis);
     return analysis;
 }
 
-void InterferenceOracle::analyze_preconditions(const Action& action, ActionAnalysis& analysis) const {
+void SyntacticInterference::analyze_preconditions(const Action& action, ActionAnalysis& analysis) const {
     if (!action.has_precondition()) {
         return;
     }
 
-    FluentPolarityCollector collector(*problem_);
+    FluentPolarityCollector collector(problem_);
     collector.collect_from_id(action.precondition_id());
 
     for (const auto& [eid, polarity] : collector.get_boolean_fluents()) {
@@ -45,14 +37,14 @@ void InterferenceOracle::analyze_preconditions(const Action& action, ActionAnaly
     }
 }
 
-void InterferenceOracle::analyze_effects(const Action& action, ActionAnalysis& analysis) const {
+void SyntacticInterference::analyze_effects(const Action& action, ActionAnalysis& analysis) const {
     for (const Effect& effect : action.effects()) {
         const EffectExpression& eff_expr = effect.effect_expression();
         ExprID fluent_eid = eff_expr.fluent_id();
         analysis.all_effects.insert(fluent_eid);
 
         if (effect.is_conditional()) {
-            FluentPolarityCollector collector(*problem_);
+            FluentPolarityCollector collector(problem_);
             collector.collect_from_id(eff_expr.condition_id());
             for (const auto& [eid, _] : collector.get_boolean_fluents()) {
                 analysis.conditional_effect_fluents.insert(eid);
@@ -62,9 +54,9 @@ void InterferenceOracle::analyze_effects(const Action& action, ActionAnalysis& a
             }
         }
 
-        if (effect.kind() == EffectExpression::Kind::ASSIGN && problem_->is_bool_type(fluent_eid)) {
+        if (effect.kind() == EffectExpression::Kind::ASSIGN && problem_.is_bool_type(fluent_eid)) {
             ExprID value_eid = eff_expr.value_id();
-            const ExprPool& pool = problem_->pool();
+            const ExprPool& pool = problem_.pool();
             if (pool.is_constant(value_eid) && pool.payload_is_bool(value_eid)) {
                 if (pool.payload_bool(value_eid)) {
                     analysis.positive_boolean_effects.insert(fluent_eid);
@@ -75,7 +67,7 @@ void InterferenceOracle::analyze_effects(const Action& action, ActionAnalysis& a
         } else {
             analysis.numeric_effects.insert(fluent_eid);
 
-            FluentPolarityCollector collector(*problem_);
+            FluentPolarityCollector collector(problem_);
             collector.collect_from_id(eff_expr.value_id());
             for (ExprID dep : collector.get_numeric_fluents()) {
                 analysis.numeric_effect_dependencies.insert(dep);
@@ -84,8 +76,7 @@ void InterferenceOracle::analyze_effects(const Action& action, ActionAnalysis& a
     }
 }
 
-bool InterferenceOracle::actions_interfere(const Action& a1, const Action& a2) const {
-    // Get analysis for both actions
+bool SyntacticInterference::interferes(const Action& a1, const Action& a2) const {
     auto it1 = action_analysis_.find(a1);
     auto it2 = action_analysis_.find(a2);
 

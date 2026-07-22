@@ -105,18 +105,13 @@ add_library(rantanplan_core STATIC
     src/z3core/lifted_encoding_visitor.cpp
     src/z3core/grounded_encoding_visitor.cpp
     src/encoders/grounded_encoder.cpp
-    src/encoders/chained_grounded_encoder.cpp
-    src/encoders/r2e_grounded_encoder.cpp
     src/encoders/parallelism/sequential_semantics.cpp
     src/encoders/parallelism/forall_semantics.cpp
     src/encoders/parallelism/exists_semantics.cpp
     src/z3core/z3_variable_factory.cpp
     src/planners/base_planner.cpp
     src/planners/incremental_horizon_planner.cpp
-    src/planners/double_tail_planner.cpp
     src/planners/branch_and_bound_planner.cpp
-    src/planners/cgb_planner.cpp
-    src/planners/formula_exporter.cpp
     src/encoders/abstract_suffix_encoder.cpp
     src/planners/propagators/propagator_strategy.cpp
     src/planners/propagators/modules/logging_module.cpp
@@ -127,10 +122,8 @@ add_library(rantanplan_core STATIC
     src/analysis/achievers_analysis.cpp
     src/analysis/numeric_relaxed_planning_graph.cpp
     src/analysis/graph.cpp
-    src/analysis/interference_analysis.cpp
+    src/analysis/syntactic_interference.cpp
     src/analysis/eager_interference_analysis.cpp
-    src/analysis/eager_semantic_interference_analysis.cpp
-    src/analysis/lazy_interference_analysis.cpp
     src/analysis/semantic_interference_predicate.cpp
     src/analysis/semantic_interference_analysis.cpp
     src/analysis/numeric_constraint_analyzer.cpp

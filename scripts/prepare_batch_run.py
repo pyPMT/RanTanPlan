@@ -19,10 +19,9 @@ from collections import defaultdict
 # ---------------------------------------------------------------------------
 
 DEFAULT_STRATEGIES = [
-    "exists",
-    "r2e",
-    "elsc",
-    "elsc-dt",
+    "e",
+    "els",
+    "els-fp",
 ]
 
 DEFAULT_MODES = ["satisficing"]

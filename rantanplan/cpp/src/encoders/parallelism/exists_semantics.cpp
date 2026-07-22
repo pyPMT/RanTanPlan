@@ -6,62 +6,53 @@
 namespace rantanplan {
 
 z3::expr ExistsSemantics::encode_parallelism(int timestep) {
-    // Get the interference graph from the graph-bearing analyzer view.
-    // graph_ is non-null whenever encode_parallelism is reachable: lazy
-    // analyzers require a propagator module that manages parallelism.
-    if (!graph_) {
+    // Only reachable for propagator-free exists strategies (`e`), which
+    // validate() restricts to eager interference — the graph is available.
+    if (!eager_graph_) {
         throw std::logic_error(
             "ExistsSemantics::encode_parallelism requires an eager "
-            "(graph-bearing) interference analyzer");
+            "(graph-bearing) interference analyzer; propagator-based exists "
+            "strategies never call it");
     }
-    const Graph& interference_graph = graph_->get_interference_graph();
-    
-    // Get SCC mapping for optimization: only add mutex within same SCC
+    const Graph& interference_graph = eager_graph_->interference_graph();
+
+    // Fixed-order ∃-step (Rintanen et al. 2006): with the action-id ordering
+    // as the fixed serialization order, only interference edges that go
+    // backward in the order AND stay within one SCC can break it — exactly
+    // those pairs get an a-priori mutex.
     std::vector<int> scc_mapping = interference_graph.get_scc_mapping();
-    
+
     z3::expr_vector mutex_constraints(*ctx_);
-    
-    // Iterate through all nodes (actions) in the interference graph
+
     for (size_t node_id = 0; node_id < interference_graph.num_nodes(); ++node_id) {
-        // Get the action corresponding to this node
         const Action* action1 = &problem_->action(node_id);
         if (!action1) continue;
-        
-        // Get all neighbors (actions that this action interferes with)
+
         const std::vector<int>& neighbors = interference_graph.get_neighbours(node_id);
-        
+
         for (int neighbor_id : neighbors) {
-            // Enhanced conditions for ExistsSemantics:
-            // 1. Only create mutex if source node ID > target node ID
-            // 2. Only create mutex if both nodes are in the same SCC
-            if (static_cast<int>(node_id) > neighbor_id && 
+            if (static_cast<int>(node_id) > neighbor_id &&
                 scc_mapping[node_id] == scc_mapping[neighbor_id]) {
-                
-                // Get the second action
+
                 const Action* action2 = &problem_->action(neighbor_id);
                 if (!action2) continue;
-                
-                // Create Z3 variables for both actions at the given timestep
+
                 z3::expr action1_var = variable_factory_->get_action_variable(*action1, timestep);
                 z3::expr action2_var = variable_factory_->get_action_variable(*action2, timestep);
-                
-                // Create mutex constraint: ¬(action1_t ∧ action2_t) ≡ (¬action1_t ∨ ¬action2_t)
-                z3::expr mutex = !action1_var || !action2_var;
-                mutex_constraints.push_back(mutex);
+
+                // Mutex constraint: ¬(action1_t ∧ action2_t)
+                mutex_constraints.push_back(!action1_var || !action2_var);
             }
         }
     }
-    
-    // Combine all mutex constraints with logical AND
+
     if (mutex_constraints.empty()) {
         return ctx_->bool_val(true);
     }
 
-    auto& stats = Stats::instance();
-    stats.add("encoder.mutex_constraints", mutex_constraints.size());
-    
-    z3::expr mutex_formula = z3::mk_and(mutex_constraints);
-    return mutex_formula;
+    Stats::instance().add("encoder.mutex_constraints", mutex_constraints.size());
+
+    return z3::mk_and(mutex_constraints);
 }
 
 const InterferenceOracle* ExistsSemantics::get_interference_analyzer() const {

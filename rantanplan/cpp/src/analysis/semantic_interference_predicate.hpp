@@ -33,10 +33,9 @@ enum class InterferenceSource {
  * @brief The semantic interference *definition* (Bofill et al. 2016).
  *
  * Computes the directional "affects" relation between two actions via Z3 SMT
- * queries. This is the single home of that logic; it is wrapped by the two
- * *materialization* strategies:
- *   - SemanticInterferenceAnalysis     (lazy oracle: on-demand + cache)
- *   - EagerSemanticInterferenceAnalysis (eager: precompute the whole graph)
+ * queries. This is the single home of that logic; it is wrapped by the
+ * *materialization* strategy:
+ *   - SemanticInterferenceAnalysis (lazy oracle: on-demand + cache)
  *
  * The predicate owns the Z3 infrastructure and is otherwise stateless apart from
  * a per-action cache for the (cheap) conflicting-conditional-effects screen.

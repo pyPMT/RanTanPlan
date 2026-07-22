@@ -209,8 +209,10 @@ def main():
         try:
             from rantanplan import _rantanplan
             print("Available strategies:")
-            for name in _rantanplan.list_strategies():
-                print(f"  {name}")
+            described = _rantanplan.strategy_descriptions()
+            width = max(len(name) for name, _ in described)
+            for name, description in described:
+                print(f"  {name:<{width}}  {description}")
             sys.exit(0)
         except Exception as e:
             print(f"Error listing strategies: {e}")

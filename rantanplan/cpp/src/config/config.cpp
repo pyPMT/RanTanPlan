@@ -18,7 +18,6 @@ void Config::initialize(int argc, char* argv[]) {
     rpg = RPG{};
     planner = Planner{};
     symmetry = Symmetry{};
-    formula_export = FormulaExport{};
     logging = Logging{};
 
     CLIParser parser;
@@ -41,10 +40,10 @@ void Config::validate() const {
             "'. Valid values: linear, arithmetic, geometric, doubling");
     }
 
-    // Validate search mode against the strategy (throws on bad mode strings
-    // and on incompatible combos, e.g. optimal + double-tail). Deeper spec
-    // validation (StrategyFactory::validate) runs in the driver — the
-    // factory lives in the api layer, which config/ must not depend on.
+    // Validate the search mode string (parse_search_mode throws on bad
+    // values). Deeper spec validation (StrategyFactory::validate) runs in
+    // the driver — the factory lives in the api layer, which config/ must
+    // not depend on.
     const auto& spec = StrategyRegistry::get(planner.strategy);
     resolve_planner_kind(parse_search_mode(planner.mode), spec);
 

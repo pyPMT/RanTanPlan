@@ -12,7 +12,6 @@
 #include "strategy_factory.hpp"
 #include "config/strategy_spec.hpp"
 #include "planners/incremental_horizon_planner.hpp"
-#include "planners/formula_exporter.hpp"
 #include "util/memory_tracker.hpp"
 #include "util/scoped_timer.hpp"
 #include "util/stats.hpp"
@@ -267,20 +266,7 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
     rantanplan::SearchMode mode = rantanplan::parse_search_mode(config.planner.mode);
     spec.planner = rantanplan::resolve_planner_kind(mode, spec);
     rantanplan::StrategyFactory::adjust_spec(spec, problem);
-    rantanplan::StrategyFactory::validate(spec, config.planner.strategy,
-                                          config.planner.horizon_schedule);
-
-    // Declared state invariants are trusted plan requirements asserted at
-    // every state.  The R2E encoder deliberately skips state constraints
-    // (chain-substituted intermediate states), so accepting the problem
-    // would silently drop a requirement — reject instead.
-    if (!problem.state_invariants().empty() &&
-        spec.encoder == rantanplan::EncoderFamily::R2E) {
-        throw std::invalid_argument(
-            "Strategy '" + config.planner.strategy + "' (R2E encoder) does not "
-            "support declared state invariants ((:constraints (always ...))). "
-            "Use a grounded/chained strategy instead.");
-    }
+    rantanplan::StrategyFactory::validate(spec);
 
     ir::ResultIR result;
     auto add_info = [&result](const std::string& message) {
@@ -358,35 +344,6 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
     add_info("Memory usage - Current: " + std::to_string(current_memory) + " MB");
 
     return result;
-}
-
-std::string export_formula(const rantanplan::Problem& problem) {
-    auto& config = rantanplan::Config::instance();
-
-    // Validate formula export parameters
-    if (config.formula_export.timestep < 0) {
-        throw std::invalid_argument("--formula-timestep must be specified with --export-formula");
-    }
-
-    // Only allow formula export with strategies that support it
-    const auto& spec = rantanplan::StrategyRegistry::get(config.planner.strategy);
-    if (!rantanplan::supports_formula_export(spec)) {
-        throw std::invalid_argument(
-            "Formula export is not supported by strategy '" + config.planner.strategy + "'");
-    }
-
-    // Create Z3 context
-    z3::context ctx;
-
-    // Create the fully wired encoder (interference -> parallelism -> encoder)
-    auto encoder = rantanplan::StrategyFactory::create_encoder(spec, problem, ctx);
-
-    rantanplan::Logger::instance().info("Exporting formula for timestep " + std::to_string(config.formula_export.timestep)
-                                   + " using strategy: " + encoder->get_parallelism_strategy_name());
-
-    // Create formula exporter and generate formula
-    rantanplan::FormulaExporter exporter(problem, *encoder, ctx);
-    return exporter.export_formula(config.formula_export.timestep);
 }
 
 } // namespace rantanplan::api

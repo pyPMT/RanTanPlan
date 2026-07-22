@@ -2,7 +2,6 @@
 
 #include "../../problem/problem.hpp"
 #include "../../z3core/z3_variable_factory.hpp"
-#include "../../analysis/graph.hpp"
 #include <z3++.h>
 #include <memory>
 #include <string>
@@ -11,7 +10,6 @@ namespace rantanplan {
 
 // Forward declarations
 class InterferenceOracle;
-class InterferenceGraphAnalysis;
 
 /**
  * @brief Abstract base class for different parallelism encoding strategies
@@ -53,13 +51,6 @@ public:
      * @return Pointer to the interference analyzer, or nullptr if not available
      */
     virtual const InterferenceOracle* get_interference_analyzer() const = 0;
-
-    /**
-     * @brief Get the graph-bearing view of the interference analyzer
-     * @return Pointer to the graph analysis if the injected analyzer is eager
-     *         (graph-bearing), nullptr for lazy analyzers and sequential semantics
-     */
-    virtual const InterferenceGraphAnalysis* get_interference_graph_analysis() const { return nullptr; }
 
     /**
      * @brief Check if this strategy allows concurrent action execution

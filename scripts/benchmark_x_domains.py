@@ -11,7 +11,7 @@ Usage:
     python scripts/benchmark_x_domains.py                      # all buildable domains, pfile1
     python scripts/benchmark_x_domains.py -d counters n_puzzle # named domains
     python scripts/benchmark_x_domains.py -d counters -n 1-10  # instance index range
-    python scripts/benchmark_x_domains.py -s elsc --timeout 60
+    python scripts/benchmark_x_domains.py -s els --timeout 60
     python scripts/benchmark_x_domains.py --list              # list domains + instance counts
 """
 import argparse
@@ -27,9 +27,6 @@ from unified_planning.engines.results import PlanGenerationResultStatus
 
 from benchmarks.domains import DOMAINS, require_fork
 
-# Default to a Grounded-encoder strategy: these domains use bounded integer
-# fluent types, which RantanPlan only encodes soundly with the Grounded encoder
-# (chained/relaxed strategies like elsc raise on bounded numeric bounds).
 STRATEGIES = ["els"]
 DEFAULT_TIMEOUT = 120
 

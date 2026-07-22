@@ -7,8 +7,7 @@
 
 namespace rantanplan {
 
-class BaseEncoder;
-class InterferenceOracle;
+class GroundedEncoder;
 
 /// Cost-optimal planner using branch-and-bound with an abstract suffix lower bound.
 ///
@@ -32,7 +31,7 @@ class InterferenceOracle;
 ///      f. solver.pop() — discard horizon-scoped constraints.
 ///   3. Return best plan found (SOLVED_SATISFICING if optimality not proven within limits).
 ///
-/// The AbstractSuffixEncoder provides a decomposed API (mirroring BaseEncoder's
+/// The AbstractSuffixEncoder provides a decomposed API (mirroring GroundedEncoder's
 /// per-timestep pattern) that separates permanent constraints (mod_v equivalences,
 /// loop formulas) from horizon-scoped ones (axioms, relaxed preconditions, abstract
 /// goal). This avoids re-adding the permanent parts at each horizon.
@@ -64,23 +63,17 @@ class InterferenceOracle;
 ///
 ///   - Sequential semantics: one action per step, x_t is the exact state. Correct.
 ///   - Forall semantics: all actions execute simultaneously seeing x_t. Correct.
-///   - R2E semantics: fixed declaration order with chain variables. Each action a_i
-///     sees state σ^t_{prev(i)} (the state after all prior actions in the fixed
-///     order). R2EGroundedEncoder::convert_cost_to_z3() applies prev_substitution
-///     to evaluate costs at this intermediate state, making SDAC sound.
 ///
 /// However, exists-step semantics allows interfering actions at the same timestep
 /// as long as there exists a valid serialization. In that serialization, each
 /// action sees a different intermediate state — not x_t. The encoding evaluates
 /// costs at x_t regardless, which can under-estimate the true serialized cost.
 /// This can lead to false optimality claims (e.g., encoding computes cost 25 but
-/// the serialized plan actually costs 35). The same issue affects chained encoders
-/// with exists semantics, where effects are chained through intermediate variables
-/// but costs are still evaluated at x_t.
+/// the serialized plan actually costs 35).
 ///
-/// Therefore, SDAC + B&B is only sound with sequential, forall, or R2E semantics.
-/// The combination of SDAC + B&B + exists-step is rejected at startup (see
-/// sdac_unsafe() in strategy_spec.hpp).
+/// Therefore, SDAC + B&B is only sound with sequential or forall semantics; the
+/// exists-step case is downgraded to forall at startup (see sdac_unsafe() in
+/// strategy_spec.hpp and StrategyFactory::adjust_spec).
 /// For constant action costs, all semantics are correct since cost is independent
 /// of the evaluation state.
 ///
@@ -93,10 +86,8 @@ class InterferenceOracle;
 ///   - UNSOLVABLE_INCOMPLETELY: no plan found within limits.
 class BranchAndBoundPlanner : public BasePlanner {
 public:
-    BranchAndBoundPlanner(const Problem& problem, BaseEncoder& encoder,
-                          z3::context& ctx,
-                          const InterferenceOracle* interference,
-                          SemanticsKind semantics);
+    BranchAndBoundPlanner(const Problem& problem, GroundedEncoder& encoder,
+                          z3::context& ctx, SemanticsKind semantics);
 
     Plan search() override;
     bool optimality_proven() const override { return optimality_proven_; }

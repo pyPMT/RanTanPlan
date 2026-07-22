@@ -109,24 +109,6 @@ void CLIParser::parse(Config& config, int argc, char* argv[]) {
         else if (arg == "--persist-clauses") {
             config.global.persist_clauses = true;
         }
-        // Formula export options
-        else if (arg == "--export-formula") {
-            config.formula_export.export_formula = true;
-        }
-        else if (arg == "--formula-timestep") {
-            if (i + 1 < argc) {
-                config.formula_export.timestep = std::stoi(argv[++i]);
-            } else {
-                throw std::invalid_argument("--formula-timestep requires a value");
-            }
-        }
-        else if (arg == "--formula-output") {
-            if (i + 1 < argc) {
-                config.formula_export.output_file = argv[++i];
-            } else {
-                throw std::invalid_argument("--formula-output requires a filename");
-            }
-        }
         // Symmetry options
         else if (arg == "--symmetries") {
             config.symmetry.enable_symmetries = true;

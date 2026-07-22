@@ -12,11 +12,11 @@
 
 namespace rantanplan {
 
-    IncrementalHorizonPlanner::IncrementalHorizonPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx)
+    IncrementalHorizonPlanner::IncrementalHorizonPlanner(const Problem& problem, GroundedEncoder& encoder, z3::context& ctx)
         : BasePlanner(problem, encoder, ctx) {
     }
 
-    IncrementalHorizonPlanner::IncrementalHorizonPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx,
+    IncrementalHorizonPlanner::IncrementalHorizonPlanner(const Problem& problem, GroundedEncoder& encoder, z3::context& ctx,
                                        std::unique_ptr<PropagatorStrategy> propagator)
         : BasePlanner(problem, encoder, ctx) {
         propagator_strategy_ = std::move(propagator);

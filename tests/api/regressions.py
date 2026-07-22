@@ -54,7 +54,7 @@ def test_conditional_effect_guard_not_pruned():
     """The guard-establishing action must survive goal-relevance pruning, so the
     problem stays solvable — checked on a sequential and an exists-step path
     (both run the achievers/ActionPruning preprocessor pass)."""
-    for strategy in ("seq", "elsc"):
+    for strategy in ("seq", "els"):
         problem = _conditional_effect_delivery_problem()
         r = solve(problem, strategy=strategy)
         assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \

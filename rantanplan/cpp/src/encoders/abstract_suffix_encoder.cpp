@@ -1,8 +1,6 @@
 #include "abstract_suffix_encoder.hpp"
-#include "base_encoder.hpp"
 #include "grounded_encoder.hpp"
 #include "../analysis/graph.hpp"
-#include "../analysis/interference_analysis.hpp"
 #include "../problem/visitors/fluent_collector.hpp"
 #include "../problem/expr_enums.hpp"
 
@@ -14,20 +12,15 @@ namespace rantanplan {
 
 AbstractSuffixEncoder::AbstractSuffixEncoder(
     const Problem& problem, z3::context& ctx,
-    BaseEncoder& encoder,
-    const InterferenceOracle* interference,
+    GroundedEncoder& encoder,
     SemanticsKind semantics)
     : problem_(problem), ctx_(ctx), encoder_(encoder),
-      interference_(interference), semantics_(semantics),
+      semantics_(semantics),
+      syntactic_(semantics == SemanticsKind::Sequential
+                     ? nullptr
+                     : std::make_unique<SyntacticInterference>(problem)),
       cached_loop_formulas_(ctx.bool_val(true)),
-      epc_index_(nullptr) {
-
-    // Access epc_index from the concrete encoder (all encoders derive from GroundedEncoder)
-    auto* grounded = dynamic_cast<GroundedEncoder*>(&encoder_);
-    if (grounded) {
-        epc_index_ = &grounded->get_epc_index();
-    }
-}
+      epc_index_(&encoder.get_epc_index()) {}
 
 void AbstractSuffixEncoder::initialize() {
     const auto& actions = problem_.actions();
@@ -336,7 +329,7 @@ z3::expr AbstractSuffixEncoder::encode_axiom_6(int i) {
                 if (b_idx == a_idx) continue;
                 reasons.push_back(vf.get_action_variable(actions[b_idx], i - 1));
             }
-        } else if (interference_) {
+        } else if (syntactic_) {
             // M_a = actions with bidirectional syntactic interference.
             // Syntactic interference is a sound overapproximation: it may include
             // pairs that don't interfere semantically, making axiom 6 slightly
@@ -351,8 +344,8 @@ z3::expr AbstractSuffixEncoder::encode_axiom_6(int i) {
             // propagator for the concrete prefix.
             for (size_t b_idx = 0; b_idx < actions.size(); ++b_idx) {
                 if (b_idx == a_idx) continue;
-                if (interference_->has_syntactic_interference(action, actions[b_idx]) ||
-                    interference_->has_syntactic_interference(actions[b_idx], action)) {
+                if (syntactic_->interferes(action, actions[b_idx]) ||
+                    syntactic_->interferes(actions[b_idx], action)) {
                     reasons.push_back(vf.get_action_variable(actions[b_idx], i - 1));
                 }
             }
@@ -500,9 +493,8 @@ bool AbstractSuffixEncoder::is_concrete_solution(const z3::model& model) const {
 //
 // Concrete cost: for each action at each step, ITE(action_active, cost, 0).
 // Every action has a cost_id (defaulting to 1 if no explicit cost was defined
-// in the problem). For SDAC, cost evaluation uses virtual dispatch via
-// convert_cost_to_z3(): R2EGroundedEncoder evaluates at the chain-substituted
-// intermediate state σ^t_{prev(i)}; other encoders at x_t.
+// in the problem). Cost evaluation goes through convert_cost_to_z3(), which
+// evaluates at the start-of-timestep state x_t.
 //
 // Abstract cost: for each abstract action, uses the action's actual cost as
 // the lower bound. For constant costs this is exact; for SDAC, externally

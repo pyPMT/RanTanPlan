@@ -2,7 +2,7 @@
 
 #include "../problem/problem.hpp"
 #include "../problem/plan.hpp"
-#include "../encoders/base_encoder.hpp"
+#include "../encoders/grounded_encoder.hpp"
 #include "base_planner.hpp"
 #include "propagators/propagator_strategy.hpp"
 #include <z3++.h>
@@ -15,10 +15,10 @@ namespace rantanplan {
 class IncrementalHorizonPlanner : public BasePlanner {
 public:
     // Constructor
-    IncrementalHorizonPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx);
+    IncrementalHorizonPlanner(const Problem& problem, GroundedEncoder& encoder, z3::context& ctx);
 
     // Constructor with propagator support
-    IncrementalHorizonPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx,
+    IncrementalHorizonPlanner(const Problem& problem, GroundedEncoder& encoder, z3::context& ctx,
                      std::unique_ptr<PropagatorStrategy> propagator);
 
     // BasePlanner interface implementation

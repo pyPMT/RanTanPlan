@@ -64,12 +64,6 @@ public:
         bool enable_symmetries = false;  ///< Enable symmetry detection
     } symmetry;
 
-    struct FormulaExport {
-        bool export_formula = false;      ///< Enable formula export mode
-        int timestep = -1;                ///< Timestep to export formula for
-        std::string output_file = "";     ///< Output file for formula (required)
-    } formula_export;
-
     struct Logging {
         std::string log_file = "";        ///< Empty = no logging; path = solver decision log
     } logging;

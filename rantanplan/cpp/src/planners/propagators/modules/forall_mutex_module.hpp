@@ -2,43 +2,8 @@
 
 #include "../propagator_module.hpp"
 #include "../propagator_strategy.hpp"
-#include <set>
 
 namespace rantanplan {
-
-/**
- * @brief Eager forall mutex propagation module.
- *
- * When an action is fixed to true, propagates negation of all interfering
- * actions: a_i → ¬a_j ∧ ¬a_k ∧ ...
- *
- * Uses a precomputed reverse interference lookup for O(1) neighbor queries.
- * Requires whole-graph access, so it takes the graph-bearing interference
- * analysis at construction — lazy analyzers cannot be passed by type.
- */
-class ForallMutexModule : public PropagatorModule {
-public:
-    explicit ForallMutexModule(const InterferenceGraphAnalysis& graph)
-        : graph_(&graph) {}
-
-    void initialize(PropagatorSharedState& shared,
-                    PropagatorStrategy& host) override;
-
-    std::string get_name() const override { return "ForallMutex"; }
-    bool manages_parallelism_constraints() const override { return true; }
-
-    void on_fixed(const z3::expr& ast, const z3::expr& value) override;
-    void cleanup() override;
-
-private:
-    const InterferenceGraphAnalysis* graph_;
-
-    // Precomputed: action_id → set of action_ids that must be negated
-    std::unordered_map<int, std::set<int>> actions_interfering_with_;
-    int propagation_count_ = 0;
-
-    void build_reverse_interference_lookup();
-};
 
 /**
  * @brief Lazy forall mutex module.

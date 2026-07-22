@@ -35,32 +35,27 @@ QUICK_TEST_DIRS = [
     "pddl/test/incremental-cascade-3",  # 3-step cascade (Z3 reverify in iter 2 AND iter 3)
 ]
 
-# Strategies tested in --quick mode. Covers each major code path without
-# redundant variants (eager-syntactic, eager-semantic, non-chained lazy, etc.).
+# Strategies tested in --quick mode. Covers each major code path.
 QUICK_STRATEGIES = [
     "seq",        # No parallelism module (baseline)
-    "r2e",        # R2E encoder, no parallelism module
-    "f",          # ForallEager module (eager syntactic)
-    "flsc",       # ForallLazy module (lazy semantic, chained)
-    "flsc-dt",    # ForallLazy module + DoubleTail planner
-    "elsc",       # ExistsCycle module (lazy semantic, chained)
-    "elsc-dt",    # ExistsCycle module + DoubleTail planner
-    "elsc-fp",    # ExistsCycle + FrameAxiom modules
-    "cgb",        # ExistsCycle module + CGB planner (core-guided activation)
+    "fls",        # ForallLazy module (lazy semantic)
+    "e",          # ExistsCycle module (eager syntactic)
+    "els",        # ExistsCycle module (lazy semantic)
+    "els-fp",     # ExistsCycle + FrameAxiom modules
 ]
 
 TIMEOUT = 60  # seconds per test
 
 ## Strategies to test with --mode optimal (replaces the old -opt registry entries)
 OPTIMAL_MODE_STRATEGIES = [
-    "seq", "r2e",
-    "f", "f-p", "fl", "fls", "flsc",
-    "e", "el", "els", "elsc",
+    "seq",
+    "fls",
+    "e", "els",
 ]
 
 QUICK_OPTIMAL_MODE_STRATEGIES = [
     "seq",
-    "elsc",
+    "els",
 ]
 
 # Soundness/completeness regression guards: specific (instance, strategies) pairs
@@ -72,11 +67,11 @@ REGRESSION_CONFIGS = [
     # Exists-step *semantic* interference must catch numeric read/write hazards;
     # fo-sailing previously produced a plan UP rejects on these encoders.
     # docs/specs/exists-step-semantic-interference-soundness.md
-    ("fo-sailing", ["els", "elsc", "egs", "egsc"]),
+    ("fo-sailing", ["els", "els-fp"]),
     # Goal-relevance pruning must keep actions that establish a conditional
     # effect's guard; logistics-round-1-adl was UNSAT at every horizon before.
     # docs/specs/conditional-effect-condition-pruning.md
-    ("logistics-round-1-adl", ["seq", "elsc"]),
+    ("logistics-round-1-adl", ["seq", "els"]),
 ]
 
 

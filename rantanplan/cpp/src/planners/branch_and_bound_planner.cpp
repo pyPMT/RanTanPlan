@@ -1,6 +1,6 @@
 #include "branch_and_bound_planner.hpp"
 #include "../config/config.hpp"
-#include "../encoders/base_encoder.hpp"
+#include "../encoders/grounded_encoder.hpp"
 #include "../preprocessing/preprocessed_problem.hpp"
 #include "../util/memory_tracker.hpp"
 #include "../util/stats.hpp"
@@ -39,10 +39,10 @@ void BranchAndBoundPlanner::consume_artifacts(PreprocessedProblem& artifacts) {
 }
 
 BranchAndBoundPlanner::BranchAndBoundPlanner(
-    const Problem& problem, BaseEncoder& encoder, z3::context& ctx,
-    const InterferenceOracle* interference, SemanticsKind semantics)
+    const Problem& problem, GroundedEncoder& encoder, z3::context& ctx,
+    SemanticsKind semantics)
     : BasePlanner(problem, encoder, ctx),
-      abstract_(problem, ctx, encoder, interference, semantics) {
+      abstract_(problem, ctx, encoder, semantics) {
 }
 
 void BranchAndBoundPlanner::add_timestep_constraints(int timestep) {

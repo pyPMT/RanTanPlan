@@ -1,16 +1,17 @@
 #pragma once
 
+#include <memory>
 #include <vector>
 #include <unordered_map>
 #include "z3++.h"
 #include "../problem/problem.hpp"
 #include "../problem/expr_pool.hpp"
 #include "../config/strategy_spec.hpp"
+#include "../analysis/syntactic_interference.hpp"
 
 namespace rantanplan {
 
-class BaseEncoder;
-class InterferenceOracle;
+class GroundedEncoder;
 
 /// Encodes an optimistic abstract suffix for branch-and-bound cost-optimal planning.
 ///
@@ -37,7 +38,7 @@ class InterferenceOracle;
 ///   - Axiom 7: full concrete prefix — if any abstract action fires, every concrete
 ///     step must have at least one action.
 ///
-/// The API follows the same decomposed per-method pattern as BaseEncoder:
+/// The API follows the same decomposed per-method pattern as GroundedEncoder:
 /// each method returns a z3::expr and never touches the solver. The planner
 /// decides which constraints are permanent, incremental, or assumption-gated.
 ///
@@ -53,8 +54,7 @@ class InterferenceOracle;
 class AbstractSuffixEncoder {
 public:
     AbstractSuffixEncoder(const Problem& problem, z3::context& ctx,
-                          BaseEncoder& encoder,
-                          const InterferenceOracle* interference,
+                          GroundedEncoder& encoder,
                           SemanticsKind semantics);
 
     /// Set SDAC cost lower bounds (indexed by action position in problem.actions()).
@@ -114,9 +114,15 @@ public:
 private:
     const Problem& problem_;
     z3::context& ctx_;
-    BaseEncoder& encoder_;
-    const InterferenceOracle* interference_;
+    GroundedEncoder& encoder_;
     SemanticsKind semantics_;
+
+    /// Syntactic interference for the axiom-6 deferral sets (M_a). Deliberately
+    /// syntactic regardless of the strategy's own oracle: the suffix needs a
+    /// cheap sound overapproximation over all pairs; semantic precision is the
+    /// propagator's job during solving. Null for sequential semantics, which
+    /// justifies deferral by the a_{i-1} chain instead.
+    std::unique_ptr<SyntacticInterference> syntactic_;
 
     /// Maps fluent ExprID -> list of (action, effect) pairs that can modify it.
     /// Borrowed from GroundedEncoder::get_epc_index(); used to build mod_v equivalences.

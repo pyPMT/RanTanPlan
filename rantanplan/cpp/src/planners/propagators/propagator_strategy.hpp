@@ -30,7 +30,7 @@ namespace rantanplan {
 class PropagatorStrategy : public z3::user_propagator_base {
 public:
     PropagatorStrategy(z3::solver& solver, const Problem& problem,
-                       BaseEncoder& encoder);
+                       GroundedEncoder& encoder);
     ~PropagatorStrategy() override = default;
 
     /// Add a module. Modules are called in insertion order.

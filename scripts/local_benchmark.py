@@ -45,13 +45,11 @@ def get_available_strategies():
 
 # Benchmark strategies (excluding sequential for performance focus)
 BENCHMARK_STRATEGIES = [
-    "r2e",
-    "lazy-r2e",
-    #"dec",
-    "elsc",
-    #"flsc",
-    #"el",
-    #"fl"
+    "e",
+    "els",
+    "els-fp",
+    #"fls",
+    #"seq",
 ]
 
 # Default timeout per solver run (seconds)

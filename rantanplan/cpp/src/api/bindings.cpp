@@ -176,15 +176,6 @@ ir::ResultIR solve_anytime_handle(
     });
 }
 
-std::string export_formula_ir(const ir::ProblemIR& problem_ir,
-                              const std::vector<std::string>& args) {
-    initialize_config(args);
-
-    nb::gil_scoped_release release;
-    rantanplan::Problem problem = load_problem_from_ir(problem_ir);
-    return api::export_formula(problem);
-}
-
 std::string z3_version() {
     unsigned major = 0, minor = 0, build = 0, revision = 0;
     Z3_get_version(&major, &minor, &build, &revision);
@@ -353,12 +344,18 @@ NB_MODULE(_rantanplan, m) {
           "runs on the solver thread with the GIL re-acquired -- keep it "
           "cheap and do not re-enter this module from it.");
 
-    m.def("export_formula", &export_formula_ir, nb::arg("problem"), nb::arg("args"),
-          "Export the SMT formula for a fixed timestep instead of solving "
-          "(args must include --formula-timestep; strategy must support it).");
-
     m.def("list_strategies", &StrategyRegistry::list_strategies,
           "Names of all registered strategies.");
+
+    m.def("strategy_descriptions",
+          []() {
+              std::vector<std::pair<std::string, std::string>> out;
+              for (const auto& [name, entry] : StrategyRegistry::get_registry()) {
+                  out.emplace_back(name, entry.description);
+              }
+              return out;
+          },
+          "(name, description) pairs for all registered strategies.");
 
     m.def("z3_version", &z3_version,
           "Version of the libz3 this module is linked against (must match "
