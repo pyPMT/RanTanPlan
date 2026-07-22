@@ -98,10 +98,9 @@ any encoder.
 
 ## The clause schemas
 
-`BaseEncoder` (`encoders/base_encoder.hpp`) splits the formula into named
-pieces; the planner calls each per timestep and asserts the result. The
-baseline implementation is `GroundedEncoder`
-(`encoders/grounded_encoder.cpp`); the schemas below are its exact output.
+`GroundedEncoder` (`encoders/grounded_encoder.{hpp,cpp}`) — the single
+encoder — splits the formula into named pieces; the planner calls each per
+timestep and asserts the result. The schemas below are its exact output.
 
 | Method | Clause schema (per timestep *t*) | Says |
 |---|---|---|
@@ -165,7 +164,7 @@ where conditional effects contribute `action ∧ condition` instead of just
 the action variable. A fluent no action can modify gets
 `(f@t ≠ f@t+1) → false` — it can never change, which is exactly right.
 
-(The `elsc-fp` strategy replaces these clauses entirely with a propagator
+(The `els-fp` strategy replaces these clauses entirely with a propagator
 module that supplies the same information lazily during search —
 `set_lazy_frames(true)` makes `encode_frames` return `true` and
 `FrameAxiomModule` takes over; see
@@ -181,19 +180,28 @@ from [`architecture-overview.md`](architecture-overview.md):
   `AtMost(a₁@t, ..., aₙ@t; 1)`. At-most-one rather than exactly-one so
   that *empty* timesteps are legal — the prefix-monotone schema below
   depends on that.
-- **`ForallSemantics`** — one mutex `¬(a@t ∧ b@t)` per directed edge of
-  the interference graph. Needs the whole graph up front, which is why it
-  requires an *eager* (graph-bearing) interference analysis — see
+- **`ForallSemantics`** — no encoded path: its `encode_parallelism`
+  throws. Forall mutexes (`¬(a@t ∧ b@t)` per directed interference edge)
+  are enforced lazily during search by `LazyForallMutexModule`, which
+  every forall strategy carries — `StrategyFactory::validate` rejects a
+  propagator-free forall spec. See
   [`interference-and-propagators.md`](interference-and-propagators.md).
-- **`ExistsSemantics`** — mutexes only for interfering pairs in the *same
-  strongly connected component* of the interference graph. Across
-  different SCCs an execution order always exists (the SCC condensation is
-  a DAG), so those pairs never need blocking; within an SCC this static
-  clause form conservatively blocks the pair. The exact ∃-step semantics —
-  "block only genuine cycles" — can't be expressed as a fixed clause set of
-  this size, so the lazy strategies (`elsc`, ...) skip these clauses and
-  enforce acyclicity with the `ExistsCycleModule` propagator during search
-  instead.
+- **`ExistsSemantics`** — the encoded path behind the propagator-free `e`
+  strategy: the fixed-order approximation of Rintanen et al. 2006. With
+  the action-id order as the fixed serialization order, only interference
+  edges that go *backward* in that order and stay within one strongly
+  connected component of the interference graph can break the
+  serialization — exactly those pairs get an a-priori mutex (across
+  different SCCs an execution order always exists, since the SCC
+  condensation is a DAG). The graph comes from
+  `EagerInterferenceAnalysis::interference_graph()`, which is why
+  `StrategyFactory::validate` requires eager syntactic interference for
+  propagator-free exists. The exact ∃-step semantics — "block only genuine
+  cycles" — can't be expressed as a fixed clause set of this size, so the
+  lazy strategies (`els`, `els-fp`) skip these clauses and enforce
+  acyclicity with the `ExistsCycleModule` propagator during search
+  instead (the module manages parallelism, so `encode_parallelism` is
+  never called).
 
 ### State constraints, symmetries
 
@@ -268,52 +276,10 @@ one true action variable, and returns the one-step plan.
 Every real solve is this, scaled up: thousands of variables per timestep,
 the same eight schemas.
 
-## Beyond the baseline: Chained and R2E
-
-Two encoder families override parts of these schemas — both exist because
-of *numeric fluents under parallel semantics*, where "apply all effects
-simultaneously" stops being well-defined (two increases to the same fluent
-must both count):
-
-- **`ChainedGroundedEncoder`** keeps everything above but replaces the
-  effect equalities for numeric fluents modified by more than one action
-  with **chain variables** (ζ) that thread those actions' contributions
-  sequentially through the timestep.
-- **`R2EGroundedEncoder`** goes further: it fixes one global action order
-  and substitutes intermediate values through *all* constraints, replacing
-  the frame and parallelism schemas entirely.
-
-Both are covered in [`encoders-and-planners.md`](encoders-and-planners.md).
-
-## Try it
-
-Export the real formula for a real problem and read it — every schema above
-is visible in the SMT-LIB2 output. The module's `export_formula` builds the
-encoder and prints the formula instead of solving (the problem must already
-be ground, so this uses UP's grounder; export is limited to
-propagator-free strategies — `seq` and `r2e`):
-
-```python
-# from the repo root, inside the venv
-from unified_planning.io import PDDLReader
-from unified_planning.engines import CompilationKind
-from unified_planning.engines.compilers import Grounder
-from rantanplan.converter import convert_problem
-from rantanplan import _rantanplan
-
-problem = PDDLReader().parse_problem(
-    "pddl/small-test/zenotravel/domain.pddl",
-    "pddl/small-test/zenotravel/instances/pfile13.pddl")
-ground = Grounder().compile(problem, CompilationKind.GROUNDING).problem
-smt2 = _rantanplan.export_formula(
-    convert_problem(ground),
-    ["--strategy", "seq", "--formula-timestep", "3"])
-open("/tmp/plan.smt2", "w").write(smt2)
-```
-
-Skim `/tmp/plan.smt2`: the declarations follow the factory's
-`name_params_timestep` convention (`located_person1_city0_0 : Bool`,
-`fuel_plane1_2 : Real`, ...), and the assertions are the action
-implications, frame axioms, and at-most-one constraints from this doc,
-thousands of times over. The file is self-contained — a stock
-`z3 /tmp/plan.smt2` solves it with no planner involved.
+One known limit of these schemas: under parallel semantics, a numeric
+fluent written by more than one action in the same timestep is not
+encodable — the per-action effect equalities are jointly unsatisfiable, so
+such writers never share a timestep (sound, just less parallel). The
+`encode_cumulative_effects` no-op seam in `GroundedEncoder` is where a
+future chained encoder would lift this; see
+[`encoders-and-planners.md`](encoders-and-planners.md).

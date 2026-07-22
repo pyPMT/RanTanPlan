@@ -22,17 +22,24 @@ up again in `topological_sort_actions()`, which returns actions in
 order means `A`'s effects land after `B` has already read/acted on the
 pre-`A` state.
 
-## Two interfaces, not one, and it's a compile-time distinction
+## One interface, two implementations
 
-`analysis/interference_analysis.hpp` defines two interfaces:
+`analysis/interference_analysis.hpp` defines a single pure interface,
+**`InterferenceOracle`**: `has_interference()` (by `Action` or by node ID)
+and `topological_sort_actions()`, nothing else. Consumers (propagator
+modules, plan extraction) stay ignorant of how the answers are computed.
+Exactly two implementations exist, chosen by `InterferenceKind` in
+`StrategyFactory::create_interference`:
 
-- **`InterferenceOracle`** — the universal surface every implementation
-  provides: `has_interference()` (by `Action` or by node ID) and
-  `topological_sort_actions()`. Both eager and lazy analyzers satisfy this.
-- **`InterferenceGraphAnalysis : InterferenceOracle`** — adds whole-graph
-  access: `get_interference_graph()`, `get_neighbours()`,
-  `output_interference_graph_dot()`. **Only eager implementations derive
-  from this.**
+- **`EagerInterferenceAnalysis`** (`analysis/eager_interference_analysis.hpp`)
+  — eager syntactic: at construction it materializes the syntactic check
+  into a complete interference `Graph` (O(n²) pairwise checks up front,
+  O(1) lookups per query), and exposes that graph via a concrete
+  `interference_graph()` accessor that is *not* part of the interface.
+- **`SemanticInterferenceAnalysis`**
+  (`analysis/semantic_interference_analysis.hpp`) — lazy semantic: computes
+  each pair on demand through `SemanticInterferencePredicate` and caches
+  the boolean result.
 
 ```mermaid
 classDiagram
@@ -41,68 +48,62 @@ classDiagram
         +has_interference(a1, a2) bool
         +topological_sort_actions(actions) vector
     }
-    class InterferenceGraphAnalysis {
-        <<interface>>
-        +get_interference_graph() Graph
-        +get_neighbours(node_id) vector
+    class EagerInterferenceAnalysis {
+        +interference_graph() Graph
     }
-    InterferenceOracle <|-- InterferenceGraphAnalysis
-    InterferenceGraphAnalysis <|-- EagerInterferenceAnalysis
-    InterferenceGraphAnalysis <|-- EagerSemanticInterferenceAnalysis
-    InterferenceOracle <|-- LazyInterferenceAnalysis
+    InterferenceOracle <|-- EagerInterferenceAnalysis
     InterferenceOracle <|-- SemanticInterferenceAnalysis
 ```
 
-Why split it at all: a consumer that needs neighbour lists or the whole
-graph (the ∀-step encoding, the eager forall-mutex propagator module)
-*cannot function* against a lazy analyzer — there's no graph to hand back.
-An earlier version of this code had one interface with graph methods that
-*threw at runtime* on lazy implementations, guarded by a runtime `is_lazy()`
-flag consumers were supposed to check first. The split turns that into a
-compile error: `ForallMutexModule` takes a `const InterferenceGraphAnalysis&`
-at construction, so passing a lazy analyzer there simply doesn't compile.
+Whole-graph access is deliberately *outside* the interface: the one
+consumer that needs the whole graph — the encoded ∃-step mutexes of
+strategy `e` (`ExistsSemantics::encode_parallelism`) — takes a
+`const EagerInterferenceAnalysis*` directly, so handing it a lazy analyzer
+(which has no graph to give back) is a compile error, not a runtime throw.
 This is the same "make illegal states unrepresentable" instinct mentioned in
 [`architecture-overview.md`](architecture-overview.md) (see "Design philosophy").
 
-## The eager/lazy × syntactic/semantic matrix
+The syntactic check itself lives in a standalone value type,
+**`SyntacticInterference`** (`analysis/syntactic_interference.{hpp,cpp}`):
+per-action fluent read/write sets computed once at construction, plus the
+directional `interferes()` set-intersection check. It sits outside the
+oracle hierarchy on purpose and has two consumers —
+`EagerInterferenceAnalysis` materializes it into the graph, and
+`AbstractSuffixEncoder` owns its own instance for the axiom-6 deferral
+sets, which need a cheap sound overapproximation regardless of how precise
+the strategy's own interference oracle is.
 
-`InterferenceKind` has five values — `None` (sequential only) and a 2×2
-matrix of eager/lazy crossed with syntactic/semantic:
+## Syntactic vs semantic
 
-| | Syntactic | Semantic |
-|---|---|---|
-| **Eager** | `EagerInterferenceAnalysis` — builds the full graph once, using fast fluent-set-intersection checks | `EagerSemanticInterferenceAnalysis` — builds the full graph once, using Z3-checked precision |
-| **Lazy** | `LazyInterferenceAnalysis` — queries pairs on demand, syntactic checks | `SemanticInterferenceAnalysis` — queries pairs on demand, Z3-checked |
+`InterferenceKind` has three values — `None` (sequential only),
+`EagerSyntactic`, and `LazySemantic`. The eager/lazy pairing is not a free
+axis: the syntactic check is cheap enough to run eagerly over all pairs,
+while the semantic check is only worth paying per query, so each
+computation style comes with its natural evaluation time.
 
 **Syntactic** interference is a sound *overapproximation*: it intersects
 precondition/effect fluent sets (positive/negative boolean, numeric,
 conditional-effect fluents, numeric-effect RHS dependencies — see
-`InterferenceOracle::ActionAnalysis` for the exact sets collected per
+`SyntacticInterference::ActionAnalysis` for the exact sets collected per
 action) and may report interference for pairs that don't actually conflict
 semantically, but never misses a pair that does. It's cheap: no Z3 calls.
 
 **Semantic** interference asks Z3 directly whether the pair can genuinely
-conflict, which is precise but costlier per query. Lazy analyzers trade
-build-once cost for per-query cost — worthwhile when the encoding only ever
-asks about a subset of all pairs (e.g. `elsc`/`elsc-dt`, the chained-encoder
-strategies, use lazy semantic interference).
+conflict, which is precise but costlier per query. The lazy analyzer trades
+build-once cost for per-query cost — worthwhile when the search only ever
+asks about a subset of all pairs (`els`, `els-fp`, and `fls` all use lazy
+semantic interference).
 
-One documented soundness-relevant scheduling detail: eager-semantic
-interference is built *after* `Config::set_all_integer` runs on a problem
-where static-fluent folding made costs constant, so its Z3 queries use `Int`
-sorts rather than mixed sorts — this yields fewer spurious edges (still
-sound, just more precise) than building it earlier in the pipeline would.
-
-**The semantic definition lives once.** Both semantic analyzers are thin
-materializers over a single `SemanticInterferencePredicate`
+**The semantic definition lives once.** The analyzer is a thin
+materializer over a single `SemanticInterferencePredicate`
 (`analysis/semantic_interference_predicate.{hpp,cpp}`), which owns the Z3
-infrastructure and the actual affects-relation check: `check1` (can a1's effects
-falsify a2's precondition?) and `check2` (do a1 and a2's effects fail to
-commute?). The lazy `SemanticInterferenceAnalysis` caches per-pair results; the
-eager `EagerSemanticInterferenceAnalysis` builds the whole graph then discards
-the predicate's Z3 state. **Change the semantic check in the predicate, not in
-either wrapper.** One subtlety worth flagging, because it was a real soundness
-bug: `check2` compares the *parallel happening* σ_h against a serialization, and
+infrastructure and the actual affects-relation check (`affects_source`):
+`check1` (can a1's effects falsify a2's precondition?) and `check2_source`
+(do a1 and a2's effects fail to commute?). `SemanticInterferenceAnalysis`
+just caches the per-pair boolean. **Change the semantic check in the
+predicate, not in the wrapper.**
+One subtlety worth flagging, because it was a real soundness
+bug: `check2_source` compares the *parallel happening* σ_h against a serialization, and
 σ_h must be the **function of compositions** (Bofill et al. 2016, Def 5) — compose
 only the per-variable assignments, so a variable an effect merely *reads* (a
 velocity fluent in `x += v·3`) stays at its pre-state value — *not* the
@@ -160,7 +161,7 @@ classDiagram
     }
     PropagatorStrategy o-- "many" PropagatorModule
     PropagatorStrategy o-- PropagatorSharedState
-    PropagatorModule <|-- ForallMutexModule
+    PropagatorModule <|-- LazyForallMutexModule
     PropagatorModule <|-- ExistsCycleModule
     PropagatorModule <|-- FrameAxiomModule
     PropagatorModule <|-- LoggingModule
@@ -184,7 +185,7 @@ invocation. Propagations (unit implications via `module_propagate()`) do
 within one callback.
 
 **Example.** Say a strategy runs `{ExistsCycle, FrameAxiom}` together (like
-`elsc-fp`). The solver fixes three action variables true at the same
+`els-fp`). The solver fixes three action variables true at the same
 timestep — `A`, `B`, `C` — where `A` interferes with `B`, `B` interferes
 with `C`, and `C` interferes with `A`: a genuine 3-cycle, meaning no
 execution order of the three is safe (each would need to come both before
@@ -203,38 +204,28 @@ gets registered at all — only modules that actually need `on_decide`
 notifications should return `true`, since every module pays the cost of the
 callback being registered if any one of them needs it.
 
-## Try it
-
-The syntactic/semantic tradeoff, quantified — run the same instance under
-eager syntactic (`f`) and eager semantic (`fgs`) interference and compare
-the graph stats:
-
-```bash
-rantanplan -d pddl/small-test/zenotravel/domain.pddl \
-           -p pddl/small-test/zenotravel/instances/pfile13.pddl \
-           --strategy f   --stats-file /tmp/stats_f.txt
-rantanplan -d pddl/small-test/zenotravel/domain.pddl \
-           -p pddl/small-test/zenotravel/instances/pfile13.pddl \
-           --strategy fgs --stats-file /tmp/stats_fgs.txt
-grep interference /tmp/stats_f.txt /tmp/stats_fgs.txt
-```
-
-On the same 531 ground actions, syntactic builds **85,032** interference
-edges in **~27 ms**; semantic asks Z3 about every pair and builds
-**21,852** edges in **~22 s** — roughly 800× the build cost for a graph
-four times sparser. Every edge that disappeared is a pair like the
-`refuel_a`/`refuel_b` example above: syntactically overlapping, semantically
-commuting — and each one is a mutex clause ∀-step no longer has to emit,
-which is the whole bet the semantic strategies make.
-
 ### The module kinds
 
 `PropagatorModuleKind` (`config/strategy_spec.hpp`) lists the composable
-units: `ForallEager` and `ForallLazy` (mutex-based blocking for ∀-step,
-differing in whether they consume an eager or lazy interference graph),
+units: `ForallLazy` (`LazyForallMutexModule` — mutex-based blocking for
+∀-step, used by `fls` and by the SDAC exists→forall downgrade),
 `ExistsCycle` (cycle detection for ∃-step — a candidate parallel step is
-valid iff its interference subgraph is acyclic), and `FrameAxiom` (supplies
-frame axioms lazily from the propagator instead of the encoding, for the
-`elsc-fp` strategy). A `StrategySpec`'s `propagator` field is a
-`std::set<PropagatorModuleKind>` — strategies can combine modules (e.g.
-`elsc-fp` uses `{ExistsCycle, FrameAxiom}` together).
+valid iff its interference subgraph is acyclic; `els`, `els-fp`), and
+`FrameAxiom` (supplies frame axioms lazily from the propagator instead of
+the encoding, for the `els-fp` strategy). A `StrategySpec`'s `propagator`
+field is a `std::set<PropagatorModuleKind>` — strategies can combine
+modules (e.g. `els-fp` uses `{ExistsCycle, FrameAxiom}` together).
+
+Both parallelism modules return `true` from
+`manages_parallelism_constraints()`, which suppresses the encoder-side
+`encode_parallelism` assertion (`BasePlanner::add_timestep_constraints`) —
+with such a module attached, the parallelism semantics is enforced only
+during search. ∀-step is *only* enforceable this way
+(`ForallSemantics::encode_parallelism` throws;
+`StrategyFactory::validate` requires every Forall spec to carry a
+parallelism-managing module). The propagator-free exists strategy `e` is
+the converse case: no module, so `ExistsSemantics::encode_parallelism`
+asserts a-priori fixed-order/SCC mutexes derived from the eager
+interference graph (the Rintanen et al. 2006 fixed-order approximation) —
+which is why `validate` requires `EagerSyntactic` interference for
+propagator-free exists specs.

@@ -29,8 +29,8 @@ true: a consumer of `PreprocessedProblem` that never wants to touch Z3 can
 include this header without pulling Z3 in transitively.
 
 Artifacts are also **single-consumer**: `BasePlanner::consume_artifacts()`
-*moves* what a planner needs (achievers for CGB, SDAC cost bounds for
-branch-and-bound) out of the bundle. A `PreprocessedProblem` cannot feed a
+*moves* what a planner needs (SDAC cost bounds for branch-and-bound; no
+other planner consumes anything) out of the bundle. A `PreprocessedProblem` cannot feed a
 second `solve()` call — this is enforced at the nanobind layer too (the
 `Preprocessed.consumed` flag; see
 [`python-cpp-boundary.md`](python-cpp-boundary.md)).
@@ -245,7 +245,7 @@ additionally carry *declared* state invariants, the bodies of PDDL
 (`state_invariants()`), not in `state_constraints`, precisely because they
 are trusted requirements that define plan validity, not derived hints. The
 encoder asserts them at every state including the goal
-state, and `r2e` rejects problems that declare them. See the comment on
+state. See the comment on
 `GroundedEncoder::encode_state_constraints` for the full contrast.
 
 ## Landmark analysis: `LandmarkAnalysisPass`
@@ -260,9 +260,9 @@ required by *all* achievers of a landmark is itself a landmark) produces
 where linear numeric thresholds get real residuals and per-firing
 contributions, and everything else takes the sound default of residual 1 —
 plus natural orderings and a depth lower bound folded into the pipeline's
-`lower_bound`. The CGB planner consumes this artifact for its presence
-clauses, deficit budgets, and horizon jumps. The full design-and-measurement
-log is `docs/pdla-optional-occurrence-roadmap.md` §5.
+`lower_bound`. The `landmark_data` artifact currently has no consumer (its
+only reader, the CGB planner, was removed in the slim-down); the analysis
+is kept for future use, and its `lower_bound` contribution still counts.
 
 ## Symmetry detection: `SymmetryAnalysisPass`
 
@@ -299,8 +299,8 @@ overwhelms the solver).
 ## `Config` vs `PreprocessorOptions`
 
 `Config` (`config/config.hpp`) is the CLI-facing singleton: sectioned
-(`Global`, `RPG`, `Planner`, `Symmetry`, `FormulaExport`, `Logging`,
-`LocalReasoning`), parsed by `CLIParser`, validated by `Config::validate()`.
+(`Global`, `RPG`, `Planner`, `Symmetry`, `Logging`),
+parsed by `CLIParser`, validated by `Config::validate()`.
 It is read by the backend (`api::solve`) and the driver — **passes never
 read it**.
 
@@ -323,19 +323,20 @@ consumer, or a `--list-strategies` inspection tool can all call
 
 ## The strategy system
 
-A **strategy** is a named, validated combination of five axes, expressed as
-a plain `StrategySpec` (`config/strategy_spec.hpp`):
+A **strategy** is a named, validated combination of four axes, expressed as
+a plain `StrategySpec` (`config/strategy_spec.hpp`). There is no encoder
+axis: `GroundedEncoder` is the only encoder, and every strategy uses it.
 
 | Axis | Enum | What it controls |
 |---|---|---|
-| Encoder | `EncoderFamily` | Grounded, Chained, R2E |
 | Semantics | `SemanticsKind` | Sequential, Forall, Exists |
-| Interference | `InterferenceKind` | None / Eager·Lazy × Syntactic·Semantic |
-| Propagator modules | `PropagatorFlags` (a `std::set<PropagatorModuleKind>`) | ForallEager, ForallLazy, ExistsCycle, FrameAxiom |
-| Planner | `PlannerKind` | Sequential, DoubleTail, BranchAndBound, CGB |
+| Interference | `InterferenceKind` | None, EagerSyntactic, LazySemantic |
+| Propagator modules | `PropagatorFlags` (a `std::set<PropagatorModuleKind>`) | ForallLazy, ExistsCycle, FrameAxiom |
+| Planner | `PlannerKind` | Sequential, BranchAndBound |
 
 `StrategyRegistry` (`config/strategy_registry.cpp`) maps CLI strategy names
-(`"elsc"`, `"fl-dt"`, `"cgb"`, …) to `StrategyEntry { spec, description }`.
+(`"seq"`, `"e"`, `"els"`, `"els-fp"`, `"fls"`) to
+`StrategyEntry { spec, description }`.
 This table is the single place a new strategy gets added — see the
 `/add-strategy` skill. `--list-strategies` and `test.py`'s strategy
 discovery both read this registry; neither hardcodes a strategy list.
@@ -345,14 +346,14 @@ discovery both read this registry; neither hardcodes a strategy list.
 
 ```mermaid
 flowchart LR
-    S[StrategySpec] --> V["validate()<br/>(compatibility checks)"]
-    V --> AJ["adjust_spec()<br/>(problem-specific: SDAC to exists downgrade)"]
-    AJ --> I[Interference analyzer]
+    S[StrategySpec] --> AJ["adjust_spec()<br/>(problem-specific: SDAC exists→forall downgrade)"]
+    AJ --> V["validate()<br/>(compatibility checks)"]
+    V --> I[Interference analyzer]
     I -->|constructor-injected| PA[Parallelism strategy]
     PA -->|constructor-injected| E[Encoder]
     E --> PR["Propagator<br/>(attaches to planner's solver)"]
     E --> PL[Planner]
-    PL -->|consume_artifacts| ART["achievers / SDAC bounds<br/>from PreprocessedProblem"]
+    PL -->|consume_artifacts| ART["SDAC cost bounds<br/>from PreprocessedProblem"]
 ```
 
 **Wiring discipline**, stated in the `StrategyFactory` header comment and
@@ -370,53 +371,52 @@ solver, so the propagator is created after the planner — is the caller's
 
 ### Example: unpacking one strategy
 
-The registry entry for `"elsc"` (`config/strategy_registry.cpp`) is one
+The registry entry for `"els"` (`config/strategy_registry.cpp`) is one
 line:
 
 ```cpp
-{"elsc", {{E::Chained, S::Exists, I::LazySemantic, {M::ExistsCycle}, K::Sequential},
-          "Exists-step, lazy semantic interference, chained encoder"}},
+{"els",       {{S::Exists,     I::LazySemantic,    {M::ExistsCycle},                K::Sequential},
+               "Exists-step, lazy semantic interference"}},
 ```
 
-That one line packs five independent decisions. Reading the `StrategySpec`
+That one line packs four independent decisions. Reading the `StrategySpec`
 field by field, and what `StrategyFactory` turns each one into:
 
 | Field | Value | `StrategyFactory` builds |
 |---|---|---|
-| `encoder` | `EncoderFamily::Chained` | a `ChainedGroundedEncoder` |
-| `semantics` | `SemanticsKind::Exists` | an `ExistsSemantics` parallelism strategy, constructor-injected into the encoder |
-| `interference` | `InterferenceKind::LazySemantic` | a `SemanticInterferenceAnalysis` (see [`interference-and-propagators.md`](interference-and-propagators.md) for the eager/lazy × syntactic/semantic matrix), constructor-injected into the parallelism strategy |
+| `semantics` | `SemanticsKind::Exists` | an `ExistsSemantics` parallelism strategy, constructor-injected into the (grounded) encoder |
+| `interference` | `InterferenceKind::LazySemantic` | a `SemanticInterferenceAnalysis` (see [`interference-and-propagators.md`](interference-and-propagators.md) for the syntactic/semantic distinction), constructor-injected into the parallelism strategy |
 | `propagator` | `{PropagatorModuleKind::ExistsCycle}` | one `ExistsCycleModule`, added to the `PropagatorStrategy` |
 | `planner` | `PlannerKind::Sequential` | resolved (via `resolve_planner_kind`, satisficing mode) to an `IncrementalHorizonPlanner` — note this enum value names a *strategy role* ("use the strategy's normal single-ended search"), not the `IncrementalHorizonPlanner` class, which used to be named `SequentialPlanner` before a rename (see [`encoders-and-planners.md`](encoders-and-planners.md)) |
 
-`elsc-dt` is the same first four fields with `planner: DoubleTail` instead —
-one field changes, and it becomes a structurally different search algorithm
-over the same encoder/interference/propagator combination. That's the reuse
-payoff the strategy pattern is for: nobody wrote a
-"chained-exists-lazy-semantic-doubletail encoder" class.
+`els-fp` is the same spec with `{ExistsCycle, FrameAxiom}` as the
+propagator set instead — one field changes, and frame axioms move from the
+encoding into the propagator, over the same semantics/interference/planner
+combination. That's the reuse payoff the strategy pattern is for: nobody
+wrote an "exists-lazy-semantic-lazy-frames encoder" class.
 
 `resolve_planner_kind(SearchMode, StrategySpec)` in `strategy_spec.hpp`
 handles the interaction between the CLI's search mode and the strategy's
 declared planner: satisficing mode (any valid plan is acceptable — the
 default) uses whatever planner the strategy names,
-but optimal/anytime mode always forces `BranchAndBound` — and raises if the
-strategy is double-tail or CGB, which cannot run under those modes at all
-(see [`encoders-and-planners.md`](encoders-and-planners.md) for why).
+but optimal/anytime mode always forces `BranchAndBound`
+(see [`encoders-and-planners.md`](encoders-and-planners.md)).
 
 ## Extension points
 
 | To add a… | You touch… |
 |---|---|
 | preprocessing pass | subclass `Pass`, insert into the pass list in `api::preprocess` |
-| encoder | subclass `BaseEncoder`, one case in `StrategyFactory` |
 | planner | subclass `BasePlanner`, one case in `StrategyFactory` |
-| strategy (combination of existing pieces) | one entry in `strategy_registry.cpp` (see the `elsc` breakdown above) |
+| strategy (combination of existing pieces) | one entry in `strategy_registry.cpp` (see the `els` breakdown above) |
 | non-SAT planner | a new consumer of `PreprocessedProblem` — no encoder or Z3 header required |
 
+(There is no encoder extension point anymore: `GroundedEncoder` is the only
+encoder, and the `EncoderFamily` axis is gone from `StrategySpec`.)
+
 The sketches below are illustrative shape, not complete compiling code —
-`BaseEncoder` in particular has more pure virtuals than shown (see
-[`encoders-and-planners.md`](encoders-and-planners.md)); copy an existing
-minimal implementation (`GroundedEncoder`, `IncrementalHorizonPlanner`) as
+copy an existing
+minimal implementation (`IncrementalHorizonPlanner`) as
 the real starting point.
 
 ### Preprocessing pass
@@ -439,29 +439,6 @@ Add `src/passes/action_count_pass.cpp` to `CMakeLists.txt`, then in
 `ActionCountPass action_count_pass;` and `passes.push_back(&action_count_pass);`
 at whatever point in the pipeline order makes sense (here: after action
 pruning, so it reports the post-pruning count).
-
-### Encoder
-
-```cpp
-// encoders/my_encoder.hpp
-class MyEncoder : public BaseEncoder {
-public:
-    MyEncoder(const Problem& problem, z3::context& ctx,
-              std::unique_ptr<ParallelismStrategy> parallelism);
-
-    z3::expr encode_initial_state() override;  // assert each initial_state() assignment
-    z3::expr encode_actions(int t) override;   // one implication per ground action: a@t -> pre@t /\ eff@(t+1)
-    z3::expr encode_frames(int t) override;    // unmentioned fluents persist t -> t+1
-    z3::expr encode_goal(int t) override;      // conjunction of goal ExprIDs, evaluated at t
-    z3::expr encode_parallelism(int t) override { return parallelism_->encode(t); }
-    // ... encode_symmetries, encode_state_constraints, extract_plan, etc.
-};
-```
-
-Add one case to the `switch (spec.encoder)` in
-`StrategyFactory::create_encoder` (`api/strategy_factory.cpp`), and a new
-`EncoderFamily` enumerator in `strategy_spec.hpp` if this is a genuinely new
-family rather than a variant of an existing one.
 
 ### Planner
 
@@ -495,7 +472,7 @@ for `Config::instance()` or a `dynamic_cast`.
 
 The "GBFS test" from
 [`architecture-overview.md`](architecture-overview.md) made concrete — a
-consumer that never touches `BaseEncoder`, `PropagatorStrategy`, or any Z3
+consumer that never touches `GroundedEncoder`, `PropagatorStrategy`, or any Z3
 header:
 
 ```cpp
@@ -533,7 +510,7 @@ Both the registry and the pass pipeline are directly observable:
 rantanplan --list-strategies      # every StrategyEntry, name + description
 rantanplan -d pddl/small-test/zenotravel/domain.pddl \
            -p pddl/small-test/zenotravel/instances/pfile13.pddl \
-           --strategy elsc -v
+           --strategy els -v
 ```
 
 The verbose log's bracketed tags fire in the pipeline diagram's order —

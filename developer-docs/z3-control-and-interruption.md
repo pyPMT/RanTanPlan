@@ -28,7 +28,7 @@ backend (`phase_selection`, `restart_strategy`, ...) that Z3 switches to
 the moment a `z3::user_propagator_base` is registered. Setting `sat.*`
 parameters *before* that switch silently no-ops — the propagator object
 exists and is attached, but Z3 never invokes any of its callbacks, and
-every propagator-dependent strategy (forall/exists/lazy) would produce
+every propagator-dependent strategy (`fls`, `els`, `els-fp`) would produce
 invalid plans with interfering actions in the same timestep. The fix, and
 the reason for the ordering, is recorded directly in the source comment at
 `set_propagator_strategy()`.
@@ -158,8 +158,8 @@ interrupt and is a no-op until the next `check()` call starts.
 ## Incremental search: assumptions, not push/pop, for the common case
 
 Growing the horizon doesn't mean re-solving from scratch or wrapping each
-horizon in a `push()`/`pop()` scope. `IncrementalHorizonPlanner` and
-`DoubleTailPlanner` both use **assumption literals**: a fresh Boolean
+horizon in a `push()`/`pop()` scope. `IncrementalHorizonPlanner` uses
+**assumption literals**: a fresh Boolean
 constant is created per horizon, permanently asserted behind an implication
 (never asserted true), and passed as the sole assumption to `check()`:
 
@@ -226,7 +226,7 @@ problem = PDDLReader().parse_problem(
     "pddl/small-test/expedition/domain.pddl",
     "pddl/small-test/expedition/instances/pfile1.pddl")
 handle = _rantanplan.preprocess(convert_problem(problem),
-                                ["--strategy", "elsc", "--verbosity", "verbose"])
+                                ["--strategy", "els", "--verbosity", "verbose"])
 threading.Timer(3.0, handle.interrupt).start()
 result = _rantanplan.solve(handle)
 print(_rantanplan.SolveStatus(result.status).name)   # -> TIMEOUT

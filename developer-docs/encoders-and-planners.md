@@ -1,108 +1,40 @@
-# Encoders and planners
+# The encoder and the planners
 
-This doc covers the two axes of a `StrategySpec` not already covered
-elsewhere: which SAT encoder builds the formula, and which planner backend
-drives the search over it. See
+This doc covers the parts of a solve not already covered elsewhere: the
+encoder that builds the formula, and the planner backend that drives the
+search over it. See
 [`preprocessing-and-strategy.md`](preprocessing-and-strategy.md) for how
 these fit into `StrategySpec`/`StrategyFactory`, and
 [`interference-and-propagators.md`](interference-and-propagators.md) for the
 interference/propagator axes.
 
-## Encoder families
+## The encoder
 
-`BaseEncoder` (`encoders/base_encoder.hpp`) is the interface every encoding
-strategy implements: `encode_initial_state()`, `encode_actions(t)`,
-`encode_frames(t)`, `encode_goal(t)`, `encode_parallelism(t)`,
-`encode_symmetries(t)`, `encode_state_constraints(t)`, plus
-`extract_plan()` to turn a Z3 model back into a `Plan`. Three families exist
-(`EncoderFamily` in `config/strategy_spec.hpp`):
+`GroundedEncoder` (`encoders/grounded_encoder.{hpp,cpp}`) is the single
+state-space encoder — planners, propagator modules, and the abstract
+suffix encoder all consume it directly (there is no encoder interface or
+`EncoderFamily` axis to choose from). Its methods are the eight clause
+schemas from [`the-encoding.md`](the-encoding.md), one set per ground
+action per timestep, generated directly: `encode_initial_state()`,
+`encode_actions(t)`, `encode_frames(t)`, `encode_goal(t)`,
+`encode_parallelism(t)`, `encode_symmetries(t)`,
+`encode_state_constraints(t)`, plus `extract_plan()` to turn a Z3 model
+back into a `Plan`.
 
-- **Grounded** (`grounded_encoder.{hpp,cpp}`) — the baseline: the eight
-  clause schemas from [`the-encoding.md`](the-encoding.md), one set per
-  ground action per timestep, generated directly.
-- **Chained** (`chained_grounded_encoder.{hpp,cpp}`) — extends Grounded
-  with **chain variables for cumulative numeric effects**, so several
-  actions writing the same numeric fluent can legally share a timestep
-  (see the section below). This is the encoder behind the
-  `elsc`/`elsc-dt`/`elsc-fp`/`cgb` family and the
-  `flsc`/`flsc-dt`/`fgsc`/`egsc` family — a single encoder implementation
-  serves both sequential-planner and CGB consumers, which is the strategy
-  pattern's component-reuse payoff described in
-  [`architecture-overview.md`](architecture-overview.md): the contributor
-  unit is "one encoder," not "one encoder-planner pair."
-- **R2E** (`r2e_grounded_encoder.{hpp,cpp}`) — the R²∃-step ("relaxed
-  ∃-step") encoding (`r2e` strategy): a fixed global action order replaces
-  both the frame axioms and the parallelism constraints (see below).
+Internally, `encode_actions` composes per-action effect constraints
+(`encode_non_cumulative_effects`) with a per-timestep
+`encode_cumulative_effects(t)` that is a **no-op** — it is kept as the
+seam where a future chained encoder would emit cumulative-effect chain
+variables. Until then, several actions writing the same numeric fluent
+cannot share a timestep: their effect equalities are jointly
+unsatisfiable, so the solver simply never co-schedules them (sound, just
+less parallel).
 
-### Chained: cumulative numeric effects via ζ chains
-
-Under parallel semantics, the baseline encoding breaks on numeric fluents
-with more than one writer. Take the commuting pair from
-[`interference-and-propagators.md`](interference-and-propagators.md) —
-`refuel_a` (`fuel += 5`) and `refuel_b` (`fuel += 3`), which semantic
-interference happily allows in the same timestep. Grounded's per-action
-effect equalities
-
-```
-refuel_a@t → fuel@t+1 = fuel@t + 5
-refuel_b@t → fuel@t+1 = fuel@t + 3
-```
-
-are jointly unsatisfiable when both fire — `fuel@t+1` can't equal two
-different values — so the encoding would *forbid* exactly the parallelism
-the interference analysis just permitted, silently forcing longer plans.
-`ChainedGroundedEncoder` (implementing Section 5.2 of the
-semantic-interference paper, *"Relaxing non-interference requirements in
-parallel plans"*) fixes this by threading each multi-written numeric
-fluent through intermediate **chain variables** ζ, one per writer:
-
-```
-ζ₀ = fuel@t                              -- eq. (7): chain starts at the timestep state
-ζ₁ = ite(refuel_a@t, ζ₀ + 5, ζ₀)         -- eq. (8): each writer transforms
-ζ₂ = ite(refuel_b@t, ζ₁ + 3, ζ₁)         --          or passes through
-fuel@t+1 = ζ₂                            -- eq. (9): chain ends at the next state
-```
-
-A firing action applies its effect to its chain position; a non-firing one
-passes the value through unchanged. Both fire → `fuel@t+1 = fuel@t + 8`;
-one fires → `+5` or `+3`; neither → unchanged (and the ordinary frame
-axioms, which Chained keeps, still demand a cause for any change). Boolean
-fluents and single-writer numeric fluents keep the plain Grounded
-equalities — chains are created only where cumulative writes are possible
-(the `encoder.chained_variables` stat counts them).
-
-### R2E: a fixed global order instead of frames and mutexes
-
-`R2EGroundedEncoder` commits, up front, to one global order *L* over all
-ground actions (declaration order or RPG-layer order — `ActionOrdering`),
-and lets *any* set of actions share a timestep as long as executing them
-in that order is valid. The whole transition relation becomes chain
-substitution: an action's precondition is evaluated not at the timestep
-state but at the intermediate state left by the previous modifier in *L*
-(`a@t → pre(σ_prev)`), its effects write the next chain position, and
-per-variable linking constraints tie `x@t+1` to the last chain position.
-`encode_frames` and `encode_parallelism` both return `true` — persistence
-and ordering are built into the chain structure, so there are no frame
-axioms, no mutex clauses, and no ordering propagator.
-
-Two consequences worth knowing: state constraints are currently *disabled*
-under R2E (they hold at true timestep boundaries, not at intermediate
-chain values — asserting them on ζ variables would be unsound; the header
-comment records this), and SDAC (state-dependent action cost) costs must
-be evaluated at the chain-substituted state each action actually
-observes — `convert_cost_to_z3()`'s default, evaluating the cost
-expression at the start-of-timestep state, would silently miscompute them,
-which is why `R2EGroundedEncoder` overrides it. If you touch cost
-handling, that override is the detail to know.
-
-`encode_prefix_monotone(t)` is specific to `IncrementalHorizonPlanner`: it
-encodes `(∀a. ¬a@t) → (∀a. ¬a@(t+1))`, forcing active steps to the front of
-the plan. Combined with the horizon-schedule batching described below, this
-is what lets a single goal literal at a batched horizon `h` witness any
-shorter plan length in the batch — frame axioms propagate a shorter plan's
-final state forward to `h` unchanged. `DoubleTailPlanner` doesn't use it: its
-forward and backward stacks are structurally disjoint, so there's no single
-uniform "front" to chain.
+`encode_prefix_monotone(t)` encodes `(∀a. ¬a@t) → (∀a. ¬a@(t+1))`, forcing
+active steps to the front of the plan. Combined with the horizon-schedule
+batching described below, this is what lets a single goal literal at a
+batched horizon `h` witness any shorter plan length in the batch — frame
+axioms propagate a shorter plan's final state forward to `h` unchanged.
 
 ## Planner backends
 
@@ -117,50 +49,13 @@ schedule, and the intermediate-plan callback used for anytime results (see
   the name predates this class and now refers to a strategy role, not a
   class) — satisficing search with a growing horizon, one SAT call per
   scheduled horizon.
-- **`DoubleTailPlanner`** — the double-tail incremental encoding from
-  Gocht & Balyo, *"Accelerating SAT Based Planning with Incremental SAT
-  Solving"* (ICAPS 2017): builds the formula from **both** ends at once
-  (forward from the initial state, backward from the goal), alternating
-  which end extends each iteration and connecting the two with link
-  constraints; iteration `i` tests for plans of exactly length `i`:
-
-  ```mermaid
-  flowchart LR
-      subgraph fwd["forward stack — grows →"]
-          I[initial state] --> S1[state 1] --> S2[state 2]
-      end
-      subgraph bwd["backward stack — grows ←"]
-          T2[state k−2] --> T1[state k−1] --> G[goal]
-      end
-      S2 -. link constraints<br/>join the frontiers .- T2
-  ```
-
-  Because it has no single linear horizon to schedule non-uniformly, it's
-  incompatible with non-linear horizon schedules (`Config::validate()`
-  enforces this) and cannot run under optimal/anytime search modes
-  (`resolve_planner_kind` raises if you try).
 - **`BranchAndBoundPlanner`** — the cost-optimal (and anytime) planner.
   Notably, it does **not** use `z3::optimize` — that API is incompatible
-  with Z3 user propagators, which every forall/exists/lazy strategy
-  depends on. Instead it reformulates cost minimization as a sequence of
+  with Z3 user propagators, which the forall and lazy exists strategies
+  depend on. Instead it reformulates cost minimization as a sequence of
   plain `z3::solver` feasibility checks with progressively tighter cost
   bounds, preserving full propagator compatibility. The full algorithm is
   the "Optimal and anytime" section below.
-- **CGB** (`CGBPlanner`) — core-guided lazy activation under ∃-step
-  semantics (successor to the removed PDLA family, which it dominated on
-  both benchmark suites): every ground action starts dormant behind a
-  per-action blocking assumption literal, and UNSAT cores drive all
-  growth — blocking literals in the core name exactly the actions to
-  activate; a blocking-free core means the horizon itself binds, so the
-  planner extends it (jumping past horizons the count landmarks refute).
-  Relaxed-plan seeding pre-activates near-certain actions, and landmark
-  presence clauses plus count-landmark deficit budgets (from
-  `LandmarkAnalysisPass`) let single cores name whole activation sets.
-  This is why CGB is the planner that consumes the achiever and landmark
-  artifacts from `PreprocessedProblem` (via `consume_artifacts`). Like
-  double-tail, it cannot run under optimal/anytime modes. Full
-  implementation log with measurements:
-  `docs/pdla-optional-occurrence-roadmap.md`.
 
 ## Search modes and how a planner gets picked
 
@@ -168,22 +63,20 @@ schedule, and the intermediate-plan callback used for anytime results (see
 choice, orthogonal to the strategy's own declared `PlannerKind`.
 `resolve_planner_kind(mode, spec)` (`config/strategy_spec.hpp`) reconciles
 the two: satisficing mode uses whatever planner the strategy names;
-optimal and anytime modes always force `BranchAndBoundPlanner`, and raise
-`std::invalid_argument` up front if the strategy is double-tail or CGB —
-both of those are structurally satisficing-only, not something the search
-loop could accommodate.
+optimal and anytime modes always force `BranchAndBoundPlanner`.
 
-**Example.** Four `(mode, strategy)` combinations and what
-`resolve_planner_kind` does with each:
+**Example.** Three `(mode, strategy)` combinations and what
+`resolve_planner_kind` does with each (every registered strategy currently
+names `Sequential` as its planner, so `BranchAndBound` is only ever
+reached through the mode override):
 
 | `SearchMode` | strategy's `PlannerKind` | Result |
 |---|---|---|
-| Satisficing | `Sequential` (e.g. `"elsc"`) | `Sequential` — unchanged, runs as `IncrementalHorizonPlanner` |
-| Satisficing | `DoubleTail` (e.g. `"elsc-dt"`) | `DoubleTail` — unchanged, runs as `DoubleTailPlanner` |
+| Satisficing | `Sequential` (e.g. `"els"`) | `Sequential` — unchanged, runs as `IncrementalHorizonPlanner` |
 | Optimal | `Sequential` (e.g. `"seq --mode optimal"`) | `BranchAndBound` — forced, regardless of the strategy's own planner |
-| Optimal or Anytime | `DoubleTail` or `CGB` | throws `std::invalid_argument` at resolution time, before any solving starts |
+| Anytime | `Sequential` (e.g. `"els --mode anytime"`) | `BranchAndBound` — forced, streaming improving plans |
 
-The forcing in row 3 is why `"elsc"` under `--mode optimal` and `"elsc"`
+The forcing in rows 2–3 is why `"els"` under `--mode optimal` and `"els"`
 under `--mode satisficing` run entirely different planner classes despite
 being the same `StrategySpec` — cost-optimality is a search-algorithm
 property, not an encoding one, so it overrides the strategy's default
@@ -215,7 +108,13 @@ continuation* of any length at once —
 - an **abstract goal**: each goal holds at *h* or is modifiable by the
   suffix,
 - **loop formulas** (SCC-based) that stop a cycle of abstract actions
-  from justifying each other's preconditions with no external support.
+  from justifying each other's preconditions with no external support,
+- **deferral and non-emptiness axioms**: each concrete action must be
+  justified against the suffix (axiom 6 — under non-sequential semantics
+  its deferral sets come from a `SyntacticInterference` the suffix builds
+  for itself, `analysis/syntactic_interference.{hpp,cpp}`; sequential
+  semantics justifies deferral by the action chain instead), and if any
+  abstract action fires, every concrete step must be non-empty (axiom 7).
 
 The suffix's cost contribution is a lower bound on any real continuation:
 exact for constant action costs; for SDAC costs it uses the per-action
@@ -264,8 +163,11 @@ each "see" a different intermediate state of the serialization, but costs
 are evaluated at the timestep state `x_t` — for SDAC that can
 under-estimate the true cost and produce false optimality claims. The
 factory's `adjust_spec` therefore *downgrades* an exists-step strategy to
-forall semantics when SDAC meets branch-and-bound (swapping the
-`ExistsCycle` propagator module for `ForallLazy`), logging why.
+forall semantics when SDAC meets branch-and-bound, logging why. The
+downgraded spec unconditionally gets the `ForallLazy` propagator module
+(replacing `ExistsCycle` where present): forall has no encoded
+parallelism path, so even the propagator-free `e` picks up the lazy
+forall module.
 
 ### Anytime = the same search, streamed
 
@@ -278,17 +180,18 @@ the Python `on_plan` callable (GIL re-acquired for the call), and UP's
 the sequence diagram in
 [`python-cpp-boundary.md`](python-cpp-boundary.md). The final result
 still reports `SOLVED_OPTIMALLY` if the proof completed, so "anytime" is
-strictly extra visibility, not a weaker search. On zenotravel pfile13
-(≈20 s):
+strictly extra visibility, not a weaker search. On satellite pfile2
+(≈4 s):
 
 ```bash
-rantanplan -d pddl/small-test/zenotravel/domain.pddl \
-           -p pddl/small-test/zenotravel/instances/pfile13.pddl \
-           --strategy elsc --mode anytime --timeout 60
-# Improving plan found (34 actions)
-# Improving plan found (33 actions)
-# Improving plan found (32 actions)
-# *** OPTIMAL PLAN FOUND: horizon=5, actions=32, cost=32 ***
+rantanplan -d pddl/small-test/satellite/domain.pddl \
+           -p pddl/small-test/satellite/instances/pfile2.pddl \
+           --strategy els --mode anytime --timeout 60
+# Improving plan found (18 actions)
+# Improving plan found (18 actions)
+# Improving plan found (17 actions)
+# Improving plan found (17 actions)
+# *** OPTIMAL PLAN FOUND: horizon=9, actions=17, cost=17.000000 ***
 # Status: PlanGenerationResultStatus.SOLVED_OPTIMALLY
 ```
 
@@ -305,10 +208,7 @@ without a goal check: `linear` (every horizon, +1), `arithmetic` (+5),
 horizons is safe *only* because the prefix-monotone encoding guarantees any
 shorter valid plan is representable within a later batch's horizon — the
 schedule changes how often you ask "is there a plan yet," not whether a
-shorter plan would be missed. This is also the concrete reason non-linear
-schedules and `DoubleTailPlanner` don't mix: double-tail's iteration `i`
-*is* "test for plans of exactly length `i`" — there's no batching concept
-to schedule non-linearly.
+shorter plan would be missed.
 
 **Example.** `HorizonSchedule::next(current, max)` always advances by at
 least 1 and never exceeds `max`. For `doubling` (`n = max(current+1,
@@ -330,22 +230,20 @@ steps.
 
 ## Try it
 
-The schedule batching, live (zenotravel pfile13 needs 5 timesteps under
+The schedule batching, live (zenotravel pfile13 needs 8 timesteps under
 ∃-step, and preprocessing proves a lower bound of 3):
 
 ```bash
 rantanplan -d pddl/small-test/zenotravel/domain.pddl \
            -p pddl/small-test/zenotravel/instances/pfile13.pddl \
-           --strategy elsc -v 2>&1 | grep Solving
+           --strategy els -v 2>&1 | grep Solving
 rantanplan -d pddl/small-test/zenotravel/domain.pddl \
            -p pddl/small-test/zenotravel/instances/pfile13.pddl \
-           --strategy elsc -v --horizon-schedule doubling 2>&1 | grep Solving
+           --strategy els -v --horizon-schedule doubling 2>&1 | grep Solving
 ```
 
-The linear run checks `T3, T4, T5` and finds the plan at 5. The doubling
-run checks `T3, T6` — two SAT calls instead of three — and finds the *same*
-plan at horizon 6, front-loaded into the first 5 slots with one empty
-trailing step, exactly the prefix-monotone batching described above. Swap
-in `--strategy elsc-dt` while keeping `--horizon-schedule doubling` and
-`Config::validate()` aborts the solve: *"Non-linear horizon schedule
-'doubling' is not compatible with double-tail strategy 'elsc-dt'."*
+The linear run checks `T3` through `T8` and finds the plan at 8. The
+doubling run checks `T3, T6, T12` — three SAT calls instead of six — and
+finds a plan at horizon 12: a length-8 plan fits there, front-loaded with
+empty trailing steps, which is exactly the prefix-monotone batching that
+makes skipping the goal checks at horizons 7–11 safe.

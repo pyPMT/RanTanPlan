@@ -194,7 +194,7 @@ Watch the layers expand and the pruning loop iterate:
 ```bash
 rantanplan -d pddl/small-test/zenotravel/domain.pddl \
            -p pddl/small-test/zenotravel/instances/pfile13.pddl \
-           --strategy elsc -v 2>&1 | grep -E "RPG.Numeric L|ActionPruning|NumericBounds"
+           --strategy els -v 2>&1 | grep -E "RPG.Numeric L|ActionPruning|NumericBounds"
 ```
 
 The `[RPG.Numeric L*]` lines are the layer expansion, and

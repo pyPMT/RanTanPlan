@@ -122,8 +122,7 @@ instantiation discards an infeasible binding; after instantiation a literal
 `a[7]` and an `a[i]` folded to `i = 7` are indistinguishable. The same access
 in a goal or the initial state is a hard error (the model is ill-formed). An
 intra-action collision where two effects fold onto the *same* cell also
-discards the instance (the chained encoder keeps only the first write per
-cell); if *every* instance of a schema collides, that's an unconditionally
+discards the instance; if *every* instance of a schema collides, that's an unconditionally
 broken model and a hard error.
 
 **Why this needs no downstream changes.** A cell is an ordinary scalar
@@ -339,7 +338,7 @@ The worked example's iteration table, on a real domain:
 ```bash
 rantanplan -d pddl/small-test/zenotravel/domain.pddl \
            -p pddl/small-test/zenotravel/instances/pfile13.pddl \
-           --strategy elsc -v 2>&1 | grep Grounding
+           --strategy els -v 2>&1 | grep Grounding
 ```
 
 ```

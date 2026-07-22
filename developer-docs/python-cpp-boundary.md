@@ -163,9 +163,8 @@ sequenceDiagram
 
 `preprocess()` returns a `Preprocessed` handle — an opaque C++ object owning
 the `PreprocessedProblem` — rather than the struct itself, because
-preprocessing artifacts are **single-consumer**: `solve()` moves achievers
-(the which-action-can-supply-which-fact analysis the CGB planner consumes)
-and SDAC (state-dependent action cost) bounds out of the bundle it's handed. A second `solve()` call
+preprocessing artifacts are **single-consumer**: `solve()` moves artifacts
+(the encoder-ready state constraints) out of the bundle it's handed. A second `solve()` call
 on an already-consumed handle raises rather than silently running without
 those artifacts (`handle.consumed`, checked in `solve_handle_impl`).
 
