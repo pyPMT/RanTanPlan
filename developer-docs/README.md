@@ -35,10 +35,11 @@ Concepts first, plumbing last — each doc leans only on the ones before it.
    lexicographic constraints. Example-led (one three-package problem
    traced through detection, completion, and encoding).
 7. [`interference-and-propagators.md`](interference-and-propagators.md) —
-   why interference analysis has two interfaces, and how the Z3 user
+   why interference analysis is one oracle interface with two
+   implementations (eager syntactic, lazy semantic), and how the Z3 user
    propagator is split into composable modules.
-8. [`encoders-and-planners.md`](encoders-and-planners.md) — the encoder
-   families, the planner backends, optimal/anytime branch-and-bound, and
+8. [`encoders-and-planners.md`](encoders-and-planners.md) — the grounded
+   encoder, the planner backends, optimal/anytime branch-and-bound, and
    how a search mode resolves to a planner.
 9. [`z3-control-and-interruption.md`](z3-control-and-interruption.md) — how
    the Z3 solver is driven incrementally, timeout budgeting, and cross-thread
@@ -60,8 +61,8 @@ for when you meet one out of order.
 
 - **Achiever** — a ground action that can make a given fact true.
   `AchieversAnalysis` precomputes, for every fact, its possible achievers;
-  the CGB planner and the landmark analysis pass chain backward through
-  this graph ([`encoders-and-planners.md`](encoders-and-planners.md)).
+  the landmark analysis pass chains backward through this graph
+  ([`preprocessing-and-strategy.md`](preprocessing-and-strategy.md)).
 - **Anytime** — search mode that reports every improving plan as it's
   found, converging toward optimal. Runs on the branch-and-bound planner
   ([`encoders-and-planners.md`](encoders-and-planners.md)).

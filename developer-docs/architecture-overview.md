@@ -298,9 +298,10 @@ explicitly, since they explain a lot of "why is this structured this way"
 questions before they come up:
 
 **The strategy pattern is the organizing principle, not an add-on.**
-Every backend configuration — which encoder, which parallelism semantics,
-which interference analysis, which propagator modules, which planner — is a
-`StrategySpec`: a plain data struct of enums. Named, validated combinations
+Every backend configuration — which parallelism semantics, which
+interference analysis, which propagator modules, which planner — is a
+`StrategySpec`: a plain data struct of enums (the encoder is not an axis;
+every strategy uses the one grounded encoder). Named, validated combinations
 live in one registry (`strategy_registry.cpp`). Adding a new backend
 configuration is adding one entry there, not writing a new fused
 encoder-and-planner class. See
@@ -317,11 +318,13 @@ easy to serialize if that's ever needed again, and impossible to
 accidentally couple to one side's internals.
 
 **Make illegal states unrepresentable, not runtime-checked.** The
-interference analysis interfaces are the clearest example: consumers that
-need whole-graph access declare it in their *type* (they take an
-`InterferenceGraphAnalysis&`, not an `InterferenceOracle&`), so passing a
-lazy analyzer where a graph is required is a compile error instead of a
-runtime throw. See
+interference analysis split is the clearest example: `InterferenceOracle` is
+a pure query interface (its two implementations answer eagerly-syntactically
+or lazily-semantically), and the one consumer that specifically needs the
+syntactic overapproximation — the abstract suffix encoder — owns a
+`SyntacticInterference` value directly instead of taking an oracle, so
+asking a semantic analyzer for the syntactic graph isn't a runtime throw; it
+simply can't be written. See
 [`interference-and-propagators.md`](interference-and-propagators.md).
 
 **A non-SAT consumer of the preprocessor should be conceivable, even if
@@ -341,10 +344,10 @@ analysis (which needs `SemanticsKind` and feeds propagators) is built in
 Run the pipeline you just read about (from the repo root, inside the venv):
 
 ```bash
-rantanplan --list-strategies      # the strategy registry, one line each
+rantanplan --list-strategies      # the strategy registry: one line each, with a description
 rantanplan -d pddl/small-test/zenotravel/domain.pddl \
            -p pddl/small-test/zenotravel/instances/pfile13.pddl \
-           --strategy elsc -v
+           --strategy els -v
 ```
 
 The bracketed log tags are the pipeline stages, in order: `[Grounding I1]`…

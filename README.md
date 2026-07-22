@@ -4,12 +4,11 @@ A SAT/SMT-based automated planner with parallel action semantics. Combines a Pyt
 
 ## Key Features
 
-- **Four parallelism semantics**: Sequential, ∀-step (forall), ∃-step (exists), R2∃-step
-- **Multiple encoding strategies**: Grounded, chained, R2∃-step
+- **Three parallelism semantics**: Sequential, ∀-step (forall), ∃-step (exists)
+- **Two ∃-step enforcement mechanisms**: encoded a-priori mutexes (fixed-order/SCC, Rintanen-style) or exact lazy cycle detection via a Z3 propagator
 - **Search modes**: Satisficing, cost-optimal (Branch & Bound), anytime
-- **Core-guided lazy activation** (`cgb`): actions start dormant behind blocking assumptions; UNSAT cores drive activation and horizon growth
-- **Interference analysis**: Syntactic (eager/lazy) and semantic (eager/lazy)
-- **Custom Z3 propagators**: Lazy interference via cycle detection, decision heuristics
+- **Interference analysis**: Syntactic (eager, whole graph precomputed) and semantic (lazy, solver-checked on demand)
+- **Custom Z3 propagators**: ∃-step cycle detection, lazy ∀-step mutexes, lazy frame axioms
 - **Numeric planning**: Full support for numeric fluents with SMT-based relaxed planning graph
 - **Bounded-integer action parameters & range variables**: finite-domain integer parameters (`Int[lb,ub]`) and integer-range quantifiers, compiled away before grounding (C++-native, no Python compiler)
 - **Native array fluents**: fixed-size array-valued fluents (Unified Planning's `ARRAY_FLUENTS` kind) compiled to ordinary scalar cells before solving — constant, action-parameter, and quantified indices are supported; state-dependent indices and object-parameterised arrays are not yet
@@ -52,23 +51,20 @@ package rather than a temporary isolated copy.
 # Sequential planning (satisficing by default)
 rantanplan -d domain.pddl -p problem.pddl --strategy seq
 
-# Forall-step with lazy semantic interference and chaining
-rantanplan -d domain.pddl -p problem.pddl --strategy flsc --timeout 120
+# Exists-step with encoded (a-priori) mutexes — no propagator
+rantanplan -d domain.pddl -p problem.pddl --strategy e --timeout 120
+
+# Exists-step with lazy semantic interference (propagator-based)
+rantanplan -d domain.pddl -p problem.pddl --strategy els
 
 # Cost-optimal planning with Branch & Bound
-rantanplan -d domain.pddl -p problem.pddl --strategy elsc --mode optimal
+rantanplan -d domain.pddl -p problem.pddl --strategy els --mode optimal
 
 # Anytime planning (reports improving plans as they are found)
-rantanplan -d domain.pddl -p problem.pddl --strategy fl --mode anytime
+rantanplan -d domain.pddl -p problem.pddl --strategy els-fp --mode anytime
 
-# R2E semantics (declaration-order parallelism)
-rantanplan -d domain.pddl -p problem.pddl --strategy r2e --output-plan solution.txt
-
-# Double-tail bidirectional search
-rantanplan -d domain.pddl -p problem.pddl --strategy flsc-dt
-
-# Core-guided lazy activation over exists-step encoding
-rantanplan -d domain.pddl -p problem.pddl --strategy cgb
+# Forall-step with lazy semantic interference
+rantanplan -d domain.pddl -p problem.pddl --strategy fls --output-plan solution.txt
 ```
 
 ### Declared state invariants
@@ -84,8 +80,7 @@ Declarations are trusted as given (PDDL-requirement semantics, no
 verification) and asserted at every state, initial and goal states
 included — a declaration inconsistent with the dynamics correctly makes
 the instance unsolvable. Only `always` constraints are supported
-(`sometime`-style constraints are rejected), and the `r2e` strategy
-rejects problems with invariants. Under parallel-step strategies the
+(`sometime`-style constraints are rejected). Under parallel-step strategies the
 invariant is checked at step boundaries; `seq` gives exact PDDL 3
 semantics. Declaring known structure (e.g. an exactly-one invariant over
 numeric fluents) can speed up solving substantially.
@@ -100,31 +95,17 @@ numeric fluents) can speed up solving substantially.
 
 ### Available Strategies
 
-| Strategy | Parallelism | Interference | Encoding | Notes |
-|----------|-------------|--------------|----------|-------|
-| `seq` | Sequential | N/A | Grounded | Classic planning |
-| `f` | ∀-step | Eager syntactic | Grounded | Basic parallel |
-| `f-p` | ∀-step | Eager + propagator | Grounded | Optimized |
-| `fl` | ∀-step | Lazy syntactic | Grounded | On-demand |
-| `fls` | ∀-step | Lazy semantic | Grounded | Advanced |
-| `flsc` | ∀-step | Lazy semantic | Chained | Best for ∀-step |
-| `fgs` | ∀-step | Eager semantic | Grounded | Experimental |
-| `fgsc` | ∀-step | Eager semantic | Chained | Experimental |
-| `e` | ∃-step | Eager syntactic | Grounded | Basic parallel |
-| `el` | ∃-step | Lazy syntactic | Grounded | With cycle detection |
-| `els` | ∃-step | Lazy semantic | Grounded | Advanced |
-| `elsc` | ∃-step | Lazy semantic | Chained | Best for ∃-step |
-| `egs` | ∃-step | Eager semantic | Grounded | Experimental |
-| `egsc` | ∃-step | Eager semantic | Chained | Experimental |
-| `elsc-fp` | ∃-step | Lazy semantic | Chained | elsc + lazy frame-axiom propagator |
-| `r2e` | R2∃-step | ARPG-based order | R2E | Novel encoding |
-| `cgb` | ∃-step | Lazy semantic | Chained | Core-guided lazy activation |
+| Strategy | Parallelism | Interference | Enforcement | Notes |
+|----------|-------------|--------------|-------------|-------|
+| `seq` | Sequential | N/A | Encoded (at-most-one) | Classic planning baseline |
+| `e` | ∃-step | Eager syntactic | Encoded a-priori mutexes | Fixed-order/SCC approximation (Rintanen et al. 2006); no propagator |
+| `els` | ∃-step | Lazy semantic | Propagator (cycle detection) | Exact ∃-step; interference checked on demand by the solver |
+| `els-fp` | ∃-step | Lazy semantic | Propagator (cycle detection) | `els` + lazy frame-axiom propagator |
+| `fls` | ∀-step | Lazy semantic | Propagator (mutex conflicts) | Also the target of the SDAC exists→forall downgrade |
 
-Strategy names encode components: **e**xists/**f**orall, **l**azy/ea**g**er, **s**emantic, **c**hain. Use `--list-strategies` for a full list with descriptions.
+Strategy names encode components: **e**xists/**f**orall, **l**azy, **s**emantic, **-fp** frame propagator. Use `--list-strategies` for the list with descriptions.
 
-All strategies except the `-dt` variants and `cgb` support `--mode optimal` and `--mode anytime` for cost-optimal and anytime planning respectively.
-
-**Double-tail variants** (`seq-dt`, `f-dt`, `fl-dt`, `e-dt`, `el-dt`, etc.) use bidirectional (forward + backward) search for faster satisficing planning. Only compatible with `--mode satisficing`.
+All strategies support `--mode optimal` and `--mode anytime` for cost-optimal and anytime planning respectively.
 
 ### Python API
 
@@ -141,7 +122,7 @@ with OneshotPlanner(name='rantanplan') as planner:
 
 # Or use directly
 from rantanplan.planner_wrapper import RantanPlanPlanner
-planner = RantanPlanPlanner(strategy='flsc')
+planner = RantanPlanPlanner(strategy='els')
 result = planner.solve(problem)
 ```
 
