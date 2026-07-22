@@ -149,24 +149,24 @@ result = planner.solve(problem)
 
 ```
 Python Frontend              C++ Backend (_rantanplan module)
-┌─────────────────┐         ┌──────────────────────┐
-│ CLI / UP Engine │ ───┐    │  Preprocessing       │
+┌─────────────────┐         ┌───────────────────────┐
+│ CLI / UP Engine │ ───┐    │  Preprocessing        │
 │                 │    │    │  ┌──────────────────┐ │
 │ • PDDL parsing  │    └───▶│  │ Canonicalize     │ │
 │ • opt. UP ground│ in-     │  │ Grounding        │ │
 │ • UP→IR convert │ process │  │ RPG analysis     │ │
 │ • Plan validate │◀────┘   │  │ Symmetry/Interf. │ │
 └─────────────────┘ nanobind│  └──────────────────┘ │
-                            │  Solving               │
+                            │  Solving              │
                             │  ┌──────────────────┐ │
                             │  │ Encoder          │ │
                             │  │ Parallelism      │ │
                             │  │ Z3 Propagators   │ │
                             │  │ B&B / Sequential │ │
                             │  └──────────────────┘ │
-                            │                        │
-                            │  Z3 SMT Solver         │
-                            └──────────────────────┘
+                            │                       │
+                            │  Z3 SMT Solver        │
+                            └───────────────────────┘
 ```
 
 The Python frontend uses Unified Planning to parse PDDL, converts the problem to a flat plain-data IR, and calls the C++ backend in-process through a nanobind extension module (no subprocess, no serialization). Canonicalization that used to run in Python — quantifier removal, integer-parameter instantiation, CNF normalization — now happens in C++; the only optional Python-side compilation step is UP cross-product grounding (`--up-grounding`). The backend runs a preprocessing pipeline (integer-parameter instantiation, quantifier expansion, array and set lowering, reachability grounding, RPG-based action removal, symmetry detection), then encodes the problem as SMT and solves with Z3 using custom propagators.
