@@ -83,15 +83,14 @@ bool SMTSymmetryChecker::are_objects_symmetric(const std::string& obj1, const st
     symbol_table_.clear();
 
     // Integer constants for the two objects being swapped.
-    // PORT-QUESTION (resolved conservatively): Z3's `ctx.int_const(name)` is
-    // hash-consed, so building the constants here yielded the *same* AST nodes
-    // the visitor later put in the encoding, which is what made the substitute()
-    // below rewrite anything. cvc5's `TermManager::mkConst` mints a **fresh**
-    // variable on every call, so calling it here would produce two constants
-    // that occur nowhere in the constraints — the swap would be a no-op and
-    // every object pair would come out "symmetric" (unsound symmetry breaking).
-    // Going through the visitor's cached symbol table (which is what the visitor
-    // itself uses for object leaves) restores the Z3 behaviour exactly.
+    //
+    // These MUST come from the visitor's cached symbol table — the same path
+    // the visitor uses for object leaves — so they are the exact Term objects
+    // that occur in the constraints built below. substitute() rewrites only
+    // occurrences of the very terms passed to it, and `TermManager::mkConst`
+    // mints a fresh variable on every call: raw mkConst constants here would
+    // occur nowhere in the encoding, the swap would be a no-op, and every
+    // object pair would come out "symmetric" (unsound symmetry breaking).
     Term obj1_const = visitor_.create_int_variable(obj1);
     Term obj2_const = visitor_.create_int_variable(obj2);
 

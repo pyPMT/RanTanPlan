@@ -105,10 +105,6 @@ void CLIParser::parse(Config& config, int argc, char* argv[]) {
         else if (arg == "--no-goal-relevance") {
             config.rpg.goal_relevance = false;
         }
-        // Z3 solver options
-        else if (arg == "--persist-clauses") {
-            config.global.persist_clauses = true;
-        }
         // Symmetry options
         else if (arg == "--symmetries") {
             config.symmetry.enable_symmetries = true;

@@ -11,8 +11,6 @@ PropagatorStrategy::PropagatorStrategy(z3::solver& solver,
     register_fixed();
     register_final();
 
-    solver.set("smt.up.persist_clauses", Config::instance().global.persist_clauses);
-
     shared_.problem = &problem;
     shared_.variable_factory = &encoder.get_variable_factory();
     shared_.parallelism = encoder.get_parallelism_strategy();

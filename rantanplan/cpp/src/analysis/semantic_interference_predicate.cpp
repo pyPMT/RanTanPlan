@@ -95,8 +95,9 @@ bool SemanticInterferencePredicate::check1(const Action& a1, const Action& a2) c
     Term substituted_expr = apply_action_effects_substitution(a1, a2_pre);
 
     // If a1 doesn't touch a2's precondition variables, it cannot prevent it.
-    // (`Term::operator==` is syntactic equality on hash-consed nodes — the
-    // cvc5 counterpart of `z3::eq`, not a formula constructor.)
+    // (`Term::operator==` is syntactic equality on hash-consed nodes,
+    // returning bool directly — not a formula constructor. Formulas are
+    // built via TermBuilder instead.)
     if (a2_pre == substituted_expr) {
         return false;
     }

@@ -37,11 +37,11 @@ using PlanCallback = std::function<void(const Plan&)>;
 /// solver's destruction) waits for any in-flight interrupt() call, closing
 /// the load-then-use-after-free race.
 ///
-/// NOTE the interruptible object changed with the backend. Under Z3 it was the
-/// *context*, created at the top of solve(); under cvc5 it is the *Solver*,
-/// which the planner owns and constructs later. The uninterruptible window
-/// therefore now also covers encoder and planner construction, not just
-/// preprocessing. Outside the search window interrupt() is a no-op, as before.
+/// The interruptible object is the cvc5::Solver, owned by the planner and
+/// constructed only once search begins; the slot is published for exactly
+/// that lifetime via ScopedSolverPublisher. Because the Solver doesn't exist
+/// yet during preprocessing or encoder/planner construction, that whole
+/// window is uninterruptible and interrupt() there is a no-op.
 class InterruptSlot {
 public:
     void interrupt();

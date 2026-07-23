@@ -138,9 +138,9 @@ Term GroundedEncodingVisitor::handle_count(const std::vector<Term>& args) {
     // ite(b, 1, 0). Comparisons against integer constants never reach
     // this — convert_node intercepts them into clausal cardinality
     // constraints.
-    // The trailing `.simplify()` of the Z3 version is gone: simplification is a
-    // Solver method in cvc5 and no Solver is in scope here. TermBuilder's
-    // constant folding already collapses the trivial cases.
+    // No simplification pass runs here (in cvc5 that is a Solver method and
+    // no Solver is in scope); TermBuilder's constant folding already collapses
+    // the trivial cases.
     Term one = variable_factory_->make_numeric_val(static_cast<int64_t>(1));
     Term zero = variable_factory_->make_numeric_val(static_cast<int64_t>(0));
     Term result = zero;

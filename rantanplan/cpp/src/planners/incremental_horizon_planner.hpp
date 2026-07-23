@@ -20,9 +20,6 @@ public:
     Plan search() override;
 
 private:
-    // Debug method to output constraints for a given timestep
-    void debug_output_constraints();
-
     // Add constraints for a given timestep (delegates to BasePlanner::add_timestep_constraints)
     void add_timestep_constraints(int timestep);
 };

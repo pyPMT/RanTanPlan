@@ -12,12 +12,11 @@ namespace {
 
 /// Promote an Integer-sorted term to Real.
 ///
-/// Z3 coerced Int to Real implicitly, so the encoder could mix them freely and
-/// the `all_integer` single-sort policy only had to be *mostly* right. cvc5 is
-/// strict: `(= real_term 2)` is a type error ("Subexpressions must have the same
-/// type"). Rather than chase every site that can produce a mixed pair -- object
-/// indices, bounds, action costs, effect values -- the coercion is applied once,
-/// here, in the builders that combine two arithmetic terms.
+/// cvc5 does not coerce Int to Real: `(= real_term 2)` is a type error
+/// ("Subexpressions must have the same type"). Rather than chase every site
+/// that can produce a mixed pair -- object indices, bounds, action costs,
+/// effect values -- the coercion is applied once, here, in the builders that
+/// combine two arithmetic terms.
 Term to_real(cvc5::TermManager& tm, const Term& t) {
     return t.getSort().isInteger() ? tm.mkTerm(Kind::TO_REAL, {t}) : t;
 }

@@ -18,16 +18,16 @@ class Problem;
  * there is no `operator&&`, `||`, `!`, `+` or `<=`. Every construction therefore
  * goes through `TermManager::mkTerm(Kind, {...})`, which is unreadable at the
  * call site when nested. This class restores the readability, and folds
- * constants on the way through so encoders can keep emitting `true`/`false`
- * placeholders as they did under Z3.
+ * constants on the way through so encoders can freely emit `true`/`false`
+ * placeholders.
  *
  * Folding matters for more than tidiness: the encoders lean on
- * `mk_and({}) == true` and on `true` conjuncts vanishing, which is what
- * `z3::mk_and` over an empty `expr_vector` used to give them.
+ * `mk_and({}) == true` and on `true` conjuncts vanishing ("no constraint at
+ * this timestep" is emitted as `true` all over the place).
  *
- * Numeric literals follow the problem's integer mode, exactly as
- * `Z3VariableFactory::make_numeric_val` did: mixing Int and Real in one problem
- * makes a single-sort logic (QF_LRA, QF_LIA) inconsistent with the terms in it.
+ * Numeric literals follow the problem's integer mode: mixing Int and Real in
+ * one problem makes a single-sort logic (QF_LRA, QF_LIA) inconsistent with
+ * the terms in it.
  */
 class TermBuilder {
 public:
@@ -77,7 +77,7 @@ public:
 
 private:
     /// Make two arithmetic terms share a sort, promoting Int to Real if they
-    /// differ. Z3 coerced implicitly; cvc5 rejects the mixed pair outright.
+    /// differ -- cvc5 rejects a mixed Int/Real pair as a type error.
     std::pair<Term, Term> unify_arith(const Term& a, const Term& b) const;
 
     cvc5::TermManager& tm_;

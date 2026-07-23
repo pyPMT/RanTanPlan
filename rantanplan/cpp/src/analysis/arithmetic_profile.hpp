@@ -7,9 +7,10 @@ namespace rantanplan {
 /**
  * @brief Classifies the numeric constraint structure of a planning problem.
  *
- * Used to select the optimal Z3 SMT logic string, which triggers
- * comprehensive parameter tuning (relevancy, phase selection, restarts,
- * arithmetic solver backend, etc.).
+ * Used to select the SMT logic string passed to cvc5's setLogic(). The
+ * logic is binding, not just a hint: it restricts which theories may be
+ * asserted, and it also triggers logic-specific parameter tuning
+ * (relevancy, phase selection, restarts, arithmetic solver backend, etc.).
  */
 enum class ArithmeticProfile {
     NONE = 0,              // Purely propositional (no numeric fluents)
@@ -29,20 +30,23 @@ inline std::string arithmetic_profile_to_string(ArithmeticProfile p) {
 }
 
 /**
- * @brief Returns the recommended Z3 logic string for the given profile.
+ * @brief Returns the recommended SMT logic string for the given profile.
  *
- * Logic strings trigger comprehensive SMT parameter tuning in Z3's
- * smt_setup.cpp (relevancy, phase selection, restarts, etc.).
- * All logics use solver 6 (modern LRA) — the gains come from SMT-level
- * parameter tuning, not from switching arithmetic backends.
+ * The logic string is passed to cvc5's setLogic(), which restricts the
+ * theories that may be asserted for the rest of the solve and triggers
+ * logic-specific parameter tuning (relevancy, phase selection, restarts,
+ * etc.). All logics route through the same underlying linear arithmetic
+ * solver — the gains come from this parameter tuning, not from switching
+ * arithmetic backends.
  *
  * When all_integer is true (all numeric fluents are int-typed, no division,
  * all constants integer-valued), integer logics (QF_IDL, QF_LIA) are used.
- * These enable tighter integer-specific reasoning in Z3's theory solver.
+ * These enable tighter integer-specific reasoning in the solver.
  *
- * For nonlinear problems, we still use QF_LRA/QF_LIA — solver 6's embedded
- * nla::solver handles nonlinear constraints automatically. QF_NRA would
- * trigger NLSAT which is incompatible with incremental solving.
+ * For nonlinear problems, we still use QF_LRA/QF_LIA — the solver's linear
+ * arithmetic core handles the nonlinear constraints we produce without
+ * needing a dedicated nonlinear logic, and picking one (QF_NRA) would
+ * select a solver incompatible with incremental solving.
  *
  * @return Logic string, or nullptr if no logic hint is appropriate.
  */

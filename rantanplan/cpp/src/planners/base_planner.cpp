@@ -3,7 +3,8 @@
 #include "../util/memory_tracker.hpp"
 #include "../util/stats.hpp"
 #include "../util/logger.hpp"
-// UINT_MAX (remaining_ms) used to arrive transitively through <z3++.h>.
+// UINT_MAX (remaining_ms) needs an explicit include now that nothing else
+// pulls it in transitively.
 #include <climits>
 #include <string>
 
@@ -27,38 +28,24 @@ void BasePlanner::configure_solver() {
     // cvc5 accepts options only before the first assertion, so this must run
     // before search() — the factory calls it right after construction.
     //
-    // PORT-QUESTION: the Z3 version of this function carried a large tuning
-    // block (restart_strategy, phase_selection, smt.relevancy, smt.case_split,
-    // lemma_gc_strategy) inside a `set_unsat_config` lambda that was already
-    // commented out at its single call site, plus a long comment about Z3's
-    // sat.* vs SMT-level parameter namespaces and how setting sat.* params
-    // before registering a user propagator silently disabled the propagator
-    // callbacks. None of that has a cvc5 counterpart (different parameter
-    // names, no user-propagator backend switch), and the code was dead, so it
-    // is dropped rather than translated. If we want equivalent cvc5 tuning it
-    // has to be chosen from scratch against cvc5's option set.
+    // Tuning is deliberately minimal: a fixed seed and the logic string.
+    // No search-tuning options (restarts, phase selection, ...) have been
+    // chosen yet; anything added here must be picked against cvc5's option
+    // set and measured, not assumed.
     solver_.setOption("seed", "42");  // Fixed seed for reproducibility
 
     // Set the logic based on numeric constraint analysis.
     // When the problem is all-integer, use integer logics (QF_IDL/QF_LIA)
     // for tighter integer-specific reasoning.
     //
-    // PORT-QUESTION: for Z3 "logic" was a *hint* that only retuned the SMT
-    // parameters; cvc5's setLogic is binding — asserting a term outside the
-    // declared logic is an error, and QF_IDL/QF_RDL in particular are much
-    // narrower than what our encoders emit (general linear terms, ite, etc.).
-    // Kept as a direct mapping to preserve behaviour on the common
-    // QF_LIA/QF_LRA path, but the difference-logic profiles are a plausible
-    // source of CVC5ApiException at assert time and may need to be widened
-    // (or setLogic dropped in favour of cvc5's automatic logic detection).
-    //
-    // M4 mitigation: difference-logic profiles are NOT passed through. QF_IDL /
-    // QF_RDL admit only `x - y ~ c` and `x ~ c`; the encoders freely emit
-    // general linear terms and ite-sums (the M2 cardinality helper's Int-sum
+    // cvc5's setLogic is BINDING — asserting a term outside the declared
+    // logic is an error, not a missed tuning opportunity. Difference-logic
+    // profiles are therefore widened to LINEAR before mapping: QF_IDL/QF_RDL
+    // admit only `x - y ~ c` and `x ~ c`, while the encoders freely emit
+    // general linear terms and ite-sums (the cardinality helper's Int-sum
     // path alone puts `(+ (ite b 1 0) ...)` into any problem with a COUNT
-    // bound > 1), so a binding QF_IDL would throw at assert time. Widen to the
-    // linear logic instead — strictly more permissive, so it can only cost
-    // tuning, never soundness. Revisit with §6.7 once M4 is measured.
+    // bound > 1), so a binding QF_IDL would throw at assert time. Widening is
+    // strictly more permissive — it can only cost tuning, never soundness.
     ArithmeticProfile profile = arithmetic_profile_;
     if (profile == ArithmeticProfile::DIFFERENCE_LOGIC) {
         profile = ArithmeticProfile::LINEAR;
@@ -145,23 +132,22 @@ bool BasePlanner::apply_solver_timeout(cvc5::Solver& solver) {
         return false;
     }
     if (ms != UINT_MAX) {
-        // Z3 accepted `p.set("timeout", ms)` before every check(), so each check
-        // got exactly the budget left at that moment. cvc5 locks options once
-        // the solver is initialised, so setOption cannot express this at all.
-        //
-        // A watchdog thread does, and faithfully: it interrupts at the absolute
-        // deadline, so a single check cannot overrun it -- which the alternative
-        // (install "tlimit-per" once with the first check's budget) allowed.
-        // handle_unknown_result maps the resulting UnknownExplanation::INTERRUPTED
-        // onto timed_out_, exactly as it maps TIMEOUT.
+        // cvc5 locks options once the solver is initialised, so a shrinking
+        // per-check budget cannot be expressed with setOption ("tlimit-per"
+        // would freeze the first check's budget for the whole search). A
+        // watchdog thread expresses it faithfully: it interrupts at the
+        // absolute deadline, so no single check can overrun the global budget.
+        // handle_unknown_result maps the resulting
+        // UnknownExplanation::INTERRUPTED onto timed_out_, exactly as it maps
+        // TIMEOUT.
         start_watchdog(solver);
     }
     return true;
 }
 
 bool BasePlanner::handle_unknown_result(const cvc5::Result& result, const std::string& context) {
-    // cvc5 reports the reason as an enum on the Result, so this is an exact
-    // comparison instead of Z3's substring match on reason_unknown().
+    // cvc5 reports the reason as an enum on the Result, so an exact
+    // comparison suffices.
     cvc5::UnknownExplanation reason = result.getUnknownExplanation();
     if (reason == cvc5::UnknownExplanation::TIMEOUT ||
         reason == cvc5::UnknownExplanation::INTERRUPTED) {

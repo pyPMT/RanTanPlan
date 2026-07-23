@@ -19,8 +19,8 @@ struct ConstraintAnalysisResult {
  * @brief Analyzes the numeric constraint structure of a grounded planning problem.
  *
  * Walks all preconditions, goals, effects, and costs in the ExprPool to classify
- * the problem's arithmetic complexity. The result is used to select the optimal
- * Z3 SMT logic string for solver tuning.
+ * the problem's arithmetic complexity. The result is used to select the SMT
+ * logic string passed to cvc5's setLogic() for solver tuning.
  */
 class NumericConstraintAnalyzer {
 public:

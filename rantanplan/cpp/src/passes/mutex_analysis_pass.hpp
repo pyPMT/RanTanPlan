@@ -43,7 +43,7 @@ namespace rantanplan {
 //   - Every action that deletes a member also adds one (cardinality never
 //     decreases).
 //
-// Exactly-one groups give Z3 the equivalent of finite-domain variables
+// Exactly-one groups give the solver the equivalent of finite-domain variables
 // (encode_atmost + encode_atleast). This is the primary driver of solver speedups.
 //
 // Candidates that fail Tier 1 get a second chance via the h² pairwise

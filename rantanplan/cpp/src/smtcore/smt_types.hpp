@@ -6,12 +6,12 @@
 
 namespace rantanplan {
 
-/// The SMT term type. One alias so the ~600 former `z3::expr` sites read the
-/// same as before and a future backend change is a one-line edit here.
+/// The SMT term type. One alias so the ~600 solver-facing sites stay
+/// backend-neutral and a future backend change is a one-line edit here.
 using Term = cvc5::Term;
 
-/// cvc5 has no container class -- `z3::expr_vector` was context-bound and had to
-/// be constructed from a context; a plain vector needs nothing.
+/// Term container. cvc5's API takes plain std::vector<Term> everywhere, so
+/// this is pure shorthand -- no context, no conversions.
 using TermVec = std::vector<cvc5::Term>;
 
 }  // namespace rantanplan

@@ -111,10 +111,10 @@ Term LiftedEncodingVisitor::handle_divide(const std::vector<Term>& args) {
 }
 
 Term LiftedEncodingVisitor::handle_count(const std::vector<Term>& args) {
-    // Count of boolean conditions as a sum of ite(b, 1, 0).
-    // The Z3 version ended with `.simplify()`; simplification is a Solver method
-    // in cvc5 and no Solver is in scope, so it is dropped. TermBuilder's
-    // constant folding already collapses the trivial cases.
+    // Count of boolean conditions as a sum of ite(b, 1, 0). No simplification
+    // pass runs here (in cvc5 that is a Solver method and no Solver is in
+    // scope); TermBuilder's constant folding already collapses the trivial
+    // cases.
     Term result = tb_.int_val(0);
     for (const auto& arg : args) {
         result = tb_.add(result, tb_.mk_ite(arg, tb_.int_val(1), tb_.int_val(0)));
@@ -134,9 +134,8 @@ Term LiftedEncodingVisitor::handle_uninterpreted_function(
 
     if (func_it == symbol_table_.end() || !func_it->second.getSort().isFunction()) {
         if (args.empty()) {
-            // A 0-ary "function" is a plain constant. Z3's ctx.function() with
-            // arity 0 produced exactly that; cvc5's mkFunctionSort rejects an
-            // empty domain, so build the constant directly.
+            // A 0-ary "function" is a plain constant: mkFunctionSort rejects
+            // an empty domain, so build the constant directly.
             Term nullary = ctx_.mkConst(return_sort, function_name);
             symbol_table_.emplace(function_name, nullary);
             return nullary;
@@ -154,13 +153,13 @@ Term LiftedEncodingVisitor::handle_uninterpreted_function(
 
     Term func_decl = func_it->second;
     if (!func_decl.getSort().isFunction()) {
-        // PORT-QUESTION: a cached 0-ary "function" (a plain constant, see above)
-        // is indistinguishable from a *variable* cached under the same name,
-        // because cvc5 has no separate func_decl type. The former is legitimate
-        // and returned as-is; in the latter (name collision between a symbol
-        // leaf and a fluent) Z3 threw std::bad_variant_access here, whereas this
-        // returns the variable. Chosen because the 0-ary case is reachable in
-        // normal use and the collision case is not known to occur.
+        // A cached 0-ary "function" (a plain constant, see above) is
+        // indistinguishable from a *variable* cached under the same name —
+        // cvc5 has no separate function-declaration type. The 0-ary case is
+        // legitimate and reachable in normal use, so the cached term is
+        // returned as-is; a genuine name collision between a symbol leaf and
+        // a fluent would be silently conflated here, but is not known to
+        // occur.
         return func_decl;
     }
 
@@ -176,12 +175,11 @@ Term LiftedEncodingVisitor::handle_uninterpreted_function(
 }
 
 Term LiftedEncodingVisitor::create_bool_variable(const std::string& name) {
-    // PORT-QUESTION: if `name` is already in the table as a *function* symbol,
-    // Z3 still returned a name-interned constant here while leaving the
-    // func_decl in the table (emplace does not overwrite). cvc5 would mint a
-    // fresh constant on each such call instead. Behaviour is preserved for the
-    // normal (no name collision between a variable and a fluent) case; a
-    // colliding name would now yield a fresh variable per occurrence.
+    // The cache probe is what makes two occurrences of `name` the same
+    // variable: mkConst mints a fresh constant on every call. If `name` is
+    // already cached as a *function* symbol, the probe misses and a fresh
+    // variable is minted per occurrence — a variable/fluent name collision is
+    // not handled, only not known to occur.
     auto it = symbol_table_.find(name);
     if (it != symbol_table_.end()) {
         if (!it->second.getSort().isFunction()) {

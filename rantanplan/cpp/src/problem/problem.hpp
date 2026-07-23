@@ -178,7 +178,7 @@ public:
 
     // Integer arithmetic mode: true iff all numeric fluents are int-typed,
     // no variable division exists, and all numeric constants are integer-valued.
-    // When true, encoders use Int-sorted Z3 variables instead of Real.
+    // When true, encoders use Int-sorted solver variables instead of Real.
     bool all_integer() const { return all_integer_; }
     void set_all_integer(bool v) { all_integer_ = v; }
     

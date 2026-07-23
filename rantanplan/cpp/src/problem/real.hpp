@@ -7,10 +7,10 @@ namespace rantanplan {
 
 /**
  * @brief Simple rational number for data transport
- * 
+ *
  * Represents a rational number as numerator/denominator fraction.
- * Used only for data transport between the problem IR and Z3 - all
- * arithmetic operations are delegated to the Z3 SMT solver.
+ * Used only for data transport between the problem IR and the SMT layer -
+ * all arithmetic operations are delegated to the solver.
  */
 class Real {
 public:
@@ -18,8 +18,8 @@ public:
     Real() : numerator_(0), denominator_(1) {}
     Real(int64_t numerator, int64_t denominator = 1) : numerator_(numerator), denominator_(denominator) {}
     Real(double value);
-    
-    // Accessors (needed for Z3 conversion)
+
+    // Accessors (needed for SMT conversion)
     int64_t numerator() const { return numerator_; }
     int64_t denominator() const { return denominator_; }
     

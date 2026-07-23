@@ -11,11 +11,14 @@ class GroundedEncoder;
 
 /// Cost-optimal planner using branch-and-bound with an abstract suffix lower bound.
 ///
-/// Instead of a dedicated optimization solver (z3::optimize was incompatible with
-/// user propagators), this planner reformulates cost minimization as a sequence of
-/// SAT feasibility checks with progressively tighter cost bounds, using the ordinary
-/// incremental solver throughout. This preserves full compatibility with
-/// forall/exists/lazy propagators.
+/// cvc5 has no optimization API suited to this setting, so instead of a
+/// dedicated optimizer this planner reformulates cost minimization as a
+/// sequence of SAT feasibility checks with progressively tighter cost
+/// bounds, using the ordinary incremental solver throughout via
+/// checkSatAssuming. Hand-rolled branch-and-bound keeps full control over
+/// how concrete the search stays at each horizon and over interrupt
+/// handling, and preserves full compatibility with forall/exists/lazy
+/// propagators.
 ///
 /// Algorithm (outer loop over horizons, inner B&B loop per horizon):
 ///   1. Encode initial state, add permanent abstract constraints (mod_v, loop formulas).

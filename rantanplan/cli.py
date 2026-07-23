@@ -66,9 +66,6 @@ Use --list-strategies to see available strategies and their descriptions.
                        help="Suppress all output")
     
     # Additional flags that work with all strategies
-    parser.add_argument("--persist-clauses", action="store_true",
-                       help="Enable solver clause persistence for propagator lemmas "
-                            "(inert until the propagator port lands)")
     parser.add_argument("--symmetries", action="store_true",
                        help="Enable symmetry detection and breaking")
     parser.add_argument("--no-cnf-normalization", action="store_true",
@@ -122,8 +119,6 @@ def _build_planner_params(args) -> Dict[str, object]:
         planner_params['max_steps'] = args.max_steps
     if args.stats_file:
         planner_params['stats_file'] = args.stats_file
-    if args.persist_clauses:
-        planner_params['persist_clauses'] = True
     if args.symmetries:
         planner_params['symmetries'] = True
     if args.no_cnf_normalization:

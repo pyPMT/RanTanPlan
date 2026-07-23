@@ -12,11 +12,12 @@
 /**
  * @file preprocessed_problem.hpp
  * @brief The layer contract between the preprocessor and any backend. Must
- *        stay compilable with no Z3 include path (see PreprocessedProblem).
+ *        stay compilable with no solver (cvc5) include path (see
+ *        PreprocessedProblem).
  */
 namespace rantanplan {
 
-// Z3-using artifact classes appear only as forward declarations
+// Solver-using artifact classes appear only as forward declarations
 class AchieversAnalysis;
 
 /**

@@ -5,7 +5,6 @@
 #include "../util/memory_tracker.hpp"
 #include "../util/stats.hpp"
 #include "../util/logger.hpp"
-#include <fstream>
 #include <iostream>
 #include <chrono>
 #include <unordered_map>
@@ -15,27 +14,6 @@ namespace rantanplan {
     IncrementalHorizonPlanner::IncrementalHorizonPlanner(const Problem& problem, GroundedEncoder& encoder, cvc5::TermManager& tm)
         : BasePlanner(problem, encoder, tm) {
     }
-
-    void IncrementalHorizonPlanner::debug_output_constraints() {
-    // Output current constraints from the solver to SMT2 file
-    //
-    // PORT-QUESTION: cvc5 has no `to_smt2()`. getAssertions() gives the
-    // asserted formulas, so the assertions round-trip, but the constant
-    // declarations Z3's to_smt2() emitted are not reproduced here — this dump
-    // is for eyeballing, not for re-solving. FormulaExporter (which *is*
-    // expected to produce a solvable file) reconstructs declarations; see the
-    // PORT-QUESTION there.
-    std::ofstream smt2_file("output.smt2");
-    if (smt2_file.is_open()) {
-        smt2_file << ";; Current solver constraints from RantanPlan" << std::endl;
-        for (const Term& assertion : solver_.getAssertions()) {
-            smt2_file << "(assert " << assertion << ")" << std::endl;
-        }
-        smt2_file.close();
-    } else {
-        Logger::instance().error("Could not open output.smt2 for writing");
-    }
-}
 
 void IncrementalHorizonPlanner::add_timestep_constraints(int timestep) {
     BasePlanner::add_timestep_constraints(solver_, encoder_, timestep);
@@ -155,10 +133,8 @@ Plan IncrementalHorizonPlanner::search() {
             solution_found_ = true;
 
             try {
-                // PORT-QUESTION: cvc5 has no model object — values are read
-                // with solver.getValue(). This assumes BaseEncoder::extract_plan
-                // is re-typed to take the Solver in place of the z3::model
-                // (encoders layer, ported separately).
+                // cvc5 has no separate model object: extract_plan reads values
+                // straight off the solver with getValue().
                 Plan plan = encoder_.extract_plan(solver_, h);
 
                 Logger::instance().info("\n*** PLAN FOUND: horizon=" + std::to_string(h) +

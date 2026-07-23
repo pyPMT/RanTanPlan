@@ -18,9 +18,9 @@ Term SequentialSemantics::encode_parallelism(int timestep) {
         return variable_factory_->builder().bool_val(true);
     }
 
-    // AT MOST 1 action is true. Was z3::pble with unit coefficients, which is
-    // exactly at-most-one; it goes through the shared cardinality helper now
-    // because cvc5 has no pseudo-Boolean facility at all (plan §6.3).
+    // AT MOST 1 action is true, emitted via the shared cardinality encoding
+    // (binomial/pairwise construction) since cvc5 has no pseudo-Boolean
+    // facility at all (plan §6.3).
     // Changed from pbeq (exactly-one) to at-most-one so that empty steps are legal.
     // Empty steps are required for the prefix-monotone front-loading encoding: when a plan
     // of length k < h exists, the solver uses empty steps k..h-1 so frame axioms propagate

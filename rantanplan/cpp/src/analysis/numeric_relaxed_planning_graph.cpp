@@ -142,18 +142,17 @@ NumericRelaxedPlanningGraph::NumericRelaxedPlanningGraph(const Problem& problem)
       total_interval_checks_(0) {
 
     // The factory needs the problem: it decides the Int-vs-Real numeric sort
-    // (as under Z3) and, since M4, supplies the dense ground-fluent id that
-    // indexes every PLAN_FLUENT atom. Omitting it was harmless under Z3 but is
-    // now fatal on the first fluent this analysis converts.
+    // and supplies the dense ground-fluent id that indexes every PLAN_FLUENT
+    // atom. Every visitor that converts a fluent must be given this id --
+    // omitting it throws on the first fluent this analysis converts.
     variable_factory_.set_problem(&problem);
     tb_.set_problem(&problem);
 
-    // PORT-QUESTION: Z3's `ctx_.set("verbose", 0)` (silence the RPG's internal
-    // queries) has no TermManager counterpart -- cvc5 puts `verbosity` on the
-    // Solver, and the solvers here are created per query. Dropped rather than
-    // re-added per solver because cvc5's default verbosity is already 0, so
-    // this is behaviour-preserving; restore as a per-solver setOption if a
-    // non-default verbosity is ever set globally.
+    // The RPG's internal queries run silently without extra suppression:
+    // cvc5 puts `verbosity` on the Solver (there is no TermManager-level
+    // knob), and the solvers here are created per query, but the default
+    // verbosity is already 0. Add a per-solver setOption("verbosity", ...)
+    // here if a non-default verbosity is ever set globally.
 
     // Build EPC index for efficient effect lookup
     build_epc_index();

@@ -7,16 +7,14 @@ namespace rantanplan {
 /**
  * @brief The one place cardinality constraints are built.
  *
- * cvc5 has no native at-most-k / at-least-k / pseudo-Boolean facility reachable
- * from its API (migration plan §6.3), so `z3::atmost`/`atleast`/`pble` have no
- * counterpart. These encode the constraints by hand instead.
+ * cvc5 has no native at-most-k / at-least-k / pseudo-Boolean facility
+ * reachable from its API, so cardinality constraints are encoded by hand here.
  *
- * The encoding is the **binomial** one, chosen by measurement at M2 over an
- * Int-sum-of-ITEs alternative and over Z3's native pseudo-Boolean constraints
- * (see docs/cvc5/migration-log.md, "M2 — Results"). It beat the Int sum on every
- * instance measured -- by 11x on rlimit where the Int sum timed out -- and beat
- * *native* Z3 PB by up to 2.1x on mutex-sized groups, where pairwise clauses go
- * straight into the SAT core instead of through a PB propagator.
+ * The encoding is the **binomial** one (pairwise clauses at k == 1, Int-sum of
+ * ITEs above), chosen by measurement over an Int-sum-only alternative -- see
+ * the migration record ("M2 — Results" in the sister repo's
+ * docs/cvc5/migration-log.md). Pairwise clauses go straight into the SAT core
+ * instead of through arithmetic, and won on every instance measured.
  *
  * Both forms are **logical equivalences with no auxiliary variables**, so the
  * result is safe to embed at any polarity. Keep it that way: an

@@ -19,20 +19,17 @@ class Problem;
 /**
  * @brief Creates and caches the SMT variables of the encoding.
  *
- * Ported from Z3VariableFactory. One thing changed, and it is the reason M3
- * landed first: **atom identity**.
- *
- * Under Z3 every variable was a plain Boolean/Int/Real constant named by a
- * rendered string, and the reverse lookup a propagator needed was
- * `var.decl().name().str()` followed by a hash-map probe, on every callback
- * (`z3core/z3_variable_factory.cpp:159-175`). Here **every** encoding entity is
- * an entity of the fork's `THEORY_PLAN`, one kind per role:
+ * ATOM IDENTITY. Every encoding entity is an entity of the fork's
+ * `THEORY_PLAN`, one kind per role:
  *
  *   - an action at a timestep  ->  `PLAN_DOES(action.id(), t)`         Bool
  *   - a fluent at a timestep   ->  `PLAN_FLUENT(ground_fluent_id, t)`  Bool|Int|Real
  *
- * so identity *is* the `(kind, index, timestep)` triple and the reverse lookup
- * is structural, with no string map anywhere.
+ * Identity *is* the `(kind, index, timestep)` triple: PLAN atoms are
+ * operator-indexed terms, structurally hash-consed like any compound term
+ * (unlike `mkConst` constants, which are fresh on every call), so the same
+ * triple yields the identical term from any call site and the reverse lookup
+ * is a structural payload read with no string map anywhere.
  *
  * Role and sort are orthogonal, which is why there is one fluent kind and not
  * two: `PLAN_FLUENT` is Boolean for a predicate and Int/Real for a numeric or
@@ -46,10 +43,10 @@ class Problem;
  * from the registry documented at `problem.hpp:96-100`. Note `Fluent::id()` is
  * **not** that -- it indexes lifted *declarations*, not ground instances.
  *
- * Numeric fluents keep the Int-vs-Real single-sort policy the Z3 factory
- * enforced; it now rides in the payload's sort tag.
+ * Numeric fluents follow a single-sort policy -- Int when the whole problem
+ * is proven integer-safe, else Real -- carried in the payload's sort tag.
  *
- * CONTRACT (static atom identity) -- unchanged from the Z3 factory: a ground
+ * CONTRACT (static atom identity): a ground
  * fluent *is* its interned ExprID, and its state variable is keyed by rendered
  * name x timestep, so which cell an access touches is decided at compile time,
  * never by the model. Everything structured (arrays, sets) is lowered to ground

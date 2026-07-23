@@ -8,8 +8,8 @@
  * @file landmark_data.hpp
  * @brief Plain-data landmark artifact produced by LandmarkAnalysisPass.
  *        Included by value in preprocessed_problem.hpp, which must stay
- *        compilable without a Z3 include path — hence no Z3 types HERE;
- *        passes and pointer-held artifacts use Z3 freely.
+ *        compilable without a solver (cvc5) include path — hence no solver
+ *        types HERE; passes and pointer-held artifacts use the solver freely.
  */
 namespace rantanplan {
 

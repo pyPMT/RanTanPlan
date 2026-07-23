@@ -162,12 +162,12 @@ protected:
     bool solution_found_ = false;
     bool timed_out_ = false;
 
-    /// Deadline watchdog. cvc5 accepts options only before the first assertion,
-    /// so the Z3 idiom of re-setting a timeout before every check() cannot be
-    /// reproduced with setOption. Instead one thread sleeps until the deadline
-    /// and calls Solver::interrupt() (the fork patch added at M1, thread-safe
-    /// by construction), which is the faithful equivalent: each check is cut off
-    /// at the wall-clock deadline rather than after a stale per-check budget.
+    /// Deadline watchdog. cvc5 locks solver options after the first assertion,
+    /// so per-check timeouts can't be enforced by re-setting an option before
+    /// each check(). Instead one thread sleeps until the deadline and calls
+    /// Solver::interrupt() (the fork patch added at M1, thread-safe by
+    /// construction): whichever check is in flight is cut off at the
+    /// wall-clock deadline rather than after a stale per-check budget.
     /// Started lazily on the first timed check and joined in the destructor.
     std::thread watchdog_;
     std::mutex watchdog_mutex_;
@@ -197,8 +197,8 @@ protected:
     /// Apply the remaining timeout to a cvc5 solver so that the next checkSat()
     /// call is interrupted if the wall-clock budget runs out.
     /// Returns false if the deadline has already passed (caller should break).
-    /// See the PORT-QUESTION in the .cpp: cvc5 only accepts options before the
-    /// first assertion, so only the first call can take effect.
+    /// See the note in the .cpp: cvc5 only accepts options before the first
+    /// assertion, so only the first call can take effect.
     bool apply_solver_timeout(cvc5::Solver& solver);
 
     /// Check if an unknown result was caused by timeout. If so, sets

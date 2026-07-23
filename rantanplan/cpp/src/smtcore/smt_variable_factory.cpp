@@ -209,8 +209,8 @@ std::string SmtVariableFactory::get_action_var_name(const Action& action, int ti
 
 // ── reverse lookup ─────────────────────────────────────────────────────────
 // For PLAN atoms this is O(1) structural: read the operator payload. That is
-// the whole point of giving the atoms theory kinds -- the Z3 version rendered
-// the declaration to a std::string and probed a hash map on every callback.
+// the point of giving the atoms theory kinds -- identity lives in the term
+// itself, so no name rendering or map probe is needed on the hot path.
 
 std::optional<std::pair<const Action&, int>>
 SmtVariableFactory::get_action_from_variable(const Term& var) const {

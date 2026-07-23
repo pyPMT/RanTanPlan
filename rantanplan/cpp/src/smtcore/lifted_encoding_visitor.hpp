@@ -13,10 +13,9 @@ namespace rantanplan {
 
 // Type alias for the unified symbol table.
 //
-// Z3 had two distinct C++ types here (`z3::expr` for a variable, `z3::func_decl`
-// for an uninterpreted function), so the table held a variant. In cvc5 a
-// function symbol is just a `Term` whose sort is a function sort, so the variant
-// carries no information and the discriminator is `t.getSort().isFunction()`.
+// In cvc5 a function symbol is just a `Term` whose sort is a function sort, so
+// one table holds variables and function symbols alike; the discriminator is
+// `t.getSort().isFunction()`.
 using SmtObject = Term;
 using SymbolTable = std::unordered_map<std::string, SmtObject>;
 
@@ -29,8 +28,7 @@ using SymbolTable = std::unordered_map<std::string, SmtObject>;
  *
  * CACHING IS LOAD-BEARING. `TermManager::mkConst` is documented as always
  * returning a **fresh** variable, "even if the same arguments were provided on a
- * previous call" (cvc5.h:4388) — unlike Z3's name-interned `ctx.bool_const` /
- * `int_const` / `function`, which returned the same AST node for the same name.
+ * previous call" (cvc5.h:4388) — the name is a print label, not an identity.
  * Every lookup in `symbol_table_` below is therefore what makes two occurrences
  * of one symbol be the same variable. Removing an apparently redundant cache
  * probe would make each occurrence a distinct variable and silently break the

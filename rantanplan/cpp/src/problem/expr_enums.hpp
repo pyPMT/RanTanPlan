@@ -42,8 +42,8 @@ enum class ExprOperator {
 
     // Pseudo-boolean: integer-valued count of n boolean arguments.
     // Deliberately NOT in the arithmetic/logical/comparison categories:
-    // folding passes must treat it opaquely; the Z3 visitors encode it
-    // natively (atmost/atleast for comparisons with constants).
+    // folding passes must treat it opaquely; the encoding visitors (smtcore)
+    // encode it natively (atmost/atleast for comparisons with constants).
     COUNT,
 
     // Array access `a[i]` (nested per dimension). Only transiently present

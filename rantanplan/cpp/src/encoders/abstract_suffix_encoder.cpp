@@ -33,15 +33,13 @@ void AbstractSuffixEncoder::initialize() {
 
     // One abstract Bool per action.
     //
-    // PORT-QUESTION: `action.name()` is the *schema* name (the grounded
-    // parameters live in action.parameters(), see
-    // SmtVariableFactory::get_action_var_name), so all groundings of one schema
-    // render the same "abs_<name>". Z3's ctx.bool_const was interned by name, so
-    // they all shared ONE abstract variable; cvc5's mkConst is fresh per call
-    // and would give each grounding its own. The name-keyed map below preserves
-    // the Z3 behaviour exactly. If the sharing was accidental rather than
-    // intended, this is the line to change (and it is a semantic change to the
-    // abstract suffix, not a port detail).
+    // `action.name()` is the *schema* name (the grounded parameters live in
+    // action.parameters()), so all groundings of one schema render the same
+    // "abs_<name>" and share ONE abstract variable: the suffix abstracts over
+    // schemas, not groundings. The name-keyed map is what enforces that
+    // sharing — `mkConst` mints a fresh constant on every call, so each name
+    // must be created once and reused. Switching to per-grounding abstraction
+    // would be a semantic change to the abstract suffix, not a naming detail.
     std::unordered_map<std::string, Term> abs_by_name;
     action_abs_.reserve(actions.size());
     for (const auto& action : actions) {

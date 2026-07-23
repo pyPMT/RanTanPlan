@@ -517,7 +517,7 @@ def main():
         nargs=argparse.REMAINDER,
         default=[],
         help="Extra arguments passed through to the planner verbatim "
-             "(e.g. --extra-args --no-persist-clauses --symmetries)"
+             "(e.g. --extra-args --smt-rpg-checker --symmetries)"
     )
 
     args = parser.parse_args()

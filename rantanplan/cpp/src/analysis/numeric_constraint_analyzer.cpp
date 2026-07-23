@@ -336,7 +336,7 @@ ConstraintAnalysisResult NumericConstraintAnalyzer::analyze(const Problem& probl
     //   1. No division operators anywhere (int division ≠ real division)
     //   2. All numeric constants are integer-valued
     //   3. All initial-state numeric values are integer-valued
-    // If all hold, Int sort is safe and enables tighter Z3 reasoning.
+    // If all hold, Int sort is safe and enables tighter solver reasoning.
     // ================================================================
     if (result.num_numeric_fluents > 0) {
         IntegerCheckState istate;

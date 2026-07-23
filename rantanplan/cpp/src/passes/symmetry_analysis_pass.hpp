@@ -18,7 +18,7 @@ namespace rantanplan {
 class SymmetryAnalysisPass : public Pass {
 public:
     /// @param original_problem  Optional pre-grounding snapshot for detection
-    ///                          (cheaper Z3 equivalence check); may be null.
+    ///                          (cheaper SMT equivalence check); may be null.
     explicit SymmetryAnalysisPass(const Problem* original_problem = nullptr)
         : original_problem_(original_problem) {}
 

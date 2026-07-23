@@ -24,10 +24,12 @@ namespace rantanplan {
 /// Wiring discipline: mandatory dependencies are constructor-injected
 /// (interference → parallelism → encoder), optional artifacts (symmetry
 /// data, state constraints) are applied via setters here, and planners
-/// declare what they consume via BasePlanner::consume_artifacts. The one
-/// ordering Z3 imposes — the propagator must attach to the planner's
-/// solver, so the propagator ran after create_planner — lives with
-/// the caller (api::solve).
+/// declare what they consume via BasePlanner::consume_artifacts. A
+/// propagator module must attach to the planner's solver instance, so it
+/// has to run after create_planner; that ordering lives with the caller
+/// (api::solve). (Propagator modules are currently out of the build while
+/// they're reimplemented as THEORY_PLAN reasoning inside the cvc5 fork —
+/// see planners/propagators/.)
 class StrategyFactory {
 public:
     /// Validate that a spec is internally consistent.

@@ -51,9 +51,8 @@ void BranchAndBoundPlanner::add_timestep_constraints(int timestep) {
     BasePlanner::add_timestep_constraints(solver_, encoder_, timestep);
 }
 
-/// Extract the numeric cost value from the model. cvc5 returns values as exact
-/// rationals rather than Z3's approximate decimal string, so this reads the
-/// rational directly; non-numeric values still yield 0.0, as before.
+/// Extract the numeric cost value from the model. cvc5 returns values as
+/// exact rationals, read directly here; non-numeric values yield 0.0.
 double BranchAndBoundPlanner::extract_cost_from_model(
     const cvc5::Solver& solver, const Term& cost_expr) {
     try {
@@ -67,12 +66,11 @@ double BranchAndBoundPlanner::extract_cost_from_model(
             if (den == 0) return 0.0;
             return static_cast<double>(num) / static_cast<double>(den);
         }
-        // PORT-QUESTION: fallback for rationals that do not fit in 64 bits.
-        // cvc5 documents getRealValue() only as "the representation of a
-        // rational value as a (rational) string"; observed output is "n/d"
-        // (or a plain integer), which is what is parsed here. If a build
-        // emits some other spelling this silently returns 0.0, exactly as the
-        // Z3 version did for an unparsable decimal string.
+        // Fallback for rationals that do not fit in 64 bits. cvc5 documents
+        // getRealValue() only as "the representation of a rational value as a
+        // (rational) string"; observed output is "n/d" (or a plain integer),
+        // which is what is parsed here. Any other spelling silently yields
+        // 0.0 via the catch below.
         if (val.isRealValue()) {
             std::string rational = val.getRealValue();
             size_t slash = rational.find('/');
@@ -229,17 +227,14 @@ Plan BranchAndBoundPlanner::search() {
             // action false, and only fall back to the relaxed query if that is
             // unsatisfiable.
             //
-            // The original code ran the relaxed query alone and then *tested*
-            // the model with is_concrete_solution(). That silently depended on
-            // the solver preferring a model with no abstract actions: the
-            // relaxed formula admits both, and nothing in it favours either.
-            // Z3 happened to return concrete models; cvc5 returns abstract ones,
-            // so every horizon was classified "abstract -> advance" and the
-            // bound stayed inf forever -- the search ran to 500 horizons without
-            // ever recognising the 3-step plan it was being handed.
-            //
-            // A model is not part of a formula's specification. Concreteness has
-            // to be *asserted*, not hoped for.
+            // Do NOT weaken this into running the relaxed query alone and
+            // *testing* the model with is_concrete_solution(): the relaxed
+            // formula admits concrete and abstract models alike, nothing in it
+            // favours either, and a solver that happens to return abstract
+            // models classifies every horizon "abstract -> advance", so the
+            // bound stays inf forever. A model is not part of a formula's
+            // specification — concreteness has to be *asserted*, not hoped
+            // for.
             TermVec concrete_assumptions = assumptions;
             for (const Term& a_abs : abstract_.abstract_action_vars()) {
                 concrete_assumptions.push_back(tb_.mk_not(a_abs));
@@ -290,11 +285,9 @@ Plan BranchAndBoundPlanner::search() {
                     return best_plan;
                 }
             } else if (result.isSat()) {
-                // PORT-QUESTION: cvc5 has no model object — values are read
-                // with solver.getValue(). This assumes both
-                // AbstractSuffixEncoder::is_concrete_solution and
-                // BaseEncoder::extract_plan are re-typed to take the Solver in
-                // place of the z3::model (encoders layer, ported separately).
+                // cvc5 has no separate model object: values are read straight
+                // off the solver with getValue(), so the solver itself is
+                // what is passed down.
                 if (abstract_.is_concrete_solution(solver_)) {
                     double plan_cost = extract_cost_from_model(solver_, total_cost);
                     upper_bound = plan_cost;
