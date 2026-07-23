@@ -11,9 +11,7 @@
 namespace rantanplan {
 
 BasePlanner::BasePlanner(const Problem& problem, GroundedEncoder& encoder, cvc5::TermManager& tm)
-    : problem_(problem), encoder_(encoder), tm_(tm), tb_(tm), solver_(tm) {
-    tb_.set_problem(&problem_);
-
+    : problem_(problem), encoder_(encoder), tm_(tm), tb_(tm, &problem), solver_(tm) {
     // Model extraction is not on by default in cvc5, and options are only
     // accepted before the first assertion — so it is enabled here, at the one
     // point that is guaranteed to precede every assertFormula on this solver.

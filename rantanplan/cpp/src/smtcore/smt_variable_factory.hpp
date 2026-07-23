@@ -1,15 +1,15 @@
 #pragma once
 
 #include "smt_types.hpp"
+#include "symbol_table.hpp"
 #include "term_builder.hpp"
 #include "../problem/expr_pool.hpp"
 #include "../problem/fluent.hpp"
 #include "../problem/action.hpp"
 
-#include <memory>
 #include <optional>
 #include <string>
-#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace rantanplan {
@@ -46,39 +46,36 @@ class Problem;
  * Numeric fluents follow a single-sort policy -- Int when the whole problem
  * is proven integer-safe, else Real -- carried in the payload's sort tag.
  *
- * CONTRACT (static atom identity): a ground
- * fluent *is* its interned ExprID, and its state variable is keyed by rendered
- * name x timestep, so which cell an access touches is decided at compile time,
- * never by the model. Everything structured (arrays, sets) is lowered to ground
- * scalar cells before grounding to preserve this.
+ * CONTRACT (static atom identity): a ground fluent *is* its interned ExprID,
+ * and its state variable is keyed by dense ground id x timestep, so which cell
+ * an access touches is decided at compile time, never by the model. Everything
+ * structured (arrays, sets) is lowered to ground scalar cells before grounding
+ * to preserve this.
  */
 class SmtVariableFactory {
 public:
-    explicit SmtVariableFactory(cvc5::TermManager& tm);
+    /// The problem decides Int-vs-Real for numeric sorts and supplies the
+    /// dense ground ids; bound at construction.
+    SmtVariableFactory(cvc5::TermManager& tm, const Problem* problem);
 
     cvc5::TermManager& tm() const { return tm_; }
     const TermBuilder& builder() const { return builder_; }
 
-    /// Set the problem pointer; decides Int-vs-Real for numeric sorts.
-    void set_problem(const Problem* p);
-
-    // ── raw variable creation (uncached) ────────────────────────────────────
-    Term create_bool_variable(const std::string& name) const;
-    Term create_int_variable(const std::string& name) const;
-    Term create_real_variable(const std::string& name) const;
-    Term create_object_variable(const std::string& name) const;
-    Term create_symbol_variable(const std::string& name, const Type* type) const;
+    // ── symbol variables (interned) ─────────────────────────────────────────
+    /// Get-or-create the variable for a non-fluent symbol leaf, keyed by name.
+    /// Interning is mandatory, not an optimization: mkConst mints a fresh
+    /// constant on every call, so re-deriving a symbol by name would silently
+    /// split one symbol into many unrelated variables.
+    Term create_symbol_variable(const std::string& name, const Type* type);
 
     // ── cached, timestep-aware accessors ────────────────────────────────────
-    /// @param fluent_eid the ground fluent's interned ExprID, which is what the
-    ///        ground-fluent registry is keyed by. Callers that hold one (the
-    ///        encoding visitors always do) must pass it; the overload without
-    ///        it exists only for call sites that have lost the ExprID, and
-    ///        resolves the index by rendered name.
+    /// @param fluent_eid the ground fluent's interned ExprID, which is what
+    ///        the ground-fluent registry is keyed by; it resolves to the dense
+    ///        ground-fluent id that keys the cache and the atom payload.
     const Term& get_fluent_variable(const Fluent& fluent, int timestep, ExprID fluent_eid);
-    const Term& get_fluent_variable(const Fluent& fluent, int timestep);
     const Term& get_action_variable(const Action& action, int timestep);
-    const Term& get_fluent_variable(const Fluent& fluent, int timestep) const;
+    /// Lookup-only (plan extraction runs on a const encoder); throws if the
+    /// variable has not been created.
     const Term& get_action_variable(const Action& action, int timestep) const;
 
     // ── naming (still used for numeric fluents and for diagnostics) ─────────
@@ -88,49 +85,40 @@ public:
     std::string get_action_var_name(const Action& action, int timestep) const;
 
     // ── reverse lookup ──────────────────────────────────────────────────────
-    // One structural payload read; no string rendering, no map probe on the
-    // hot path. This is what the theory-kind design buys.
-    std::optional<std::pair<const Fluent&, int>> get_fluent_from_variable(const Term& var) const;
+    // One structural payload read, then a direct index into the problem's own
+    // registries -- the payload index IS the dense id those registries are
+    // positionally keyed by, and the atom's kind says which one to consult.
+    // No string rendering, no map, no side table.
+    /// PLAN_FLUENT atom -> (ground fluent ExprID, timestep). The ExprID is the
+    /// ground fluent's canonical identity (`grounded_fluents()[idx]`).
+    std::optional<std::pair<ExprID, int>> get_fluent_from_variable(const Term& var) const;
+    /// PLAN_DOES atom -> (action, timestep), via `actions()[id]`.
     std::optional<std::pair<const Action&, int>> get_action_from_variable(const Term& var) const;
     bool is_fluent_variable(const Term& var) const;
     bool is_action_variable(const Term& var) const;
-
-    // ── enumeration (for propagator/theory registration) ────────────────────
-    std::vector<std::shared_ptr<Term>> get_all_fluent_variables(int timestep) const;
-    std::vector<std::shared_ptr<Term>> get_all_action_variables(int timestep) const;
-    std::vector<std::pair<std::shared_ptr<Term>, int>> get_all_fluent_variables() const;
-    std::vector<std::pair<std::shared_ptr<Term>, int>> get_all_action_variables() const;
 
     // ── numeric constants ───────────────────────────────────────────────────
     Term make_numeric_val(int64_t v) const { return builder_.numeric_val(v); }
     Term make_numeric_val(double v) const { return builder_.numeric_val(v); }
     Term make_zero() const { return builder_.zero(); }
 
-    // ── timestep queries ────────────────────────────────────────────────────
-    int get_max_timestep() const;
-    bool has_variables_for_timestep(int timestep) const;
-
 private:
     cvc5::TermManager& tm_;
     TermBuilder builder_;
-    const Problem* problem_ = nullptr;
+    const Problem* problem_;
 
-    // Indexed by timestep; keyed by rendered variable name.
-    std::vector<std::unordered_map<std::string, std::shared_ptr<Term>>> state_vars_;
-    std::vector<std::unordered_map<std::string, std::shared_ptr<Term>>> action_vars_;
+    // [timestep][dense ground id] -> atom; a null Term is "not created yet".
+    // Inner vectors are preallocated to the full dense range (both id spaces
+    // are fixed once the problem is grounded), so returned references stay
+    // stable for the factory's lifetime.
+    std::vector<std::vector<Term>> state_vars_;
+    std::vector<std::vector<Term>> action_vars_;
 
-    // Name-keyed maps, used only for diagnostics and the no-ExprID overload --
-    // never on the reverse-lookup hot path.
-    std::unordered_map<std::string, std::pair<std::shared_ptr<Fluent>, int>> state_var_name_to_fluent_;
-    std::unordered_map<std::string, std::pair<std::shared_ptr<Action>, int>> action_var_name_to_action_;
-
-    // Payload index -> entity. Both are the problem's own dense ground ids, so
-    // these are recovery tables, not identity assignment.
-    std::unordered_map<uint32_t, std::shared_ptr<Action>> id_to_action_;
-    std::unordered_map<uint32_t, std::shared_ptr<Fluent>> id_to_fluent_;
+    // Interned symbol-leaf variables, keyed by name.
+    SymbolTable symbols_;
 
     void ensure_timestep_capacity(int timestep);
-    Term create_new_fluent_variable(const Fluent& fluent, int timestep, ExprID fluent_eid);
+    Term create_new_fluent_variable(const Fluent& fluent, int timestep, uint32_t idx);
     uint32_t ground_fluent_index(const Fluent& fluent, ExprID fluent_eid) const;
 };
 

@@ -51,10 +51,8 @@ void AchieversAnalysis::initialize_from_rpg_data(const Problem& problem, RPGData
 
     // Initialize SMT infrastructure
     ctx_ = std::make_unique<cvc5::TermManager>();
-    tb_ = std::make_unique<TermBuilder>(*ctx_);
-    tb_->set_problem(problem_);
-    variable_factory_ = std::make_unique<SmtVariableFactory>(*ctx_);
-    variable_factory_->set_problem(problem_);
+    tb_ = std::make_unique<TermBuilder>(*ctx_, problem_);
+    variable_factory_ = std::make_unique<SmtVariableFactory>(*ctx_, problem_);
     visitor_ = std::make_unique<GroundedEncodingVisitor>(*ctx_, problem_, variable_factory_.get());
     persistent_solver_ = std::make_unique<cvc5::Solver>(*ctx_);
 
@@ -150,8 +148,8 @@ void AchieversAnalysis::compute_init_satisfied(const Problem& problem) {
     // cvc5 has no model object: values are read straight off the solver, which
     // completes the model for symbols the assertions left unconstrained.
     for (ExprID cond : get_all_conditions()) {
-        Term cond_z3 = visitor_->convert_from_pool(cond, 0);
-        Term cond_val = init_solver.getValue(cond_z3);
+        Term cond_term = visitor_->convert_from_pool(cond, 0);
+        Term cond_val = init_solver.getValue(cond_term);
         if (cond_val.isBooleanValue() && cond_val.getBooleanValue()) {
             init_satisfied_conditions_.insert(cond);
         }
@@ -243,7 +241,7 @@ const std::unordered_set<Action>& AchieversAnalysis::get_actions_requiring_preco
 
 void AchieversAnalysis::analyze_semantic_achievers() {
     auto& stats = Stats::instance();
-    z3_query_count_ = 0;
+    smt_query_count_ = 0;
 
     bool incremental = !achiever_relevant_fluents_.empty();
     size_t cache_skip_count = 0;
@@ -360,7 +358,7 @@ void AchieversAnalysis::analyze_semantic_achievers() {
     }
 
     // Record final statistics
-    stats.set("achievers_analysis.z3_queries_count", z3_query_count_);
+    stats.set("achievers_analysis.smt_queries_count", smt_query_count_);
     stats.set("achievers_analysis.cache_skip_count", static_cast<double>(cache_skip_count));
     stats.set("achievers_analysis.cache_adopt_count", static_cast<double>(cache_adopt_count));
     stats.set("achievers_analysis.total_conditions", condition_to_achievers_.size());
@@ -373,7 +371,7 @@ void AchieversAnalysis::analyze_semantic_achievers() {
         Logger::instance().component(VerbosityLevel::INFO, "Achievers", {
             {"cache_skips", std::to_string(cache_skip_count)},
             {"cache_adopts", std::to_string(cache_adopt_count)},
-            {"z3_queries", std::to_string(z3_query_count_)}
+            {"smt_queries", std::to_string(smt_query_count_)}
         });
     }
 }
@@ -509,26 +507,26 @@ bool AchieversAnalysis::check_action_achieves_condition_with_pushpop(const Actio
 
         Term fluent_current = visitor_->convert_from_pool(effect.fluent_id(), 0);
         Term fluent_next = visitor_->convert_from_pool(effect.fluent_id(), 1);
-        Term value_z3 = visitor_->convert_from_pool(effect.value_id(), 0);
+        Term value_term = visitor_->convert_from_pool(effect.value_id(), 0);
 
         // Handle different effect kinds
         Term effect_constraint = tb_->bool_val(true);
         switch (effect.kind()) {
             case EffectExpression::Kind::ASSIGN:
-                effect_constraint = tb_->mk_eq(fluent_next, value_z3);
+                effect_constraint = tb_->mk_eq(fluent_next, value_term);
                 break;
             case EffectExpression::Kind::INCREASE:
-                effect_constraint = tb_->mk_eq(fluent_next, tb_->add(fluent_current, value_z3));
+                effect_constraint = tb_->mk_eq(fluent_next, tb_->add(fluent_current, value_term));
                 break;
             case EffectExpression::Kind::DECREASE:
-                effect_constraint = tb_->mk_eq(fluent_next, tb_->sub(fluent_current, value_z3));
+                effect_constraint = tb_->mk_eq(fluent_next, tb_->sub(fluent_current, value_term));
                 break;
         }
 
         // Handle conditional effects
         if (effect.is_conditional()) {
-            Term condition_z3 = visitor_->convert_from_pool(effect.condition_id(), 0);
-            effect_constraint = tb_->mk_implies(condition_z3, effect_constraint);
+            Term condition_term = visitor_->convert_from_pool(effect.condition_id(), 0);
+            effect_constraint = tb_->mk_implies(condition_term, effect_constraint);
         }
 
         persistent_solver_->assertFormula(effect_constraint);
@@ -546,8 +544,8 @@ bool AchieversAnalysis::check_action_achieves_condition_with_pushpop(const Actio
     // fly(city2, city2) would be reported as an achiever of "at city2"
     // even though it can only fire when the plane is already at city2.
     if (action.has_precondition()) {
-        Term precond_z3 = visitor_->convert_from_pool(action.precondition_id(), 0);
-        persistent_solver_->assertFormula(precond_z3);
+        Term precond_term = visitor_->convert_from_pool(action.precondition_id(), 0);
+        persistent_solver_->assertFormula(precond_term);
     }
 
     // Step 3: Add frame axioms for fluents not modified by this action
@@ -571,7 +569,7 @@ bool AchieversAnalysis::check_action_achieves_condition_with_pushpop(const Actio
     persistent_solver_->assertFormula(condition_next);                  // condition becomes true after action
 
     // Step 5: Check if there exists such a transition
-    ++z3_query_count_;
+    ++smt_query_count_;
     cvc5::Result result = persistent_solver_->checkSat();
 
     // Pop the solver scope to remove all constraints added for this query
@@ -649,10 +647,8 @@ void AchieversAnalysis::update(const Problem& new_problem, RPGData new_rpg_data)
     tb_.reset();
     ctx_.reset();
     ctx_ = std::make_unique<cvc5::TermManager>();
-    tb_ = std::make_unique<TermBuilder>(*ctx_);
-    tb_->set_problem(problem_);
-    variable_factory_ = std::make_unique<SmtVariableFactory>(*ctx_);
-    variable_factory_->set_problem(problem_);
+    tb_ = std::make_unique<TermBuilder>(*ctx_, problem_);
+    variable_factory_ = std::make_unique<SmtVariableFactory>(*ctx_, problem_);
     visitor_ = std::make_unique<GroundedEncodingVisitor>(*ctx_, problem_, variable_factory_.get());
     persistent_solver_ = std::make_unique<cvc5::Solver>(*ctx_);
     initialize_persistent_solver();

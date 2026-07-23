@@ -6,14 +6,12 @@
 namespace rantanplan {
 
 SemanticInterferencePredicate::SemanticInterferencePredicate(const Problem& problem) {
-    z3_context_ = std::make_unique<cvc5::TermManager>();
-    z3_solver_ = std::make_unique<cvc5::Solver>(*z3_context_);
-    tb_ = std::make_unique<TermBuilder>(*z3_context_);
-    tb_->set_problem(&problem);
-    z3_variable_factory_ = std::make_unique<SmtVariableFactory>(*z3_context_);
-    z3_variable_factory_->set_problem(&problem);
+    ctx_ = std::make_unique<cvc5::TermManager>();
+    solver_ = std::make_unique<cvc5::Solver>(*ctx_);
+    tb_ = std::make_unique<TermBuilder>(*ctx_, &problem);
+    variable_factory_ = std::make_unique<SmtVariableFactory>(*ctx_, &problem);
     grounded_visitor_ = std::make_unique<GroundedEncodingVisitor>(
-        *z3_context_, &problem, z3_variable_factory_.get());
+        *ctx_, &problem, variable_factory_.get());
 }
 
 InterferenceSource SemanticInterferencePredicate::affects_source(const Action& a1,
@@ -55,26 +53,26 @@ Term SemanticInterferencePredicate::apply_action_effects_substitution(
     TermVec to_vector;
 
     for (ExprID fid : fluent_order) {
-        Term fluent_z3 = grounded_visitor_->convert_from_pool(fid, -1);
-        Term composed = fluent_z3;  // start with the unchanged fluent
+        Term fluent_term = grounded_visitor_->convert_from_pool(fid, -1);
+        Term composed = fluent_term;  // start with the unchanged fluent
 
         // Nested ite chain — correct when conditions are mutually exclusive (the
         // common PDDL pattern); non-exclusive cases are screened out upstream by
         // has_conflicting_conditional_effects().
         for (const Effect* effect : effects_by_fluent[fid]) {
             const EffectExpression& eff_expr = effect->effect_expression();
-            Term new_value_z3 = convert_effect_to_z3(eff_expr, fluent_z3);
+            Term new_value = convert_effect_to_smt(eff_expr, fluent_term);
 
             if (effect->is_conditional()) {
-                Term condition_z3 = grounded_visitor_->convert_from_pool(
+                Term condition_term = grounded_visitor_->convert_from_pool(
                     effect->effect_expression().condition_id(), -1);
-                composed = tb_->mk_ite(condition_z3, new_value_z3, composed);
+                composed = tb_->mk_ite(condition_term, new_value, composed);
             } else {
-                composed = new_value_z3;  // unconditional overrides all
+                composed = new_value;  // unconditional overrides all
             }
         }
 
-        from_vector.push_back(fluent_z3);
+        from_vector.push_back(fluent_term);
         to_vector.push_back(composed);
     }
 
@@ -88,8 +86,8 @@ bool SemanticInterferencePredicate::check1(const Action& a1, const Action& a2) c
     // correct here: a precondition IS evaluated after a1's full effects.)
     if (!a2.has_precondition()) return false;
 
-    Term a1_pre = convert_precondition_to_z3(a1);
-    Term a2_pre = convert_precondition_to_z3(a2);
+    Term a1_pre = convert_precondition_to_smt(a1);
+    Term a2_pre = convert_precondition_to_smt(a2);
 
     // Apply a1's effects to a2's precondition.
     Term substituted_expr = apply_action_effects_substitution(a1, a2_pre);
@@ -104,10 +102,10 @@ bool SemanticInterferencePredicate::check1(const Action& a1, const Action& a2) c
 
     Term check1 = tb_->mk_and({a1_pre, a2_pre, tb_->mk_not(substituted_expr)});
 
-    z3_solver_->push();
-    z3_solver_->assertFormula(check1);
-    cvc5::Result result = z3_solver_->checkSat();
-    z3_solver_->pop();
+    solver_->push();
+    solver_->assertFormula(check1);
+    cvc5::Result result = solver_->checkSat();
+    solver_->pop();
 
     return result.isSat();
 }
@@ -121,8 +119,8 @@ InterferenceSource SemanticInterferencePredicate::check2_source(const Action& a1
         return InterferenceSource::CHECK2_UNCOMM;
     }
 
-    Term a1_pre = convert_precondition_to_z3(a1);
-    Term a2_pre = convert_precondition_to_z3(a2);
+    Term a1_pre = convert_precondition_to_smt(a1);
+    Term a2_pre = convert_precondition_to_smt(a2);
 
     // Every fluent touched by either action.
     std::unordered_set<ExprID> affected_var_eids;
@@ -139,8 +137,8 @@ InterferenceSource SemanticInterferencePredicate::check2_source(const Action& a1
         Term var_after_happening = happening_value(var_eid, a1, a2);
 
         // Sequential x·σ_a2·σ_a1 ("composition of functions"): a2 then a1.
-        Term var_z3 = grounded_visitor_->convert_from_pool(var_eid, -1);
-        Term var_after_sequential = var_z3;
+        Term var_term = grounded_visitor_->convert_from_pool(var_eid, -1);
+        Term var_after_sequential = var_term;
         var_after_sequential = apply_action_effects_substitution(a2, var_after_sequential);
         var_after_sequential = apply_action_effects_substitution(a1, var_after_sequential);
 
@@ -151,10 +149,10 @@ InterferenceSource SemanticInterferencePredicate::check2_source(const Action& a1
         Term non_commutativity = tb_->mk_and(
             {a1_pre, a2_pre, tb_->mk_distinct(var_after_happening, var_after_sequential)});
 
-        z3_solver_->push();
-        z3_solver_->assertFormula(non_commutativity);
-        cvc5::Result result = z3_solver_->checkSat();
-        z3_solver_->pop();
+        solver_->push();
+        solver_->assertFormula(non_commutativity);
+        cvc5::Result result = solver_->checkSat();
+        solver_->pop();
 
         if (result.isSat()) {
             return InterferenceSource::CHECK2_HAPPEN;
@@ -180,7 +178,7 @@ Term SemanticInterferencePredicate::happening_value(ExprID var_eid,
         for (const Effect& effect : act->effects()) {
             const EffectExpression& ee = effect.effect_expression();
             if (ee.fluent_id() != var_eid) continue;
-            Term new_value = convert_effect_to_z3(ee, value);
+            Term new_value = convert_effect_to_smt(ee, value);
             if (ee.is_conditional()) {
                 Term condition = grounded_visitor_->convert_from_pool(ee.condition_id(), -1);
                 value = tb_->mk_ite(condition, new_value, value);
@@ -227,16 +225,16 @@ bool SemanticInterferencePredicate::assignments_commute(const EffectExpression& 
                                                         const EffectExpression& eff2,
                                                         ExprID var_eid) const {
     // Def 3.3: two assignments to x commute iff T ⊨ (exp2{x→exp1} = exp1{x→exp2}).
-    Term var_z3 = grounded_visitor_->convert_from_pool(var_eid, -1);
+    Term var_term = grounded_visitor_->convert_from_pool(var_eid, -1);
 
-    Term exp1 = convert_effect_to_z3(eff1, var_z3);
-    Term exp2 = convert_effect_to_z3(eff2, var_z3);
+    Term exp1 = convert_effect_to_smt(eff1, var_term);
+    Term exp2 = convert_effect_to_smt(eff2, var_term);
 
     TermVec from_vec;
     TermVec to_vec1;
     TermVec to_vec2;
 
-    from_vec.push_back(var_z3);
+    from_vec.push_back(var_term);
     to_vec1.push_back(exp1);
     to_vec2.push_back(exp2);
 
@@ -245,30 +243,30 @@ bool SemanticInterferencePredicate::assignments_commute(const EffectExpression& 
 
     Term non_commute = tb_->mk_distinct(exp2_substituted, exp1_substituted);
 
-    z3_solver_->push();
-    z3_solver_->assertFormula(non_commute);
-    cvc5::Result result = z3_solver_->checkSat();
-    z3_solver_->pop();
+    solver_->push();
+    solver_->assertFormula(non_commute);
+    cvc5::Result result = solver_->checkSat();
+    solver_->pop();
 
     return result.isUnsat();  // commute iff non-commutativity is unsatisfiable
 }
 
-Term SemanticInterferencePredicate::convert_precondition_to_z3(const Action& action) const {
+Term SemanticInterferencePredicate::convert_precondition_to_smt(const Action& action) const {
     if (!action.has_precondition()) {
         return tb_->bool_val(true);
     }
     return grounded_visitor_->convert_from_pool(action.precondition_id(), -1);
 }
 
-Term SemanticInterferencePredicate::convert_effect_to_z3(const EffectExpression& effect,
-                                                         const Term& base_var_z3) const {
+Term SemanticInterferencePredicate::convert_effect_to_smt(const EffectExpression& effect,
+                                                         const Term& base_var) const {
     switch (effect.kind()) {
         case EffectExpression::Kind::ASSIGN:
             return grounded_visitor_->convert_from_pool(effect.value_id(), -1);
         case EffectExpression::Kind::INCREASE:
-            return tb_->add(base_var_z3, grounded_visitor_->convert_from_pool(effect.value_id(), -1));
+            return tb_->add(base_var, grounded_visitor_->convert_from_pool(effect.value_id(), -1));
         case EffectExpression::Kind::DECREASE:
-            return tb_->sub(base_var_z3, grounded_visitor_->convert_from_pool(effect.value_id(), -1));
+            return tb_->sub(base_var, grounded_visitor_->convert_from_pool(effect.value_id(), -1));
     }
     throw std::runtime_error("Unknown effect kind");
 }
@@ -286,7 +284,7 @@ bool SemanticInterferencePredicate::has_conflicting_conditional_effects(const Ac
         }
     }
 
-    Term pre = convert_precondition_to_z3(action);
+    Term pre = convert_precondition_to_smt(action);
 
     for (const auto& [fid, effects] : cond_by_fluent) {
         if (effects.size() < 2) continue;
@@ -297,10 +295,10 @@ bool SemanticInterferencePredicate::has_conflicting_conditional_effects(const Ac
                 Term cj = grounded_visitor_->convert_from_pool(
                     effects[j]->effect_expression().condition_id(), -1);
 
-                z3_solver_->push();
-                z3_solver_->assertFormula(tb_->mk_and({pre, ci, cj}));
-                has_conflict = z3_solver_->checkSat().isSat();
-                z3_solver_->pop();
+                solver_->push();
+                solver_->assertFormula(tb_->mk_and({pre, ci, cj}));
+                has_conflict = solver_->checkSat().isSat();
+                solver_->pop();
             }
         }
         if (has_conflict) break;

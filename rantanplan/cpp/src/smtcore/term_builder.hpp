@@ -3,6 +3,7 @@
 #include "smt_types.hpp"
 
 #include <cstdint>
+#include <stdexcept>
 #include <utility>
 #include <string>
 
@@ -31,12 +32,30 @@ class Problem;
  */
 class TermBuilder {
 public:
-    explicit TermBuilder(cvc5::TermManager& tm) : tm_(tm) {}
+    /// The problem decides Int-vs-Real for numeric literals; it is bound at
+    /// construction and required, so a builder in a "sort undecided" state is
+    /// unconstructible.
+    TermBuilder(cvc5::TermManager& tm, const Problem* problem)
+        : tm_(tm), problem_(problem) {
+        if (!problem_) {
+            throw std::logic_error(
+                "TermBuilder: a problem is required -- Int-vs-Real for "
+                "numeric terms is undecidable without one");
+        }
+    }
 
     cvc5::TermManager& tm() const { return tm_; }
 
-    /// Set the problem, which decides Int-vs-Real for numeric literals.
-    void set_problem(const Problem* p) { problem_ = p; }
+    // ── deliberately-fresh literals ─────────────────────────────────────────
+    /// A fresh Boolean constant: every call mints a NEW variable, even under
+    /// the same name -- mkConst names are print labels, not identities. Use
+    /// only for single-use literals (assumption literals, per-query selector
+    /// variables) that are created once and passed around by value. A variable
+    /// that must be re-derivable by name belongs in a SymbolTable or the
+    /// SmtVariableFactory; this is the only sanctioned mkConst outside those.
+    Term fresh_bool(const std::string& name) const {
+        return tm_.mkConst(tm_.getBooleanSort(), name);
+    }
 
     // ── constants ───────────────────────────────────────────────────────────
     Term bool_val(bool b) const { return b ? tm_.mkTrue() : tm_.mkFalse(); }
@@ -75,13 +94,45 @@ public:
     Term gt(const Term& a, const Term& b) const;
     Term geq(const Term& a, const Term& b) const;
 
+    // ── cardinality (at-most-k / at-least-k) ────────────────────────────────
+    // cvc5 has no native at-most-k / at-least-k / pseudo-Boolean facility
+    // reachable from its API, so cardinality constraints are encoded by hand
+    // here -- the one place they are built.
+    //
+    // The encoding is the **binomial** one (pairwise clauses at k == 1,
+    // Int-sum of ITEs above), chosen by measurement over an Int-sum-only
+    // alternative (see the migration record, "M2 -- Results" in the sister
+    // repo's docs/cvc5/migration-log.md): pairwise clauses go straight into
+    // the SAT core instead of through arithmetic, and won on every instance
+    // measured.
+    //
+    // Both forms are **logical equivalences with no auxiliary variables**, so
+    // the result is safe to embed at any polarity. Keep it that way: an
+    // equisatisfiable counter encoding (sequential counter, totalizer) would
+    // be unsound under a negation, and mk_atmost's result does reach negated
+    // positions via GroundedEncodingVisitor::convert_from_pool.
+    //
+    // The internal sums use int_val exclusively: counting literals is
+    // intrinsically Int arithmetic and self-contained -- never the problem's
+    // numeric sort.
+    //
+    // Known cost: at-most-one over a group of hundreds -- the `seq`
+    // strategy's per-timestep action constraint -- is where a propagator is
+    // genuinely better and no clause encoding recovers it. The answer is a
+    // THEORY_PLAN propagator, not a cleverer encoding.
+
+    /// At most @p k of @p lits are true. Handles k >= size (true) and k == 0.
+    Term mk_atmost(const TermVec& lits, unsigned k) const;
+    /// At least @p k of @p lits are true. Handles k == 0 (true) and k > size (false).
+    Term mk_atleast(const TermVec& lits, unsigned k) const;
+
 private:
     /// Make two arithmetic terms share a sort, promoting Int to Real if they
     /// differ -- cvc5 rejects a mixed Int/Real pair as a type error.
     std::pair<Term, Term> unify_arith(const Term& a, const Term& b) const;
 
     cvc5::TermManager& tm_;
-    const Problem* problem_ = nullptr;
+    const Problem* problem_;
 };
 
 }  // namespace rantanplan

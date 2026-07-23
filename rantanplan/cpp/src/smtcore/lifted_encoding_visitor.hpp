@@ -3,6 +3,7 @@
 #include "../problem/problem.hpp"
 #include "../problem/expr_pool.hpp"
 #include "smt_types.hpp"
+#include "symbol_table.hpp"
 #include "term_builder.hpp"
 #include <string>
 #include <unordered_map>
@@ -11,13 +12,8 @@
 
 namespace rantanplan {
 
-// Type alias for the unified symbol table.
-//
-// In cvc5 a function symbol is just a `Term` whose sort is a function sort, so
-// one table holds variables and function symbols alike; the discriminator is
-// `t.getSort().isFunction()`.
-using SmtObject = Term;
-using SymbolTable = std::unordered_map<std::string, SmtObject>;
+// The SymbolTable (smtcore/symbol_table.hpp) is the identity mechanism for
+// every named symbol this visitor creates; see its class comment.
 
 /**
  * @brief Converts ExprID expressions to cvc5 terms using uninterpreted functions
@@ -46,10 +42,8 @@ private:
 
 public:
     // Constructor
-    LiftedEncodingVisitor(cvc5::TermManager& ctx, SymbolTable& symbol_table, const Problem* problem = nullptr)
-        : ctx_(ctx), tb_(ctx), symbol_table_(symbol_table), problem_(problem), current_timestep_(-1) {
-        tb_.set_problem(problem);
-    }
+    LiftedEncodingVisitor(cvc5::TermManager& ctx, SymbolTable& symbol_table, const Problem* problem)
+        : ctx_(ctx), tb_(ctx, problem), symbol_table_(symbol_table), problem_(problem), current_timestep_(-1) {}
 
     void clear_symbol_table() {
         symbol_table_.clear();

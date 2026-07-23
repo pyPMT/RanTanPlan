@@ -612,7 +612,7 @@ private:
      * Converts a cvc5 value term (int, real, fraction) to double.
      * Note: Exact conversion strategy for fractions and algebraic numbers is TBD.
      */
-    double extract_numeric_value(const Term& z3_value) const;
+    double extract_numeric_value(const Term& value) const;
 
     // ========================================================================
     // PRIVATE METHODS - Utilities

@@ -195,7 +195,7 @@ Plan BranchAndBoundPlanner::search() {
         Term total_cost = abstract_.build_total_cost(h);
 
         std::string goal_name = "goal_at_" + std::to_string(h);
-        Term goal_lit = tm_.mkConst(tm_.getBooleanSort(), goal_name);
+        Term goal_lit = tb_.fresh_bool(goal_name);
         solver_.assertFormula(tb_.mk_implies(goal_lit, encoder_.encode_goal(h)));
 
         // 5. Inner B&B loop at this horizon
@@ -209,7 +209,7 @@ Plan BranchAndBoundPlanner::search() {
 
             // Create cost bound assumption
             std::string cost_name = "cost_lt_" + std::to_string(cost_bound_counter++);
-            Term cost_bound_lit = tm_.mkConst(tm_.getBooleanSort(), cost_name);
+            Term cost_bound_lit = tb_.fresh_bool(cost_name);
             bool have_bound = !std::isinf(upper_bound);
             if (have_bound) {
                 Term bound_val = encoder_.get_variable_factory().make_numeric_val(upper_bound);

@@ -86,13 +86,13 @@ public:
 
     // Helper functions to convert expressions/effects to terms using the visitor
     // (used by the abstract suffix encoder and propagator modules)
-    Term convert_expr_id_to_z3(ExprID id, int timestep = -1);
-    Term convert_effect_to_z3(const EffectExpression& effect, int timestep);
+    Term convert_expr_id_to_smt(ExprID id, int timestep = -1);
+    Term convert_effect_to_smt(const EffectExpression& effect, int timestep);
 
     /// Convert an action's cost expression to a term at the given timestep,
     /// evaluated at the start-of-timestep state x_t.
-    Term convert_cost_to_z3(const Action& action, int timestep) {
-        return convert_expr_id_to_z3(action.cost_id(), timestep);
+    Term convert_cost_to_smt(const Action& action, int timestep) {
+        return convert_expr_id_to_smt(action.cost_id(), timestep);
     }
 
 protected:
@@ -102,7 +102,7 @@ protected:
 
     /// cvc5 has no operator overloading: every connective, comparison and
     /// arithmetic node is built through the factory's TermBuilder. Read through
-    /// the factory so the Int-vs-Real policy (set with set_problem) is always
+    /// the factory so the Int-vs-Real policy (bound at construction) is always
     /// the current one.
     const TermBuilder& tb() const { return variable_factory_.builder(); }
 

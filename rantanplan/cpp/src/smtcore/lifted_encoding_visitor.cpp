@@ -127,39 +127,19 @@ Term LiftedEncodingVisitor::handle_uninterpreted_function(
     const std::vector<Term>& args,
     const cvc5::Sort& return_sort) {
 
-    // Create or get function symbol. The cache probe is mandatory: mkConst is
-    // fresh on every call, so re-deriving the symbol by name would give a
-    // different function on every occurrence.
-    auto func_it = symbol_table_.find(function_name);
-
-    if (func_it == symbol_table_.end() || !func_it->second.getSort().isFunction()) {
-        if (args.empty()) {
-            // A 0-ary "function" is a plain constant: mkFunctionSort rejects
-            // an empty domain, so build the constant directly.
-            Term nullary = ctx_.mkConst(return_sort, function_name);
-            symbol_table_.emplace(function_name, nullary);
-            return nullary;
-        }
-        // Create new function symbol with appropriate domain sorts
-        std::vector<cvc5::Sort> domain;
-        for (const auto& arg : args) {
-            domain.push_back(arg.getSort());
-        }
-        Term func_decl = ctx_.mkConst(ctx_.mkFunctionSort(domain, return_sort),
-                                      function_name);
-        symbol_table_.emplace(function_name, func_decl);
-        func_it = symbol_table_.find(function_name);
+    // Get-or-create through the interned SymbolTable -- the identity
+    // mechanism (see its class comment), not an optimization.
+    std::vector<cvc5::Sort> domain;
+    domain.reserve(args.size());
+    for (const auto& arg : args) {
+        domain.push_back(arg.getSort());
     }
-
-    Term func_decl = func_it->second;
+    Term func_decl =
+        symbol_table_.intern_function(ctx_, function_name, domain, return_sort);
     if (!func_decl.getSort().isFunction()) {
-        // A cached 0-ary "function" (a plain constant, see above) is
-        // indistinguishable from a *variable* cached under the same name —
-        // cvc5 has no separate function-declaration type. The 0-ary case is
-        // legitimate and reachable in normal use, so the cached term is
-        // returned as-is; a genuine name collision between a symbol leaf and
-        // a fluent would be silently conflated here, but is not known to
-        // occur.
+        // A 0-ary "function" is a plain constant -- or, indistinguishably, a
+        // variable cached under the same name; see
+        // SymbolTable::intern_function for why it is returned as-is.
         return func_decl;
     }
 
@@ -174,52 +154,19 @@ Term LiftedEncodingVisitor::handle_uninterpreted_function(
     return ctx_.mkTerm(cvc5::Kind::APPLY_UF, smt_args);
 }
 
-Term LiftedEncodingVisitor::create_bool_variable(const std::string& name) {
-    // The cache probe is what makes two occurrences of `name` the same
-    // variable: mkConst mints a fresh constant on every call. If `name` is
-    // already cached as a *function* symbol, the probe misses and a fresh
-    // variable is minted per occurrence — a variable/fluent name collision is
-    // not handled, only not known to occur.
-    auto it = symbol_table_.find(name);
-    if (it != symbol_table_.end()) {
-        if (!it->second.getSort().isFunction()) {
-            return it->second;
-        }
-    }
+// Interning (in SymbolTable::intern_var) is what makes two occurrences of
+// `name` the same variable: mkConst mints a fresh constant on every call.
 
-    Term var = ctx_.mkConst(ctx_.getBooleanSort(), name);
-    symbol_table_.emplace(name, var);
-    return var;
+Term LiftedEncodingVisitor::create_bool_variable(const std::string& name) {
+    return symbol_table_.intern_var(ctx_, name, ctx_.getBooleanSort());
 }
 
 Term LiftedEncodingVisitor::create_int_variable(const std::string& name) {
-    // See the note on create_bool_variable: the cache probe is what makes two
-    // occurrences of `name` the same variable under cvc5.
-    auto it = symbol_table_.find(name);
-    if (it != symbol_table_.end()) {
-        if (!it->second.getSort().isFunction()) {
-            return it->second;
-        }
-    }
-
-    Term var = ctx_.mkConst(ctx_.getIntegerSort(), name);
-    symbol_table_.emplace(name, var);
-    return var;
+    return symbol_table_.intern_var(ctx_, name, ctx_.getIntegerSort());
 }
 
 Term LiftedEncodingVisitor::create_real_variable(const std::string& name) {
-    // See the note on create_bool_variable: the cache probe is what makes two
-    // occurrences of `name` the same variable under cvc5.
-    auto it = symbol_table_.find(name);
-    if (it != symbol_table_.end()) {
-        if (!it->second.getSort().isFunction()) {
-            return it->second;
-        }
-    }
-
-    Term var = ctx_.mkConst(ctx_.getRealSort(), name);
-    symbol_table_.emplace(name, var);
-    return var;
+    return symbol_table_.intern_var(ctx_, name, ctx_.getRealSort());
 }
 
 // ============================================================================

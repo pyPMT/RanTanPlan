@@ -76,7 +76,7 @@ private:
     Term handle_implies(const std::vector<Term>& args);
     // Count support: standalone counts become sums of ite(b,1,0);
     // comparisons against integer constants become clausal cardinality
-    // constraints (atmost/atleast) built by cardinality_encoding.
+    // constraints (atmost/atleast) built by TermBuilder::mk_atmost/mk_atleast.
     Term handle_count(const std::vector<Term>& args);
     Term encode_count_comparison(ExprID count_id, ExprOperator op,
                                      int64_t constant, bool count_on_left);

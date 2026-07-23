@@ -17,15 +17,13 @@ AbstractSuffixEncoder::AbstractSuffixEncoder(
     const Problem& problem, cvc5::TermManager& ctx,
     GroundedEncoder& encoder,
     SemanticsKind semantics)
-    : problem_(problem), ctx_(ctx), tb_(ctx), encoder_(encoder),
+    : problem_(problem), ctx_(ctx), tb_(ctx, &problem), encoder_(encoder),
       semantics_(semantics),
       syntactic_(semantics == SemanticsKind::Sequential
                      ? nullptr
                      : std::make_unique<SyntacticInterference>(problem)),
       epc_index_(&encoder.get_epc_index()),
-      cached_loop_formulas_(tb_.bool_val(true)) {
-    tb_.set_problem(&problem_);
-}
+      cached_loop_formulas_(tb_.bool_val(true)) {}
 
 void AbstractSuffixEncoder::initialize() {
     const auto& actions = problem_.actions();
@@ -37,7 +35,7 @@ void AbstractSuffixEncoder::initialize() {
     // action.parameters()), so all groundings of one schema render the same
     // "abs_<name>" and share ONE abstract variable: the suffix abstracts over
     // schemas, not groundings. The name-keyed map is what enforces that
-    // sharing — `mkConst` mints a fresh constant on every call, so each name
+    // sharing — fresh_bool mints a fresh constant on every call, so each name
     // must be created once and reused. Switching to per-grounding abstraction
     // would be a semantic change to the abstract suffix, not a naming detail.
     std::unordered_map<std::string, Term> abs_by_name;
@@ -46,19 +44,18 @@ void AbstractSuffixEncoder::initialize() {
         std::string name = "abs_" + action.name();
         auto it = abs_by_name.find(name);
         if (it == abs_by_name.end()) {
-            Term var = ctx_.mkConst(ctx_.getBooleanSort(), name);
-            it = abs_by_name.emplace(name, var).first;
+            it = abs_by_name.emplace(name, tb_.fresh_bool(name)).first;
         }
         action_abs_.push_back(it->second);
     }
     action_abs_unique_.reserve(abs_by_name.size());
     for (const auto& [name, var] : abs_by_name) action_abs_unique_.push_back(var);
 
-    // One mod_v Bool per grounded fluent
+    // One mod_v Bool per grounded fluent (each created exactly once and held
+    // in mod_vars_, so freshness is fine here).
     mod_vars_.reserve(fluents.size());
     for (size_t i = 0; i < fluents.size(); ++i) {
-        std::string name = "mod_" + std::to_string(i);
-        mod_vars_.push_back(ctx_.mkConst(ctx_.getBooleanSort(), name));
+        mod_vars_.push_back(tb_.fresh_bool("mod_" + std::to_string(i)));
         fluent_to_mod_index_[fluents[i]] = i;
     }
 }
@@ -339,7 +336,7 @@ Term AbstractSuffixEncoder::encode_axiom_6(int i) {
         if (action.has_precondition()) {
             auto conjuncts = get_precondition_conjuncts(action.precondition_id());
             for (ExprID phi : conjuncts) {
-                reasons.push_back(tb_.mk_not(encoder_.convert_expr_id_to_z3(phi, i - 1)));
+                reasons.push_back(tb_.mk_not(encoder_.convert_expr_id_to_smt(phi, i - 1)));
             }
         }
 
@@ -431,7 +428,7 @@ Term AbstractSuffixEncoder::encode_relaxed_preconditions(int n) {
         TermVec relaxed_preconds;
 
         for (ExprID phi : conjuncts) {
-            Term phi_at_n = encoder_.convert_expr_id_to_z3(phi, n);
+            Term phi_at_n = encoder_.convert_expr_id_to_smt(phi, n);
             TermVec mods = get_mod_vars_for_expr(phi);
 
             if (mods.empty()) {
@@ -470,7 +467,7 @@ Term AbstractSuffixEncoder::encode_abstract_goal(int n) {
     TermVec goal_constraints;
 
     for (const auto& goal : problem_.goals()) {
-        Term g_at_n = encoder_.convert_expr_id_to_z3(goal.goal_id(), n);
+        Term g_at_n = encoder_.convert_expr_id_to_smt(goal.goal_id(), n);
         TermVec mods = get_mod_vars_for_expr(goal.goal_id());
 
         if (mods.empty()) {
@@ -514,7 +511,7 @@ bool AbstractSuffixEncoder::is_concrete_solution(const cvc5::Solver& solver) con
 //
 // Concrete cost: for each action at each step, ITE(action_active, cost, 0).
 // Every action has a cost_id (defaulting to 1 if no explicit cost was defined
-// in the problem). Cost evaluation goes through convert_cost_to_z3(), which
+// in the problem). Cost evaluation goes through convert_cost_to_smt(), which
 // evaluates at the start-of-timestep state x_t.
 //
 // Abstract cost: for each abstract action, uses the action's actual cost as
@@ -533,7 +530,7 @@ Term AbstractSuffixEncoder::build_concrete_cost_term(int i) {
 
     for (const auto& action : problem_.actions()) {
         const Term& a_var = vf.get_action_variable(action, i);
-        Term c_a = encoder_.convert_cost_to_z3(action, i);
+        Term c_a = encoder_.convert_cost_to_smt(action, i);
         cost = tb_.add(cost, tb_.mk_ite(a_var, c_a, zero));
     }
     return cost;
@@ -549,7 +546,7 @@ Term AbstractSuffixEncoder::build_abstract_cost_term() {
         // For SDAC: use externally provided lower bound from RPG interval analysis.
         Term c_a = (!cost_lower_bounds_.empty())
             ? vf.make_numeric_val(cost_lower_bounds_[i])
-            : encoder_.convert_expr_id_to_z3(actions[i].cost_id(), 0);
+            : encoder_.convert_expr_id_to_smt(actions[i].cost_id(), 0);
         cost = tb_.add(cost, tb_.mk_ite(action_abs_[i], c_a, zero));
     }
     return cost;

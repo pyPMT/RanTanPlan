@@ -8,7 +8,7 @@ namespace rantanplan {
 // ============================================================================
 
 struct IntegerCheckState {
-    bool has_variable_division = false;
+    bool has_division = false;
     bool has_non_integer_constant = false;
 };
 
@@ -18,9 +18,9 @@ static bool is_integer_valued(double v) {
 }
 
 /// Walk an arithmetic expression tree, checking for non-integer constants
-/// and variable division.
+/// and division.
 static void check_integer_arith(ExprID id, const ExprPool& pool, IntegerCheckState& state) {
-    if (!id.valid() || (state.has_variable_division && state.has_non_integer_constant)) return;
+    if (!id.valid() || (state.has_division && state.has_non_integer_constant)) return;
 
     ExprKind kind = pool.kind(id);
 
@@ -40,9 +40,11 @@ static void check_integer_arith(ExprID id, const ExprPool& pool, IntegerCheckSta
 
     ExprOperator op = pool.op(id);
 
-    // Check for division with variable arguments
+    // Any division disqualifies the integer profile: cvc5's DIVISION kind is
+    // Real-typed regardless of its arguments' sorts, so a division term can
+    // never live in an integer logic.
     if (op == ExprOperator::DIVIDE) {
-        state.has_variable_division = true;
+        state.has_division = true;
         return;
     }
 
@@ -55,7 +57,7 @@ static void check_integer_arith(ExprID id, const ExprPool& pool, IntegerCheckSta
 /// Walk a formula tree, delegating numeric sub-expressions to check_integer_arith.
 static void check_integer_formula(ExprID id, const ExprPool& pool,
                                    const Problem& problem, IntegerCheckState& state) {
-    if (!id.valid() || (state.has_variable_division && state.has_non_integer_constant)) return;
+    if (!id.valid() || (state.has_division && state.has_non_integer_constant)) return;
 
     ExprKind kind = pool.kind(id);
     if (kind == ExprKind::CONSTANT || kind == ExprKind::STATE_VARIABLE) return;
@@ -356,11 +358,11 @@ ConstraintAnalysisResult NumericConstraintAnalyzer::analyze(const Problem& probl
             if (action.has_explicit_cost()) {
                 check_integer_arith(action.cost_id(), pool, istate);
             }
-            if (istate.has_variable_division && istate.has_non_integer_constant) break;
+            if (istate.has_division && istate.has_non_integer_constant) break;
         }
 
         // Check goal formulas
-        if (!istate.has_variable_division && !istate.has_non_integer_constant) {
+        if (!istate.has_division && !istate.has_non_integer_constant) {
             for (const auto& goal : problem.goals()) {
                 check_integer_formula(goal.goal_id(), pool, problem, istate);
                 if (istate.has_non_integer_constant) break;
@@ -368,7 +370,7 @@ ConstraintAnalysisResult NumericConstraintAnalyzer::analyze(const Problem& probl
         }
 
         // Check initial-state numeric values
-        if (!istate.has_variable_division && !istate.has_non_integer_constant) {
+        if (!istate.has_division && !istate.has_non_integer_constant) {
             for (const auto& assignment : problem.initial_state()) {
                 const ExprNode& val_node = pool.get(assignment.value_id());
                 if (std::holds_alternative<double>(val_node.payload)) {
@@ -381,7 +383,7 @@ ConstraintAnalysisResult NumericConstraintAnalyzer::analyze(const Problem& probl
             }
         }
 
-        result.all_integer = !istate.has_variable_division && !istate.has_non_integer_constant;
+        result.all_integer = !istate.has_division && !istate.has_non_integer_constant;
     }
 
     return result;

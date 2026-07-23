@@ -12,7 +12,7 @@ struct ConstraintAnalysisResult {
     ArithmeticProfile profile = ArithmeticProfile::NONE;
     size_t num_numeric_fluents = 0;
     bool all_integer = false;  ///< True iff all numeric fluents are int-typed,
-                               ///< no variable division, all constants integer-valued
+                               ///< no division anywhere, all constants integer-valued
 };
 
 /**

@@ -130,8 +130,8 @@ bool NumericRelaxedPlanningGraph::LayerState::operator==(const LayerState& other
 NumericRelaxedPlanningGraph::NumericRelaxedPlanningGraph(const Problem& problem)
     : problem_(problem),
       ctx_(),
-      tb_(ctx_),
-      variable_factory_(ctx_),
+      tb_(ctx_, &problem),
+      variable_factory_(ctx_, &problem),
       grounded_visitor_(ctx_, &problem, &variable_factory_),
       widening_threshold_(Config::instance().rpg.widening_threshold),
       max_layers_(Config::instance().planner.max_steps),  // Read from config
@@ -141,12 +141,11 @@ NumericRelaxedPlanningGraph::NumericRelaxedPlanningGraph(const Problem& problem)
       total_applicability_checks_(0),
       total_interval_checks_(0) {
 
-    // The factory needs the problem: it decides the Int-vs-Real numeric sort
-    // and supplies the dense ground-fluent id that indexes every PLAN_FLUENT
-    // atom. Every visitor that converts a fluent must be given this id --
-    // omitting it throws on the first fluent this analysis converts.
-    variable_factory_.set_problem(&problem);
-    tb_.set_problem(&problem);
+    // The factory needs the problem (bound at construction above): it decides
+    // the Int-vs-Real numeric sort and supplies the dense ground-fluent id
+    // that indexes every PLAN_FLUENT atom. Every visitor that converts a
+    // fluent must be given this id -- omitting it throws on the first fluent
+    // this analysis converts.
 
     // The RPG's internal queries run silently without extra suppression:
     // cvc5 puts `verbosity` on the Solver (there is no TermManager-level
@@ -1097,7 +1096,9 @@ std::vector<const Action*> NumericRelaxedPlanningGraph::compute_applicable_actio
 
     for (const Action& action : problem_.actions()) {
         std::string action_var_name = "action_" + action.name() + "_" + std::to_string(layer);
-        Term action_var = ctx_.mkConst(ctx_.getBooleanSort(), action_var_name);
+        // Fresh per query: the selector is created once, used through this
+        // Term object, and the solver is discarded with the query.
+        Term action_var = tb_.fresh_bool(action_var_name);
         action_vars.push_back(action_var);
         action_map[action_var_name] = &action;
 
@@ -1169,10 +1170,10 @@ void NumericRelaxedPlanningGraph::add_layer_constraints(cvc5::Solver& solver, in
     for (const auto& [fluent_id, values] : layer_state.object_value_sets) {
         if (values.empty()) continue;
         ExprID fluent_eid = problem_.grounded_fluent(fluent_id);
-        Term fluent_z3 = grounded_visitor_.convert_from_pool(fluent_eid, layer);
+        Term fluent_term = grounded_visitor_.convert_from_pool(fluent_eid, layer);
         TermVec valid;
         for (int v : values) {
-            valid.push_back(tb_.mk_eq(fluent_z3, tb_.int_val(v)));
+            valid.push_back(tb_.mk_eq(fluent_term, tb_.int_val(v)));
         }
         solver.assertFormula(tb_.mk_or(valid));
     }
@@ -1184,18 +1185,18 @@ void NumericRelaxedPlanningGraph::add_boolean_constraints(cvc5::Solver& solver, 
     // For each Boolean fluent, add constraints based on its reachability state
     for (const auto& [fluent_id, reach] : layer_state.boolean_reachability) {
         ExprID fluent_eid = problem_.grounded_fluent(fluent_id);
-        Term fluent_z3 = grounded_visitor_.convert_from_pool(fluent_eid, layer);
+        Term fluent_term = grounded_visitor_.convert_from_pool(fluent_eid, layer);
 
         // Add constraints based on reachability state
         switch (reach) {
             case BooleanReachability::FALSE_ONLY:
                 // Fluent must be false
-                solver.assertFormula(tb_.mk_not(fluent_z3));
+                solver.assertFormula(tb_.mk_not(fluent_term));
                 break;
 
             case BooleanReachability::TRUE_ONLY:
                 // Fluent must be true
-                solver.assertFormula(fluent_z3);
+                solver.assertFormula(fluent_term);
                 break;
 
             case BooleanReachability::BOTH:
@@ -1211,13 +1212,13 @@ void NumericRelaxedPlanningGraph::add_numeric_constraints(cvc5::Solver& solver, 
     // For each numeric fluent, add bound constraints (skip infinite bounds)
     for (const auto& [fluent_id, bounds] : layer_state.numeric_bounds) {
         ExprID fluent_eid = problem_.grounded_fluent(fluent_id);
-        Term fluent_z3 = grounded_visitor_.convert_from_pool(fluent_eid, layer);
+        Term fluent_term = grounded_visitor_.convert_from_pool(fluent_eid, layer);
 
         if (!std::isinf(bounds.lower)) {
-            solver.assertFormula(tb_.geq(fluent_z3, ctx_.mkReal(std::to_string(bounds.lower))));
+            solver.assertFormula(tb_.geq(fluent_term, ctx_.mkReal(std::to_string(bounds.lower))));
         }
         if (!std::isinf(bounds.upper)) {
-            solver.assertFormula(tb_.leq(fluent_z3, ctx_.mkReal(std::to_string(bounds.upper))));
+            solver.assertFormula(tb_.leq(fluent_term, ctx_.mkReal(std::to_string(bounds.upper))));
         }
     }
 }
@@ -1427,18 +1428,18 @@ bool NumericRelaxedPlanningGraph::are_goals_achievable_at_layer_interval(int lay
     return true;
 }
 
-double NumericRelaxedPlanningGraph::extract_numeric_value(const Term& z3_value) const {
+double NumericRelaxedPlanningGraph::extract_numeric_value(const Term& value) const {
     // Handle different cvc5 value types
-    if (z3_value.isIntegerValue() || z3_value.isRealValue()) {
+    if (value.isIntegerValue() || value.isRealValue()) {
         // Try to get as integer first
-        if (z3_value.getSort().isInteger() && z3_value.isIntegerValue()) {
-            return std::stod(z3_value.getIntegerValue());
+        if (value.getSort().isInteger() && value.isIntegerValue()) {
+            return std::stod(value.getIntegerValue());
         }
 
         // Try to get as rational
-        if (z3_value.getSort().isReal()) {
+        if (value.getSort().isReal()) {
             // Get numerator and denominator
-            std::string val_str = z3_value.getRealValue();
+            std::string val_str = value.getRealValue();
 
             // Simple parsing for now - cvc5 returns rationals as "num/den" or decimals
             size_t slash_pos = val_str.find('/');
@@ -1455,7 +1456,7 @@ double NumericRelaxedPlanningGraph::extract_numeric_value(const Term& z3_value) 
     }
 
     // Fallback: try to parse string representation
-    std::string val_str = z3_value.toString();
+    std::string val_str = value.toString();
     try {
         return std::stod(val_str);
     } catch (...) {

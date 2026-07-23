@@ -61,7 +61,7 @@ class GroundedEncoder;
 ///
 /// SDAC correctness and parallelism:
 ///
-/// The concrete cost term evaluates action costs via convert_cost_to_z3(), which
+/// The concrete cost term evaluates action costs via convert_cost_to_smt(), which
 /// by default evaluates at the start-of-timestep state x_t. This is correct when
 /// each action genuinely "sees" x_t:
 ///

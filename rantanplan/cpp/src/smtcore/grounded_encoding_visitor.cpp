@@ -1,6 +1,5 @@
 #include "grounded_encoding_visitor.hpp"
 #include "smt_variable_factory.hpp"
-#include "cardinality_encoding.hpp"
 #include "../problem/fluent.hpp"
 #include "../problem/effect_expression.hpp"
 #include <optional>
@@ -197,13 +196,13 @@ Term GroundedEncodingVisitor::encode_count_comparison(ExprID count_id,
     if (min_true) {
         if (*min_true > n) return tb().bool_val(false);
         if (*min_true > 0) {
-            parts.push_back(encode_atleast(ctx_, bools, static_cast<unsigned>(*min_true)));
+            parts.push_back(tb().mk_atleast(bools, static_cast<unsigned>(*min_true)));
         }
     }
     if (max_true) {
         if (*max_true < 0) return tb().bool_val(false);
         if (*max_true < n) {
-            parts.push_back(encode_atmost(ctx_, bools, static_cast<unsigned>(*max_true)));
+            parts.push_back(tb().mk_atmost(bools, static_cast<unsigned>(*max_true)));
         }
     }
     if (parts.empty()) return tb().bool_val(true);

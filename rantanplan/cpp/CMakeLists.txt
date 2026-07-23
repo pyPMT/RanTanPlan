@@ -109,7 +109,6 @@ add_library(rantanplan_core STATIC
     src/smtcore/smt_variable_factory.cpp
     src/smtcore/lifted_encoding_visitor.cpp
     src/smtcore/grounded_encoding_visitor.cpp
-    src/smtcore/cardinality_encoding.cpp
     src/encoders/grounded_encoder.cpp
     src/encoders/parallelism/sequential_semantics.cpp
     src/encoders/parallelism/forall_semantics.cpp

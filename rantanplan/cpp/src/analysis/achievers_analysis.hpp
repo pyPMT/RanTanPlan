@@ -181,7 +181,7 @@ private:
     int arpg_num_layers_ = 1;
 
     // Statistics tracking
-    mutable size_t z3_query_count_ = 0;
+    mutable size_t smt_query_count_ = 0;
 
     // Incremental analysis state.
     // Per-achiever relevant fluent cache: condition → action_label → fluent ExprIDs

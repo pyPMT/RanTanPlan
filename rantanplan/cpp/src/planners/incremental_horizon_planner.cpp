@@ -97,7 +97,7 @@ Plan IncrementalHorizonPlanner::search() {
         //    Intermediate horizons in the batch do NOT get goal literals; the
         //    prefix-monotone + frame-axiom argument above covers them.
         std::string goal_var_name = "goal_at_" + std::to_string(h);
-        Term goal_literal = tm_.mkConst(tm_.getBooleanSort(), goal_var_name);
+        Term goal_literal = tb_.fresh_bool(goal_var_name);
         solver_.assertFormula(tb_.mk_implies(goal_literal, encoder_.encode_goal(h)));
 
         TermVec assumptions;

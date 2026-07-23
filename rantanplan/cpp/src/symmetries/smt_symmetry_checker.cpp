@@ -12,10 +12,8 @@
 namespace rantanplan {
 
 SMTSymmetryChecker::SMTSymmetryChecker(const Problem* problem, cvc5::TermManager& ctx)
-    : problem_(problem), context_(ctx), tb_(ctx), symbol_table_(),
-      visitor_(ctx, symbol_table_, problem) {
-    tb_.set_problem(problem);
-}
+    : problem_(problem), context_(ctx), tb_(ctx, problem), symbol_table_(),
+      visitor_(ctx, symbol_table_, problem) {}
 
 std::string ActionSwap::to_string() const {
     return action1->name() + "(" + action1->to_string() + ") ↔ " + 

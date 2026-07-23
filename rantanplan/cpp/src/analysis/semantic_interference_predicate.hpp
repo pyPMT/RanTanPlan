@@ -68,24 +68,24 @@ public:
 private:
     // Declaration order is destruction order reversed: the TermManager must
     // outlive everything built from it.
-    mutable std::unique_ptr<cvc5::TermManager> z3_context_;
-    mutable std::unique_ptr<cvc5::Solver> z3_solver_;
+    mutable std::unique_ptr<cvc5::TermManager> ctx_;
+    mutable std::unique_ptr<cvc5::Solver> solver_;
     mutable std::unique_ptr<TermBuilder> tb_;
-    mutable std::unique_ptr<SmtVariableFactory> z3_variable_factory_;
+    mutable std::unique_ptr<SmtVariableFactory> variable_factory_;
     mutable std::unique_ptr<GroundedEncodingVisitor> grounded_visitor_;
 
     // Per-action cache for the conflicting-conditional-effects screen.
     mutable std::unordered_map<int, bool> conflicting_effects_cache_;
 
     // Definition helpers (see the .cpp for the correspondence to the paper).
-    Term convert_precondition_to_z3(const Action& action) const;
+    Term convert_precondition_to_smt(const Action& action) const;
     Term apply_action_effects_substitution(const Action& action, const Term& target_expr) const;
     bool check1(const Action& a1, const Action& a2) const;
     InterferenceSource check2_source(const Action& a1, const Action& a2) const;
     bool are_simply_commuting(const Action& a1, const Action& a2) const;
     bool assignments_commute(const EffectExpression& eff1, const EffectExpression& eff2, ExprID var_eid) const;
     Term happening_value(ExprID var_eid, const Action& a1, const Action& a2) const;
-    Term convert_effect_to_z3(const EffectExpression& effect, const Term& base_var_z3) const;
+    Term convert_effect_to_smt(const EffectExpression& effect, const Term& base_var) const;
     bool has_conflicting_conditional_effects(const Action& action) const;
 };
 

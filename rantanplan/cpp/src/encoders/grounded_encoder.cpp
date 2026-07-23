@@ -1,6 +1,5 @@
 #include "grounded_encoder.hpp"
 #include "../analysis/interference_analysis.hpp"
-#include "../smtcore/cardinality_encoding.hpp"
 #include "../util/stats.hpp"
 #include "../util/logger.hpp"
 #include "../config/config.hpp"
@@ -12,40 +11,40 @@ namespace rantanplan {
 // Constructor
 GroundedEncoder::GroundedEncoder(const Problem& problem, cvc5::TermManager& ctx,
                                  std::unique_ptr<ParallelismStrategy> parallelism)
-    : problem_(problem), ctx_(ctx), variable_factory_(ctx), grounded_visitor_(ctx_, &problem_, &variable_factory_) {
+    : problem_(problem), ctx_(ctx), variable_factory_(ctx, &problem),
+      grounded_visitor_(ctx_, &problem_, &variable_factory_) {
     layers_encoded_ = -1;
-    variable_factory_.set_problem(&problem_);
     build_epc_index();
     parallelism_strategy_ = std::move(parallelism);
     parallelism_strategy_->initialize(problem_, ctx_, variable_factory_);
 }
 
-Term GroundedEncoder::convert_expr_id_to_z3(ExprID id, int timestep) {
+Term GroundedEncoder::convert_expr_id_to_smt(ExprID id, int timestep) {
     return grounded_visitor_.convert_from_pool(id, timestep);
 }
 
 // Helper function to convert effect to an SMT constraint using the visitor
-Term GroundedEncoder::convert_effect_to_z3(const EffectExpression& effect, int timestep) {
-    Term fluent_curr_z3 = convert_expr_id_to_z3(effect.fluent_id(), timestep);
-    Term fluent_next_z3 = convert_expr_id_to_z3(effect.fluent_id(), timestep + 1);
-    Term value_z3 = convert_expr_id_to_z3(effect.value_id(), timestep);
+Term GroundedEncoder::convert_effect_to_smt(const EffectExpression& effect, int timestep) {
+    Term fluent_curr = convert_expr_id_to_smt(effect.fluent_id(), timestep);
+    Term fluent_next = convert_expr_id_to_smt(effect.fluent_id(), timestep + 1);
+    Term value_term = convert_expr_id_to_smt(effect.value_id(), timestep);
 
     Term effect_constraint = tb().bool_val(true);
     switch (effect.kind()) {
         case EffectExpression::Kind::ASSIGN:
-            effect_constraint = tb().mk_eq(fluent_next_z3, value_z3);
+            effect_constraint = tb().mk_eq(fluent_next, value_term);
             break;
         case EffectExpression::Kind::INCREASE:
-            effect_constraint = tb().mk_eq(fluent_next_z3, tb().add(fluent_curr_z3, value_z3));
+            effect_constraint = tb().mk_eq(fluent_next, tb().add(fluent_curr, value_term));
             break;
         case EffectExpression::Kind::DECREASE:
-            effect_constraint = tb().mk_eq(fluent_next_z3, tb().sub(fluent_curr_z3, value_z3));
+            effect_constraint = tb().mk_eq(fluent_next, tb().sub(fluent_curr, value_term));
             break;
     }
 
     if (effect.is_conditional()) {
-        Term condition_z3 = convert_expr_id_to_z3(effect.condition_id(), timestep);
-        effect_constraint = tb().mk_implies(condition_z3, effect_constraint);
+        Term condition_term = convert_expr_id_to_smt(effect.condition_id(), timestep);
+        effect_constraint = tb().mk_implies(condition_term, effect_constraint);
     }
 
     return effect_constraint;
@@ -63,8 +62,8 @@ Term GroundedEncoder::encode_initial_state() {
 
     // Process each assignment in the initial state at timestep 0
     for (const auto& assignment : problem_.initial_state()) {
-        Term fluent_expr = convert_expr_id_to_z3(assignment.fluent_id(), 0);
-        Term value_expr = convert_expr_id_to_z3(assignment.value_id(), 0);
+        Term fluent_expr = convert_expr_id_to_smt(assignment.fluent_id(), 0);
+        Term value_expr = convert_expr_id_to_smt(assignment.value_id(), 0);
         initial_state.push_back(tb().mk_eq(fluent_expr, value_expr));
     }
 
@@ -73,7 +72,7 @@ Term GroundedEncoder::encode_initial_state() {
     // state violating a declaration makes the instance UNSAT — correct
     // under PDDL-requirement semantics.
     for (ExprID inv : problem_.state_invariants()) {
-        initial_state.push_back(convert_expr_id_to_z3(inv, 0));
+        initial_state.push_back(convert_expr_id_to_smt(inv, 0));
     }
 
     // Collect statistics
@@ -113,13 +112,13 @@ std::optional<Term> GroundedEncoder::encode_single_action(const Action& action, 
     Term action_var = variable_factory_.get_action_variable(action, t);
 
     if (action.has_precondition()) {
-        Term z3_precond = convert_expr_id_to_z3(action.precondition_id(), t);
-        constraints.push_back(tb().mk_implies(action_var, z3_precond));
+        Term precond_term = convert_expr_id_to_smt(action.precondition_id(), t);
+        constraints.push_back(tb().mk_implies(action_var, precond_term));
     }
 
     TermVec effect_exprs;
     for (const Effect& effect : action.effects()) {
-        effect_exprs.push_back(convert_effect_to_z3(effect.effect_expression(), t));
+        effect_exprs.push_back(convert_effect_to_smt(effect.effect_expression(), t));
     }
     constraints.push_back(tb().mk_implies(action_var, tb().mk_and(effect_exprs)));
 
@@ -133,7 +132,7 @@ std::optional<Term> GroundedEncoder::encode_non_cumulative_effects(const Action&
 
     TermVec effect_exprs;
     for (const Effect& effect : action.effects()) {
-        effect_exprs.push_back(convert_effect_to_z3(effect.effect_expression(), t));
+        effect_exprs.push_back(convert_effect_to_smt(effect.effect_expression(), t));
     }
 
     return tb().mk_implies(action_var, tb().mk_and(effect_exprs));
@@ -174,8 +173,8 @@ Term GroundedEncoder::encode_frames(int t) {
         const auto& action_effects = epc_it->second;
 
         // Get fluent variables at timesteps t and t+1
-        Term fluent_t = convert_expr_id_to_z3(eid, t);
-        Term fluent_t_plus_1 = convert_expr_id_to_z3(eid, t + 1);
+        Term fluent_t = convert_expr_id_to_smt(eid, t);
+        Term fluent_t_plus_1 = convert_expr_id_to_smt(eid, t + 1);
 
         // Frame axiom: (f^t != f^{t+1}) -> (a_1 v (a_2 ^ c_2) v ... v a_n)
         //
@@ -202,8 +201,8 @@ Term GroundedEncoder::encode_frames(int t) {
 
             // For conditional effects: action_var && condition
             if (effect_expr->is_conditional()) {
-                Term condition_z3 = convert_expr_id_to_z3(effect_expr->condition_id(), t);
-                action_terms.push_back(tb().mk_and({action_var, condition_z3})); // condition /\ action_var
+                Term condition_term = convert_expr_id_to_smt(effect_expr->condition_id(), t);
+                action_terms.push_back(tb().mk_and({action_var, condition_term})); // condition /\ action_var
             } else {
                 action_terms.push_back(action_var); // For unconditional effects: just the action variable
             }
@@ -258,7 +257,7 @@ Term GroundedEncoder::encode_goal(int t) {
     goal_formulas.reserve(goals.size());
 
     for (const auto& goal : goals) {
-        goal_formulas.push_back(convert_expr_id_to_z3(goal.goal_id(), t));
+        goal_formulas.push_back(convert_expr_id_to_smt(goal.goal_id(), t));
     }
 
     // Collect statistics
@@ -316,9 +315,9 @@ Term GroundedEncoder::encode_symmetries(int t) {
         // LHS: all variable pairs have the same value (symmetric state)
         TermVec variable_equality_constraints;
         for (const auto& [var1_eid, var2_eid] : sym.variable_pairs) {
-            Term var1_z3 = convert_expr_id_to_z3(var1_eid, t);
-            Term var2_z3 = convert_expr_id_to_z3(var2_eid, t);
-            variable_equality_constraints.push_back(tb().mk_eq(var1_z3, var2_z3));
+            Term var1_term = convert_expr_id_to_smt(var1_eid, t);
+            Term var2_term = convert_expr_id_to_smt(var2_eid, t);
+            variable_equality_constraints.push_back(tb().mk_eq(var1_term, var2_term));
         }
 
         // RHS: lexicographic ordering on action pairs
@@ -384,7 +383,7 @@ Term GroundedEncoder::encode_state_constraints(int t) {
     // Declared state invariants: planners call this for every added
     // timestep t = 0..h, so asserting at t+1 covers states 1..h+1.
     for (ExprID inv : problem_.state_invariants()) {
-        conjuncts.push_back(convert_expr_id_to_z3(inv, t + 1));
+        conjuncts.push_back(convert_expr_id_to_smt(inv, t + 1));
     }
 
     // Mutex constraints: atmost(members, 1) and optionally atleast(members, 1)
@@ -392,14 +391,14 @@ Term GroundedEncoder::encode_state_constraints(int t) {
     for (const auto& mutex : state_constraints_.mutexes) {
         TermVec group;
         for (ExprID member : mutex.members) {
-            group.push_back(convert_expr_id_to_z3(member, t));
+            group.push_back(convert_expr_id_to_smt(member, t));
         }
         if (static_cast<double>(group.size()) > stats.get("encoder.max_mutex_group_size")) {
             stats.set("encoder.max_mutex_group_size", static_cast<double>(group.size()));
         }
-        conjuncts.push_back(encode_atmost(ctx_, group, 1));
+        conjuncts.push_back(tb().mk_atmost(group, 1));
         if (mutex.exactly_one) {
-            conjuncts.push_back(encode_atleast(ctx_, group, 1));
+            conjuncts.push_back(tb().mk_atleast(group, 1));
         }
     }
 
@@ -409,7 +408,7 @@ Term GroundedEncoder::encode_state_constraints(int t) {
     // (state-invariant semantics). State 0 is pinned by encode_initial_state;
     // RPG bounds are over-approximations, so t+1 is equally sound for them.
     for (const auto& bound : state_constraints_.bounds) {
-        Term fluent = convert_expr_id_to_z3(bound.fluent_id, t + 1);
+        Term fluent = convert_expr_id_to_smt(bound.fluent_id, t + 1);
         Term val = fluent.getSort().isInteger()
             ? tb().int_val(static_cast<int64_t>(bound.bound))
             : ctx_.mkReal(std::to_string(bound.bound));
@@ -422,7 +421,7 @@ Term GroundedEncoder::encode_state_constraints(int t) {
 
     // Object fluent domain constraints: restrict to reachable values
     for (const auto& dc : state_constraints_.domains) {
-        Term fluent = convert_expr_id_to_z3(dc.fluent_id, t);
+        Term fluent = convert_expr_id_to_smt(dc.fluent_id, t);
         TermVec valid;
         for (int idx : dc.valid_object_indices) {
             Term val = fluent.getSort().isInteger()
@@ -437,8 +436,8 @@ Term GroundedEncoder::encode_state_constraints(int t) {
 
     // Conservation law constraints: f_t + g_t == C
     for (const auto& cons : state_constraints_.conservations) {
-        Term f = convert_expr_id_to_z3(cons.fluent1_id, t);
-        Term g = convert_expr_id_to_z3(cons.fluent2_id, t);
+        Term f = convert_expr_id_to_smt(cons.fluent1_id, t);
+        Term g = convert_expr_id_to_smt(cons.fluent2_id, t);
         Term c = f.getSort().isInteger()
             ? tb().int_val(static_cast<int64_t>(cons.constant))
             : ctx_.mkReal(std::to_string(cons.constant));
