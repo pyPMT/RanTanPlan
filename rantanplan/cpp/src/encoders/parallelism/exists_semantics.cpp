@@ -5,7 +5,7 @@
 
 namespace rantanplan {
 
-z3::expr ExistsSemantics::encode_parallelism(int timestep) {
+Term ExistsSemantics::encode_parallelism(int timestep) {
     // Only reachable for propagator-free exists strategies (`e`), which
     // validate() restricts to eager interference — the graph is available.
     if (!eager_graph_) {
@@ -22,7 +22,8 @@ z3::expr ExistsSemantics::encode_parallelism(int timestep) {
     // those pairs get an a-priori mutex.
     std::vector<int> scc_mapping = interference_graph.get_scc_mapping();
 
-    z3::expr_vector mutex_constraints(*ctx_);
+    const TermBuilder& tb = variable_factory_->builder();
+    TermVec mutex_constraints;
 
     for (size_t node_id = 0; node_id < interference_graph.num_nodes(); ++node_id) {
         const Action* action1 = &problem_->action(node_id);
@@ -37,22 +38,23 @@ z3::expr ExistsSemantics::encode_parallelism(int timestep) {
                 const Action* action2 = &problem_->action(neighbor_id);
                 if (!action2) continue;
 
-                z3::expr action1_var = variable_factory_->get_action_variable(*action1, timestep);
-                z3::expr action2_var = variable_factory_->get_action_variable(*action2, timestep);
+                Term action1_var = variable_factory_->get_action_variable(*action1, timestep);
+                Term action2_var = variable_factory_->get_action_variable(*action2, timestep);
 
-                // Mutex constraint: ¬(action1_t ∧ action2_t)
-                mutex_constraints.push_back(!action1_var || !action2_var);
+                // Mutex constraint: ¬(action1_t ∧ action2_t) ≡ (¬action1_t ∨ ¬action2_t)
+                mutex_constraints.push_back(
+                    tb.mk_or({tb.mk_not(action1_var), tb.mk_not(action2_var)}));
             }
         }
     }
 
     if (mutex_constraints.empty()) {
-        return ctx_->bool_val(true);
+        return tb.bool_val(true);
     }
 
     Stats::instance().add("encoder.mutex_constraints", mutex_constraints.size());
 
-    return z3::mk_and(mutex_constraints);
+    return tb.mk_and(mutex_constraints);
 }
 
 const InterferenceOracle* ExistsSemantics::get_interference_analyzer() const {

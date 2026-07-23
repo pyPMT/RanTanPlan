@@ -3,7 +3,7 @@
 
 namespace rantanplan {
 
-z3::expr ForallSemantics::encode_parallelism(int /*timestep*/) {
+Term ForallSemantics::encode_parallelism(int /*timestep*/) {
     // Every forall strategy carries a parallelism-managing propagator module
     // (LazyForallMutexModule), so the planner never asserts encoder-side
     // mutex constraints for forall semantics.

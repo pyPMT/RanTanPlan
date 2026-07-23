@@ -29,7 +29,7 @@ public:
         : interference_analyzer_(std::move(analyzer)) {}
 
     /// Never called: the propagator module manages parallelism (throws).
-    z3::expr encode_parallelism(int timestep) override;
+    Term encode_parallelism(int timestep) override;
 
     std::string get_name() const override { return "ForallSemantics"; }
 

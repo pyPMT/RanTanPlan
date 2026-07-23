@@ -11,8 +11,10 @@
 
 namespace rantanplan {
 
-SMTSymmetryChecker::SMTSymmetryChecker(const Problem* problem, z3::context& ctx)
-    : problem_(problem), context_(ctx), symbol_table_(), visitor_(ctx, symbol_table_, problem) {
+SMTSymmetryChecker::SMTSymmetryChecker(const Problem* problem, cvc5::TermManager& ctx)
+    : problem_(problem), context_(ctx), tb_(ctx), symbol_table_(),
+      visitor_(ctx, symbol_table_, problem) {
+    tb_.set_problem(problem);
 }
 
 std::string ActionSwap::to_string() const {
@@ -79,55 +81,64 @@ void SMTSymmetryChecker::compute_symmetry_pairs(const std::vector<ObjectSwap>& s
 bool SMTSymmetryChecker::are_objects_symmetric(const std::string& obj1, const std::string& obj2) {
     // Clear symbol table for clean start
     symbol_table_.clear();
-    
-    // Create Z3 integer constants for the two objects being swapped
-    z3::expr obj1_const = context_.int_const(obj1.c_str());
-    z3::expr obj2_const = context_.int_const(obj2.c_str());
-    
+
+    // Integer constants for the two objects being swapped.
+    // PORT-QUESTION (resolved conservatively): Z3's `ctx.int_const(name)` is
+    // hash-consed, so building the constants here yielded the *same* AST nodes
+    // the visitor later put in the encoding, which is what made the substitute()
+    // below rewrite anything. cvc5's `TermManager::mkConst` mints a **fresh**
+    // variable on every call, so calling it here would produce two constants
+    // that occur nowhere in the constraints — the swap would be a no-op and
+    // every object pair would come out "symmetric" (unsound symmetry breaking).
+    // Going through the visitor's cached symbol table (which is what the visitor
+    // itself uses for object leaves) restores the Z3 behaviour exactly.
+    Term obj1_const = visitor_.create_int_variable(obj1);
+    Term obj2_const = visitor_.create_int_variable(obj2);
+
     // Build original problem formula using temporal encoding
-    z3::expr_vector original_constraints(context_);
-    
+    TermVec original_constraints;
+
     // Add initial state constraints at timestep 0
     for (const auto& assignment : problem_->initial_state()) {
-        z3::expr fluent_expr = visitor_.convert_from_pool(assignment.fluent_id(), 0);
-        z3::expr value_expr = visitor_.convert_from_pool(assignment.value_id(), 0);
-        original_constraints.push_back(fluent_expr == value_expr);
+        Term fluent_expr = visitor_.convert_from_pool(assignment.fluent_id(), 0);
+        Term value_expr = visitor_.convert_from_pool(assignment.value_id(), 0);
+        original_constraints.push_back(tb_.mk_eq(fluent_expr, value_expr));
     }
 
     // Add goal constraints at timestep 1 (different from initial state)
     for (const auto& goal : problem_->goals()) {
-        z3::expr goal_expr = visitor_.convert_from_pool(goal.goal_id(), 1);
+        Term goal_expr = visitor_.convert_from_pool(goal.goal_id(), 1);
         original_constraints.push_back(goal_expr);
     }
-    
+
     // Create swapped problem by substituting obj1 ↔ obj2 in all constraints
-    z3::expr_vector swapped_constraints(context_);
-    z3::expr_vector from_vec(context_);
-    z3::expr_vector to_vec(context_);
+    TermVec swapped_constraints;
+    TermVec from_vec;
+    TermVec to_vec;
     from_vec.push_back(obj1_const);
     from_vec.push_back(obj2_const);
     to_vec.push_back(obj2_const);
     to_vec.push_back(obj1_const);
-    
+
     for (const auto& constraint : original_constraints) {
-        z3::expr constraint_copy = constraint;
-        z3::expr swapped = constraint_copy.substitute(from_vec, to_vec);
+        Term constraint_copy = constraint;
+        Term swapped = constraint_copy.substitute(from_vec, to_vec);
         swapped_constraints.push_back(swapped);
     }
-    
+
     // Check semantic equivalence using logical biconditional
-    z3::expr original_formula = original_constraints.empty() ? 
-        context_.bool_val(true) : z3::mk_and(original_constraints);
-    z3::expr swapped_formula = swapped_constraints.empty() ? 
-        context_.bool_val(true) : z3::mk_and(swapped_constraints);
-    
+    Term original_formula = original_constraints.empty() ?
+        tb_.bool_val(true) : tb_.mk_and(original_constraints);
+    Term swapped_formula = swapped_constraints.empty() ?
+        tb_.bool_val(true) : tb_.mk_and(swapped_constraints);
+
     // Objects are symmetric if: ¬(original ↔ swapped) is UNSAT
-    z3::solver solver(context_);
-    z3::expr equivalence = (original_formula == swapped_formula);
-    solver.add(!equivalence);
-    z3::check_result result = solver.check();
-    
-    return result == z3::unsat;
+    cvc5::Solver solver(context_);
+    Term equivalence = tb_.mk_eq(original_formula, swapped_formula);
+    solver.assertFormula(tb_.mk_not(equivalence));
+    cvc5::Result result = solver.checkSat();
+
+    return result.isUnsat();
 }
 
 std::unordered_map<std::string, std::vector<const Object*>> 

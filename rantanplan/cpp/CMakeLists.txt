@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Emit compile_commands.json so clangd/editor tooling knows the real include
-# paths and flags (Z3, nanobind, -std=c++20) instead of guessing.
+# paths and flags (cvc5, nanobind, -std=c++20) instead of guessing.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ==============================================================================
@@ -37,38 +37,41 @@ endif()
 find_package(nanobind CONFIG REQUIRED)
 
 # ==============================================================================
-# Z3 SOLVER SETUP
+# CVC5 SOLVER SETUP
 # ==============================================================================
-# The module must link the exact libz3 the z3 pip package loads (two copies in
-# one process is undefined behavior), so Z3 is located via the interpreter's
-# z3 package. -DZ3_INCLUDE_DIR/-DZ3_LIB_DIR remain as escape hatches.
-if(NOT DEFINED Z3_INCLUDE_DIR OR NOT DEFINED Z3_LIB_DIR)
-    execute_process(
-        COMMAND "${Python_EXECUTABLE}" -c "import z3, os; print(os.path.dirname(z3.__file__))"
-        OUTPUT_VARIABLE Z3_PACKAGE_DIR
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        RESULT_VARIABLE Z3_LOOKUP_RESULT
-    )
-    if(NOT Z3_LOOKUP_RESULT EQUAL 0)
-        message(FATAL_ERROR "Could not locate the z3 package via ${Python_EXECUTABLE} "
-                            "(is the z3-solver pip package installed?)")
-    endif()
-    set(Z3_INCLUDE_DIR "${Z3_PACKAGE_DIR}/include")
-    set(Z3_LIB_DIR "${Z3_PACKAGE_DIR}/lib")
-endif()
+# cvc5 is consumed straight out of a local build tree rather than an install
+# prefix: cvc5 has no build-tree export(), so find_package would force a
+# `cmake --install` after every cvc5 edit. Linking the shared libcvc5 in place
+# means editing cvc5 needs only `make -C <cvc5>/build` -- no RantanPlan rebuild.
+set(CVC5_SOURCE_DIR "$ENV{HOME}/git/cvc5" CACHE PATH
+    "cvc5 source checkout to build against")
+set(CVC5_BUILD_DIR "${CVC5_SOURCE_DIR}/build" CACHE PATH
+    "cvc5 build tree (configure.sh default); consumed in place")
 
-find_library(Z3_LIBRARY
-    NAMES z3 libz3
-    PATHS ${Z3_LIB_DIR}
+find_library(CVC5_LIBRARY
+    NAMES cvc5
+    PATHS "${CVC5_BUILD_DIR}/src"
     NO_DEFAULT_PATH
 )
 
-if(NOT Z3_LIBRARY)
-    message(FATAL_ERROR "Z3 library not found in ${Z3_LIB_DIR}")
+if(NOT CVC5_LIBRARY)
+    message(FATAL_ERROR
+        "cvc5 library not found in ${CVC5_BUILD_DIR}/src.\n"
+        "Build the cvc5 fork first (see README.md, 'Installation'), or point "
+        "-DCVC5_SOURCE_DIR=... at the checkout.")
 endif()
 
-message(STATUS "Found Z3 library: ${Z3_LIBRARY}")
-set(Z3_LINK_LIBRARY ${Z3_LIBRARY}) # Use the full path to the library
+# Public headers live in the source tree; cvc5_export.h and cvc5_proof_rule.h
+# are generated into the build tree.
+set(CVC5_INCLUDE_DIRS
+    "${CVC5_SOURCE_DIR}/include"
+    "${CVC5_BUILD_DIR}/include"
+)
+if(NOT EXISTS "${CVC5_SOURCE_DIR}/include/cvc5/cvc5.h")
+    message(FATAL_ERROR "cvc5 headers not found in ${CVC5_SOURCE_DIR}/include")
+endif()
+
+message(STATUS "Found cvc5 library: ${CVC5_LIBRARY}")
 
 # ==============================================================================
 # TARGET DEFINITION
@@ -102,22 +105,22 @@ add_library(rantanplan_core STATIC
     src/problem/type.cpp
     src/problem/visitors/fluent_collector.cpp
     src/problem/visitors/fluent_polarity_collector.cpp
-    src/z3core/lifted_encoding_visitor.cpp
-    src/z3core/grounded_encoding_visitor.cpp
+    src/smtcore/term_builder.cpp
+    src/smtcore/smt_variable_factory.cpp
+    src/smtcore/lifted_encoding_visitor.cpp
+    src/smtcore/grounded_encoding_visitor.cpp
+    src/smtcore/cardinality_encoding.cpp
     src/encoders/grounded_encoder.cpp
     src/encoders/parallelism/sequential_semantics.cpp
     src/encoders/parallelism/forall_semantics.cpp
     src/encoders/parallelism/exists_semantics.cpp
-    src/z3core/z3_variable_factory.cpp
     src/planners/base_planner.cpp
     src/planners/incremental_horizon_planner.cpp
     src/planners/branch_and_bound_planner.cpp
     src/encoders/abstract_suffix_encoder.cpp
-    src/planners/propagators/propagator_strategy.cpp
-    src/planners/propagators/modules/logging_module.cpp
-    src/planners/propagators/modules/exists_cycle_module.cpp
-    src/planners/propagators/modules/forall_mutex_module.cpp
-    src/planners/propagators/modules/frame_axiom_module.cpp
+    # planners/propagators/ sources stay on disk but are OUT of the build:
+    # the Z3 user-propagator subsystem is being reimplemented as in-solver
+    # (THEORY_PLAN) reasoning inside the cvc5 fork. See migration-log.md.
     src/symmetries/smt_symmetry_checker.cpp
     src/analysis/achievers_analysis.cpp
     src/analysis/numeric_relaxed_planning_graph.cpp
@@ -174,14 +177,14 @@ target_include_directories(rantanplan_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/analysis/        # analysis headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src/passes/          # pass system headers
     ${CMAKE_CURRENT_SOURCE_DIR}/src/grounding/       # grounding headers
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/z3core/          # ExprID->Z3 translation layer
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/smtcore/         # ExprID->SMT translation layer
     ${CMAKE_CURRENT_SOURCE_DIR}/src/preprocessing/   # preprocessor contract headers
-    ${Z3_INCLUDE_DIR}                                # Z3 headers
+    ${CVC5_INCLUDE_DIRS}                             # cvc5 headers
 )
 
-# Link libraries (PUBLIC: Z3 types appear in the core's public headers)
+# Link libraries (PUBLIC: cvc5 types appear in the core's public headers)
 target_link_libraries(rantanplan_core PUBLIC
-    ${Z3_LINK_LIBRARY} # Ensure this uses the full path from Z3_LIBRARY
+    ${CVC5_LIBRARY}
 )
 
 # Python extension module — the only artifact. The static core links into a
@@ -191,24 +194,19 @@ nanobind_add_module(_rantanplan src/api/bindings.cpp)
 target_link_libraries(_rantanplan PRIVATE rantanplan_core)
 
 # ==============================================================================
-# PLATFORM-SPECIFIC FIXES
+# CVC5 FORK CONTRACT TEST (not built by default)
 # ==============================================================================
-# Fix Z3 library reference on macOS
-if(APPLE AND NOT Z3_FOUND)
-    # This applies only when Z3 is found manually (NOT Z3_FOUND is true).
-    # Z3_LIBRARY holds the full path to libz3.dylib.
-    # Z3_LIB_DIR holds the directory containing libz3.dylib.
-
-    # Instead of relying on RPATH, use install_name_tool to change the recorded
-    # dependency path in the 'rantanplan' executable from 'libz3.dylib'
-    # to the absolute path ${Z3_LIBRARY}.
-    message(STATUS "macOS manual Z3: Using install_name_tool to set absolute path for libz3.dylib in '_rantanplan'")
-    add_custom_command(TARGET _rantanplan POST_BUILD
-        COMMAND ${CMAKE_INSTALL_NAME_TOOL} -change libz3.dylib ${Z3_LIBRARY} $<TARGET_FILE:_rantanplan>
-        COMMENT "Fixing Z3 dylib reference in _rantanplan module to absolute path"
-        VERBATIM
-    )
-endif()
+# Regression test for the fork's THEORY_PLAN public API: PLAN_* kinds exist,
+# carry the sort declared in their payload, round-trip their indices, reach
+# the SAT solver, and the QF_*PLAN* logic strings parse. Build and run with:
+#   cmake --build <dir> --target cvc5_theory_plan_smoke && <dir>/cvc5_theory_plan_smoke
+add_executable(cvc5_theory_plan_smoke EXCLUDE_FROM_ALL tools/cvc5_theory_plan_smoke.cpp)
+target_include_directories(cvc5_theory_plan_smoke PRIVATE ${CVC5_INCLUDE_DIRS})
+target_link_libraries(cvc5_theory_plan_smoke PRIVATE ${CVC5_LIBRARY})
+set_target_properties(cvc5_theory_plan_smoke PROPERTIES
+    BUILD_WITH_INSTALL_RPATH TRUE
+    INSTALL_RPATH "${CVC5_BUILD_DIR}/src"
+)
 
 # ==============================================================================
 # INSTALLATION
@@ -219,13 +217,14 @@ endif()
 install(TARGETS _rantanplan LIBRARY DESTINATION rantanplan)
 
 # ==============================================================================
-# Set RPATH for Z3 if found manually
+# RPATH so the module finds libcvc5 in the fork's build tree
 # ==============================================================================
-if(NOT Z3_FOUND AND Z3_LIB_DIR)
-    set_target_properties(_rantanplan PROPERTIES
-        BUILD_WITH_INSTALL_RPATH TRUE
-        INSTALL_RPATH "${Z3_LIB_DIR}"
-        SKIP_BUILD_RPATH FALSE
-        SKIP_INSTALL_RPATH FALSE
-    )
-endif()
+# cvc5's install name is already @rpath/libcvc5.1.dylib, so it needs only an
+# RPATH entry -- no install_name_tool fixup. libpoly and GMP are absolute-path
+# dependencies of libcvc5 and need nothing here.
+set_target_properties(_rantanplan PROPERTIES
+    BUILD_WITH_INSTALL_RPATH TRUE
+    INSTALL_RPATH "${CVC5_BUILD_DIR}/src"
+    SKIP_BUILD_RPATH FALSE
+    SKIP_INSTALL_RPATH FALSE
+)

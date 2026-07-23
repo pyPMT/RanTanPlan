@@ -3,92 +3,96 @@
 #include "../util/memory_tracker.hpp"
 #include "../util/stats.hpp"
 #include "../util/logger.hpp"
+// UINT_MAX (remaining_ms) used to arrive transitively through <z3++.h>.
+#include <climits>
+#include <string>
 
 namespace rantanplan {
 
-BasePlanner::BasePlanner(const Problem& problem, GroundedEncoder& encoder, z3::context& ctx)
-    : problem_(problem), encoder_(encoder), ctx_(ctx), solver_(ctx),
-      propagator_strategy_(nullptr) {
+BasePlanner::BasePlanner(const Problem& problem, GroundedEncoder& encoder, cvc5::TermManager& tm)
+    : problem_(problem), encoder_(encoder), tm_(tm), tb_(tm), solver_(tm) {
+    tb_.set_problem(&problem_);
+
+    // Model extraction is not on by default in cvc5, and options are only
+    // accepted before the first assertion — so it is enabled here, at the one
+    // point that is guaranteed to precede every assertFormula on this solver.
+    solver_.setOption("produce-models", "true");
 }
 
-void BasePlanner::set_propagator_strategy(std::unique_ptr<PropagatorStrategy> propagator) {
-    propagator_strategy_ = std::move(propagator);
+BasePlanner::~BasePlanner() { stop_watchdog(); }
 
-    // ── Z3 solver tuning parameters ────────────────────────────────────
+void BasePlanner::configure_solver() {
+    // ── cvc5 solver tuning parameters ──────────────────────────────────
     //
-    // CRITICAL: These must be set AFTER the propagator is registered, and
-    // must use SMT-level parameter names (not sat.* names).
+    // cvc5 accepts options only before the first assertion, so this must run
+    // before search() — the factory calls it right after construction.
     //
-    // Background (2026-03 investigation):
-    //   Z3 has two solver backends with DIFFERENT parameter namespaces:
-    //
-    //     SAT-level (standalone):  sat.phase, sat.restart, sat.gc, sat.branching.heuristic
-    //     SMT-level (with propagators): phase_selection, restart_strategy, lemma_gc_strategy
-    //
-    //   When a z3::user_propagator_base is registered, Z3 switches to the
-    //   SMT backend. Setting sat.* params via solver.set() BEFORE this switch
-    //   silently disables ALL user propagator callbacks (fixed, final, push, pop).
-    //   The propagator object exists and is registered, but Z3 never invokes it.
-    //   This caused invalid plans for every propagator-based strategy (f-p,
-    //   fl*, el*, dec) while eager strategies were unaffected
-    //   (they encode parallelism as clauses, not via callbacks).
-    //
-    //   Symptom: the solver returns SAT with interfering actions at the same
-    //   timestep (e.g., pick(ball1, right) and pick(ball2, right) in gripper).
-    //   Setting sat.* params AFTER the propagator throws "unknown parameter"
-    //   because the solver is already in SMT mode at that point.
-    auto set_unsat_config = [&](z3::params& p) {
-        // restart_strategy: 0=geometric, 1=inner-outer-luby (default), 2=luby, 3=fixed
-        p.set("restart_strategy", (unsigned)2);
-        p.set("restart_factor", 1.5); // Geometric restart factor (default 1.5)
-        // phase_selection: 0=always_false, 1=always_true, 3=caching (default)
-        p.set("phase_selection", (unsigned)0);    // Most action vars are false
+    // PORT-QUESTION: the Z3 version of this function carried a large tuning
+    // block (restart_strategy, phase_selection, smt.relevancy, smt.case_split,
+    // lemma_gc_strategy) inside a `set_unsat_config` lambda that was already
+    // commented out at its single call site, plus a long comment about Z3's
+    // sat.* vs SMT-level parameter namespaces and how setting sat.* params
+    // before registering a user propagator silently disabled the propagator
+    // callbacks. None of that has a cvc5 counterpart (different parameter
+    // names, no user-propagator backend switch), and the code was dead, so it
+    // is dropped rather than translated. If we want equivalent cvc5 tuning it
+    // has to be chosen from scratch against cvc5's option set.
+    solver_.setOption("seed", "42");  // Fixed seed for reproducibility
 
-        // relevancy propagation: we seem to don't want any?
-        // https://github.com/Z3Prover/z3/issues/4941
-        p.set("smt.relevancy", (unsigned)0);
-        //case_split - int
-        // 0 - case split based on variable activity,
-        // 1 - similar to 0, but delay case splits created during the search,
-        // 2 - similar to 0, but cache the relevancy,
-        // 3 - case split based on relevancy (structural splitting),
-        // 4 - case split on relevancy and activity,
-        // 5 - case split on relevancy and current goal,
-        // 6 - activity-based case split with theory-aware branching activity
-        p.set("smt.case_split", (unsigned)0);
-
-        // controls when Z3 garbage-collects learned lemmas/clauses in the SMT search.
-        // 0 = fixed: Z3 deletes inactive lemmas whenever the number of
-        //   conflicts since the last lemma-GC exceeds a threshold, using a fixed
-        //   interval policy.
-        // 1 = geometric: Same trigger style as fixed, but the lemma-GC
-        //   threshold grows geometrically over time, so garbage collection
-        //   happens less frequently as search progresses.
-        // 2 = at restart: Z3 runs lemma cleanup when a restart happens, instead
-        //   of on the conflict-threshold schedule.
-        // 3 = none: Disables lemma garbage collection.
-        p.set("lemma_gc_strategy", (unsigned)1);
-    };
-
-    z3::params p(ctx_);
-    p.set("random_seed", (uint)42);  // Fixed seed for reproducibility
-    //set_unsat_config(p);
-
-    // Set Z3 logic hint based on numeric constraint analysis.
-    // This triggers SMT parameter tuning (relevancy, phase
-    // selection, restarts, etc.) without changing the arithmetic backend.
+    // Set the logic based on numeric constraint analysis.
     // When the problem is all-integer, use integer logics (QF_IDL/QF_LIA)
     // for tighter integer-specific reasoning.
-    const char* logic = recommended_logic(arithmetic_profile_, problem_.all_integer());
-    if (logic) {
-        p.set("logic", logic);
+    //
+    // PORT-QUESTION: for Z3 "logic" was a *hint* that only retuned the SMT
+    // parameters; cvc5's setLogic is binding — asserting a term outside the
+    // declared logic is an error, and QF_IDL/QF_RDL in particular are much
+    // narrower than what our encoders emit (general linear terms, ite, etc.).
+    // Kept as a direct mapping to preserve behaviour on the common
+    // QF_LIA/QF_LRA path, but the difference-logic profiles are a plausible
+    // source of CVC5ApiException at assert time and may need to be widened
+    // (or setLogic dropped in favour of cvc5's automatic logic detection).
+    //
+    // M4 mitigation: difference-logic profiles are NOT passed through. QF_IDL /
+    // QF_RDL admit only `x - y ~ c` and `x ~ c`; the encoders freely emit
+    // general linear terms and ite-sums (the M2 cardinality helper's Int-sum
+    // path alone puts `(+ (ite b 1 0) ...)` into any problem with a COUNT
+    // bound > 1), so a binding QF_IDL would throw at assert time. Widen to the
+    // linear logic instead — strictly more permissive, so it can only cost
+    // tuning, never soundness. Revisit with §6.7 once M4 is measured.
+    ArithmeticProfile profile = arithmetic_profile_;
+    if (profile == ArithmeticProfile::DIFFERENCE_LOGIC) {
+        profile = ArithmeticProfile::LINEAR;
     }
-
-    solver_.set(p);
-}
-
-std::string BasePlanner::get_propagator_strategy_name() const {
-    return propagator_strategy_->get_name();
+    const char* logic = recommended_logic(profile, problem_.all_integer());
+    if (logic) {
+        // The logic string must ALSO name the plan theory. cvc5's setLogic is
+        // binding and setLogicString starts from all-theories-false, so a bare
+        // "QF_LIA" *disables* THEORY_PLAN and the first PLAN_* atom throws
+        // "the logic was specified as QF_LIA, which doesn't include
+        // THEORY_PLAN". The fork's logic_info.cpp hunks (M3) add the "PLAN"
+        // token for exactly this; splice it in after the "QF_" prefix, giving
+        // e.g. QF_PLANLIA.
+        //
+        // "UF" is included unconditionally. The lifted visitor emits genuine
+        // uninterpreted functions, and cvc5's own preprocessing introduces UF
+        // terms (r2e fails with "doesn't include THEORY_UF, but got a
+        // preprocessing-time term" otherwise). A wider logic can only cost
+        // tuning, never soundness, so this is the safe direction.
+        //
+        // Token order follows logic_info.cpp's emitter: UF (:354) ... PLAN
+        // (:388) ... arithmetic (:404), so QF_ + UF + PLAN + LIA parses.
+        std::string s(logic);
+        const std::string qf = "QF_";
+        if (s.rfind(qf, 0) == 0) {
+            s.insert(qf.size(), "UFPLAN");
+        } else {
+            s = "UFPLAN" + s;
+        }
+        solver_.setLogic(s);
+    }
+    // NOTE ArithmeticProfile::NONE yields no logic string at all, so cvc5
+    // defaults to ALL -- which does include THEORY_PLAN, hence correct but
+    // untuned. §6.7's Boolean-only-plus-PLAN logic is the follow-up.
 }
 
 void BasePlanner::init_deadline() {
@@ -112,7 +116,28 @@ unsigned BasePlanner::remaining_ms() const {
         std::chrono::duration_cast<std::chrono::milliseconds>(deadline_ - now).count());
 }
 
-bool BasePlanner::apply_solver_timeout(z3::solver& solver) {
+void BasePlanner::start_watchdog(cvc5::Solver& solver) {
+    if (watchdog_.joinable()) return;  // already running
+    watchdog_ = std::thread([this, &solver] {
+        std::unique_lock<std::mutex> lock(watchdog_mutex_);
+        // Wake at the deadline, or earlier if stop_watchdog() is called.
+        watchdog_cv_.wait_until(lock, deadline_, [this] { return watchdog_stop_; });
+        if (!watchdog_stop_) {
+            solver.interrupt();  // fork patch (M1): safe from another thread
+        }
+    });
+}
+
+void BasePlanner::stop_watchdog() {
+    {
+        std::lock_guard<std::mutex> lock(watchdog_mutex_);
+        watchdog_stop_ = true;
+    }
+    watchdog_cv_.notify_all();
+    if (watchdog_.joinable()) watchdog_.join();
+}
+
+bool BasePlanner::apply_solver_timeout(cvc5::Solver& solver) {
     unsigned ms = remaining_ms();
     if (ms == 0) {
         timed_out_ = true;
@@ -120,24 +145,33 @@ bool BasePlanner::apply_solver_timeout(z3::solver& solver) {
         return false;
     }
     if (ms != UINT_MAX) {
-        // Only set Z3 timeout when we have a finite deadline
-        z3::params p(solver.ctx());
-        p.set("timeout", ms);
-        solver.set(p);
+        // Z3 accepted `p.set("timeout", ms)` before every check(), so each check
+        // got exactly the budget left at that moment. cvc5 locks options once
+        // the solver is initialised, so setOption cannot express this at all.
+        //
+        // A watchdog thread does, and faithfully: it interrupts at the absolute
+        // deadline, so a single check cannot overrun it -- which the alternative
+        // (install "tlimit-per" once with the first check's budget) allowed.
+        // handle_unknown_result maps the resulting UnknownExplanation::INTERRUPTED
+        // onto timed_out_, exactly as it maps TIMEOUT.
+        start_watchdog(solver);
     }
     return true;
 }
 
-bool BasePlanner::handle_unknown_result(const z3::solver& solver, const std::string& context) {
-    std::string reason = solver.reason_unknown();
-    if (reason.find("timeout") != std::string::npos ||
-        reason.find("canceled") != std::string::npos) {
+bool BasePlanner::handle_unknown_result(const cvc5::Result& result, const std::string& context) {
+    // cvc5 reports the reason as an enum on the Result, so this is an exact
+    // comparison instead of Z3's substring match on reason_unknown().
+    cvc5::UnknownExplanation reason = result.getUnknownExplanation();
+    if (reason == cvc5::UnknownExplanation::TIMEOUT ||
+        reason == cvc5::UnknownExplanation::INTERRUPTED) {
         timed_out_ = true;
         Logger::instance().info("\n*** TIMEOUT during solve at " + context + " ***");
         return true;
     }
+    // cvc5 declares the UnknownExplanation to_string overload in namespace std.
     Logger::instance().info("Solver returned unknown at " + context +
-                            " (reason: " + reason + ")");
+                            " (reason: " + std::to_string(reason) + ")");
     return false;
 }
 
@@ -150,33 +184,36 @@ std::string BasePlanner::format_timeout_string() {
 void BasePlanner::collect_statistics() {
     auto& stats = Stats::instance();
 
-    z3::stats z3_stats = get_solver().statistics();
-    for (unsigned i = 0; i < z3_stats.size(); ++i) {
-        std::string key = "z3." + z3_stats.key(i);
+    cvc5::Statistics cvc5_stats = get_solver().getStatistics();
+    for (auto it = cvc5_stats.begin(); it != cvc5_stats.end(); ++it) {
+        const std::string& name = (*it).first;
+        const cvc5::Stat& stat = (*it).second;
+        std::string key = "cvc5." + name;
 
-        if (z3_stats.is_uint(i)) {
-            stats.set(key, static_cast<double>(z3_stats.uint_value(i)));
-        } else if (z3_stats.is_double(i)) {
-            stats.set(key, z3_stats.double_value(i));
+        if (stat.isInt()) {
+            stats.set(key, static_cast<double>(stat.getInt()));
+        } else if (stat.isDouble()) {
+            stats.set(key, stat.getDouble());
         }
     }
 
     stats.set("memory.current_mb", MemoryTracker::instance().get_current_memory_mb());
 }
 
-void BasePlanner::add_timestep_constraints(z3::solver& solver, GroundedEncoder& encoder,
-                                           PropagatorStrategy& propagator, int timestep) {
-    solver.add(encoder.encode_actions(timestep));
-    solver.add(encoder.encode_frames(timestep));
-    solver.add(encoder.encode_prefix_monotone(timestep));
-    solver.add(encoder.encode_symmetries(timestep));
-    solver.add(encoder.encode_state_constraints(timestep));
+void BasePlanner::add_timestep_constraints(cvc5::Solver& solver, GroundedEncoder& encoder,
+                                           int timestep) {
+    solver.assertFormula(encoder.encode_actions(timestep));
+    solver.assertFormula(encoder.encode_frames(timestep));
+    solver.assertFormula(encoder.encode_prefix_monotone(timestep));
+    solver.assertFormula(encoder.encode_symmetries(timestep));
+    solver.assertFormula(encoder.encode_state_constraints(timestep));
 
-    if (!propagator.manages_parallelism_constraints()) {
-        solver.add(encoder.encode_parallelism(timestep));
-    }
-
-    propagator.register_timestep_variables(timestep + 1);
+    // Parallelism is asserted unconditionally: the propagator hook that used to
+    // gate this (if !propagator.manages_parallelism_constraints()) was removed
+    // pending the in-solver reimplementation. Every strategy that remains
+    // registered uses encoder-side parallelism and EAGER interference analysis
+    // (strategy_registry.cpp), so eager clause emission is sound.
+    solver.assertFormula(encoder.encode_parallelism(timestep));
 }
 
 } // namespace rantanplan

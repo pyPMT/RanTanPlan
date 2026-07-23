@@ -12,22 +12,25 @@
 
 namespace rantanplan {
 
-    IncrementalHorizonPlanner::IncrementalHorizonPlanner(const Problem& problem, GroundedEncoder& encoder, z3::context& ctx)
-        : BasePlanner(problem, encoder, ctx) {
+    IncrementalHorizonPlanner::IncrementalHorizonPlanner(const Problem& problem, GroundedEncoder& encoder, cvc5::TermManager& tm)
+        : BasePlanner(problem, encoder, tm) {
     }
 
-    IncrementalHorizonPlanner::IncrementalHorizonPlanner(const Problem& problem, GroundedEncoder& encoder, z3::context& ctx,
-                                       std::unique_ptr<PropagatorStrategy> propagator)
-        : BasePlanner(problem, encoder, ctx) {
-        propagator_strategy_ = std::move(propagator);
-    }
-
-void IncrementalHorizonPlanner::debug_output_constraints() {
+    void IncrementalHorizonPlanner::debug_output_constraints() {
     // Output current constraints from the solver to SMT2 file
+    //
+    // PORT-QUESTION: cvc5 has no `to_smt2()`. getAssertions() gives the
+    // asserted formulas, so the assertions round-trip, but the constant
+    // declarations Z3's to_smt2() emitted are not reproduced here — this dump
+    // is for eyeballing, not for re-solving. FormulaExporter (which *is*
+    // expected to produce a solvable file) reconstructs declarations; see the
+    // PORT-QUESTION there.
     std::ofstream smt2_file("output.smt2");
     if (smt2_file.is_open()) {
         smt2_file << ";; Current solver constraints from RantanPlan" << std::endl;
-        smt2_file << solver_.to_smt2() << std::endl;
+        for (const Term& assertion : solver_.getAssertions()) {
+            smt2_file << "(assert " << assertion << ")" << std::endl;
+        }
         smt2_file.close();
     } else {
         Logger::instance().error("Could not open output.smt2 for writing");
@@ -35,7 +38,7 @@ void IncrementalHorizonPlanner::debug_output_constraints() {
 }
 
 void IncrementalHorizonPlanner::add_timestep_constraints(int timestep) {
-    BasePlanner::add_timestep_constraints(solver_, encoder_, *propagator_strategy_, timestep);
+    BasePlanner::add_timestep_constraints(solver_, encoder_, timestep);
 }
 
 Plan IncrementalHorizonPlanner::search() {
@@ -47,7 +50,7 @@ Plan IncrementalHorizonPlanner::search() {
     // Initialise the horizon schedule from config.
     schedule_ = HorizonSchedule::from_string(config.planner.horizon_schedule);
 
-    std::string search_msg = "Starting search with propagator: " + propagator_strategy_->get_name();
+    std::string search_msg = "Starting search";
     if (start_timestep > 0) {
         search_msg += " from timestep " + std::to_string(start_timestep);
     }
@@ -62,8 +65,7 @@ Plan IncrementalHorizonPlanner::search() {
     init_deadline();
 
     // Add initial state constraints (invariant across all horizons).
-    solver_.add(encoder_.encode_initial_state());
-    propagator_strategy_->register_timestep_variables(0);
+    solver_.assertFormula(encoder_.encode_initial_state());
 
     // Pre-fill all transitions for [0, start_timestep - 1] so the first SAT call
     // begins from the RPG lower bound without redundant checks.
@@ -117,17 +119,17 @@ Plan IncrementalHorizonPlanner::search() {
         //    Intermediate horizons in the batch do NOT get goal literals; the
         //    prefix-monotone + frame-axiom argument above covers them.
         std::string goal_var_name = "goal_at_" + std::to_string(h);
-        z3::expr goal_literal = ctx_.bool_const(goal_var_name.c_str());
-        solver_.add(z3::implies(goal_literal, encoder_.encode_goal(h)));
+        Term goal_literal = tm_.mkConst(tm_.getBooleanSort(), goal_var_name);
+        solver_.assertFormula(tb_.mk_implies(goal_literal, encoder_.encode_goal(h)));
 
-        z3::expr_vector assumptions(ctx_);
+        TermVec assumptions;
         assumptions.push_back(goal_literal);
 
         auto formula_end  = std::chrono::high_resolution_clock::now();
         auto formula_time = std::chrono::duration<double>(formula_end - formula_start).count();
 
         auto solve_start = std::chrono::high_resolution_clock::now();
-        z3::check_result result = solver_.check(assumptions);
+        cvc5::Result result = solver_.checkSatAssuming(assumptions);
         auto solve_end  = std::chrono::high_resolution_clock::now();
         auto solve_time = std::chrono::duration<double>(solve_end - solve_start).count();
 
@@ -149,12 +151,15 @@ Plan IncrementalHorizonPlanner::search() {
             {"mem",     std::to_string(static_cast<int>(current_memory)) + "MB"}
         });
 
-        if (result == z3::sat) {
-            z3::model model = solver_.get_model();
+        if (result.isSat()) {
             solution_found_ = true;
 
             try {
-                Plan plan = encoder_.extract_plan(model, h);
+                // PORT-QUESTION: cvc5 has no model object — values are read
+                // with solver.getValue(). This assumes BaseEncoder::extract_plan
+                // is re-typed to take the Solver in place of the z3::model
+                // (encoders layer, ported separately).
+                Plan plan = encoder_.extract_plan(solver_, h);
 
                 Logger::instance().info("\n*** PLAN FOUND: horizon=" + std::to_string(h) +
                     ", actions=" + std::to_string(plan.length()) +
@@ -168,19 +173,17 @@ Plan IncrementalHorizonPlanner::search() {
                 stats.set("planner.plan_length",      static_cast<double>(plan.length()));
                 stats.set("planner.solution_horizon", static_cast<double>(h));
                 collect_statistics();
-                propagator_strategy_->cleanup();
                 return plan;
             } catch (const std::exception& e) {
                 Logger::instance().error("ERROR during plan extraction: " + std::string(e.what()));
                 collect_statistics();
-                propagator_strategy_->cleanup();
                 return Plan();
             }
 
-        } else if (result == z3::unsat) {
+        } else if (result.isUnsat()) {
             // UNSAT at this horizon; advance to the next scheduled horizon.
         } else {
-            if (handle_unknown_result(solver_, "horizon " + std::to_string(h))) break;
+            if (handle_unknown_result(result, "horizon " + std::to_string(h))) break;
         }
 
         // Advance to next scheduled horizon.
@@ -197,7 +200,6 @@ Plan IncrementalHorizonPlanner::search() {
     }
 
     collect_statistics();
-    propagator_strategy_->cleanup();
     return Plan();
 }
 

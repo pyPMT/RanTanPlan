@@ -12,9 +12,6 @@
 #include "../planners/incremental_horizon_planner.hpp"
 #include "../planners/branch_and_bound_planner.hpp"
 
-#include "../planners/propagators/modules/exists_cycle_module.hpp"
-#include "../planners/propagators/modules/forall_mutex_module.hpp"
-#include "../planners/propagators/modules/frame_axiom_module.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
 
@@ -59,15 +56,18 @@ void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
     if (uses_branch_and_bound(spec) &&
         problem.has_metric() && problem.has_state_dependent_costs() &&
         sdac_unsafe(spec)) {
-        Logger::instance().info(
-            "SDAC detected with exists-step semantics — downgrading to "
-            "forall semantics for sound cost evaluation.");
-        spec.semantics = SemanticsKind::Forall;
-        // Forall has no encoded-parallelism path, so the downgraded spec
-        // always needs the lazy forall module — including when the exists
-        // strategy was propagator-free (`e`).
-        spec.propagator.erase(PropagatorModuleKind::ExistsCycle);
-        spec.propagator.insert(PropagatorModuleKind::ForallLazy);
+        // The SDAC exists->forall downgrade needs the lazy forall propagator
+        // module, which is temporarily out of the build during the cvc5
+        // migration (it returns with the in-solver propagator port). Failing
+        // here is deliberate: the alternative -- downgrading to forall with no
+        // module -- would either throw deep inside the encoder or, worse,
+        // silently drop the parallelism constraints. RESTORE the downgrade
+        // (semantics = Forall, propagator = {ForallLazy}) when the propagator
+        // port lands; see migration-log.md.
+        throw std::invalid_argument(
+            "State-dependent action costs with exists-step semantics need the "
+            "forall propagator, which is unavailable during the cvc5 "
+            "migration. Use --strategy seq for SDAC optimization.");
     }
 
     if (uses_branch_and_bound(spec) &&
@@ -116,7 +116,7 @@ static std::unique_ptr<ParallelismStrategy> create_parallelism(
 }
 
 std::unique_ptr<GroundedEncoder> StrategyFactory::create_encoder(
-    const StrategySpec& spec, const Problem& problem, z3::context& ctx) {
+    const StrategySpec& spec, const Problem& problem, cvc5::TermManager& ctx) {
     // Eager interference variants pay their analysis cost here (backend
     // setup), tracked separately from the pipeline as backend.interference_ms.
     std::unique_ptr<InterferenceOracle> interference;
@@ -130,42 +130,22 @@ std::unique_ptr<GroundedEncoder> StrategyFactory::create_encoder(
 }
 
 std::unique_ptr<GroundedEncoder> StrategyFactory::create_encoder(
-    const StrategySpec& spec, PreprocessedProblem& pre, z3::context& ctx) {
+    const StrategySpec& spec, PreprocessedProblem& pre, cvc5::TermManager& ctx) {
     auto encoder = create_encoder(spec, pre.problem, ctx);
     encoder->set_symmetry_data(pre.symmetry_data);
     encoder->set_state_constraints(std::move(pre.state_constraints));
     return encoder;
 }
 
-std::unique_ptr<PropagatorStrategy> StrategyFactory::create_propagator(
-    const StrategySpec& spec, z3::solver& solver,
-    const Problem& problem, GroundedEncoder& encoder) {
-
-    const auto& mods = spec.propagator;
-
-    // Enable lazy frame mode in the encoder if frame axioms are active
-    if (mods.count(PropagatorModuleKind::FrameAxiom)) {
-        encoder.set_lazy_frames(true);
-    }
-
-    auto composite = std::make_unique<PropagatorStrategy>(solver, problem, encoder);
-
-    // Parallelism modules (order: first, cheapest conflict source).
-    if (mods.count(PropagatorModuleKind::ForallLazy))
-        composite->add_module(std::make_unique<LazyForallMutexModule>());
-    if (mods.count(PropagatorModuleKind::ExistsCycle))
-        composite->add_module(std::make_unique<ExistsCycleModule>());
-
-    // Frame axiom module (after parallelism — more expensive, skipped on conflict)
-    if (mods.count(PropagatorModuleKind::FrameAxiom))
-        composite->add_module(std::make_unique<FrameAxiomModule>());
-
-    return composite;
-}
+// create_propagator is gone for the cvc5 swap: PropagatorStrategy and its
+// modules are out of the build while they are reimplemented as in-solver
+// (THEORY_PLAN) reasoning. The reduced registry only lists strategies with an
+// empty propagator list, so nothing calls it. It comes back with the
+// propagator port (see migration-log.md).
 
 std::unique_ptr<BasePlanner> StrategyFactory::create_planner(
     const StrategySpec& spec, PreprocessedProblem& pre,
-    GroundedEncoder& encoder, z3::context& ctx) {
+    GroundedEncoder& encoder, cvc5::TermManager& ctx) {
     const Problem& problem = pre.problem;
 
     std::unique_ptr<BasePlanner> planner;
@@ -185,6 +165,9 @@ std::unique_ptr<BasePlanner> StrategyFactory::create_planner(
     // Route preprocessing artifacts: profile for all planners, then
     // planner-declared consumption (SDAC cost bounds for B&B).
     planner->set_arithmetic_profile(pre.arithmetic_profile);
+    // Options (seed, logic) must be set before the first assertFormula; the
+    // planner asserts nothing until search(), so here is the last safe point.
+    planner->configure_solver();
     planner->consume_artifacts(pre);
     return planner;
 }

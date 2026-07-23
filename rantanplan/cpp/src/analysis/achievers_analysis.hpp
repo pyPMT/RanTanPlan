@@ -7,12 +7,13 @@
 #include "../problem/action.hpp"
 #include "../problem/goal.hpp"
 #include "../problem/problem.hpp"
-#include "../z3core/grounded_encoding_visitor.hpp"
-#include "../z3core/z3_variable_factory.hpp"
+#include "../smtcore/grounded_encoding_visitor.hpp"
+#include "../smtcore/smt_types.hpp"
+#include "../smtcore/smt_variable_factory.hpp"
+#include "../smtcore/term_builder.hpp"
 #include "../problem/visitors/fluent_collector.hpp"
 #include "../grounding/interval.hpp"
 #include "../util/stats.hpp"
-#include <z3++.h>
 #include <memory>
 #include <optional>
 #include <chrono>
@@ -36,7 +37,7 @@ namespace rantanplan {
  *     adopted directly (the SMT solver's constraints over those fluents are
  *     identical, so the result must be the same).
  *   - Only the remaining pairs (previously SAT, with at least one relevant
- *     fluent whose bounds tightened) require a fresh Z3 query.
+ *     fluent whose bounds tightened) require a fresh SMT query.
  * Action identity across Problem::without_actions is by `action.label()`
  * (name + parameters); IDs are re-indexed and unsafe.
  *
@@ -47,7 +48,7 @@ namespace rantanplan {
  *   pddl/test/incremental-cascade-3/ - 3-step cascade: a multi-effect
  *     "trigger" action whose Boolean side keeps a chain alive in iter 2
  *     while its numeric side defers a second bound tightening to iter 3,
- *     producing Z3 re-verifications in BOTH iter 2 and iter 3.
+ *     producing SMT re-verifications in BOTH iter 2 and iter 3.
  *
  * TODO: It is quite expensive for big problems. Consider moving the Boolean checks to syntactic checks
  * Also, can we group checks?
@@ -73,7 +74,7 @@ public:
 
     /// Incrementally update after action pruning. Compares old bounds
     /// (stored internally) with new bounds to determine which achiever
-    /// pairs need Z3 re-verification. Pairs that were UNSAT before are
+    /// pairs need SMT re-verification. Pairs that were UNSAT before are
     /// skipped (bounds only tighten). Pairs whose relevant fluents'
     /// bounds didn't change are adopted directly.
     void update(const Problem& new_problem, RPGData new_rpg_data);
@@ -160,11 +161,13 @@ private:
     mutable std::unordered_set<ExprID> all_conditions_cache_;
     mutable bool all_conditions_cached_ = false;
     
-    // SMT solving infrastructure
-    std::unique_ptr<z3::context> ctx_;
-    std::unique_ptr<Z3VariableFactory> variable_factory_;
+    // SMT solving infrastructure. Declaration order is destruction order
+    // reversed: the TermManager must outlive everything built from it.
+    std::unique_ptr<cvc5::TermManager> ctx_;
+    std::unique_ptr<TermBuilder> tb_;
+    std::unique_ptr<SmtVariableFactory> variable_factory_;
     std::unique_ptr<GroundedEncodingVisitor> visitor_;
-    std::unique_ptr<z3::solver> persistent_solver_;  // Persistent solver with bounds constraints
+    std::unique_ptr<cvc5::Solver> persistent_solver_;  // Persistent solver with bounds constraints
 
     // Problem reference for SMT encoding
     const Problem* problem_;

@@ -45,7 +45,7 @@ public:
 
     /// Encoded fixed-order ∃-step mutexes (throws without an eager analyzer;
     /// only reachable for propagator-free exists strategies).
-    z3::expr encode_parallelism(int timestep) override;
+    Term encode_parallelism(int timestep) override;
 
     std::string get_name() const override { return "ExistsSemantics"; }
 

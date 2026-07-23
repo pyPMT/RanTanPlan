@@ -5,10 +5,11 @@
 #include "../problem/effect_expression.hpp"
 #include "../preprocessing/local_invariants.hpp"
 #include "../preprocessing/symmetry_info.hpp"
-#include "../z3core/grounded_encoding_visitor.hpp"
-#include "../z3core/z3_variable_factory.hpp"
+#include "../smtcore/grounded_encoding_visitor.hpp"
+#include "../smtcore/smt_types.hpp"
+#include "../smtcore/smt_variable_factory.hpp"
+#include "../smtcore/term_builder.hpp"
 #include "parallelism/parallelism_strategy.hpp"
-#include <z3++.h>
 
 #include <optional>
 #include <vector>
@@ -24,7 +25,7 @@ namespace rantanplan {
 class GroundedEncoder {
 public:
     // Constructor — the parallelism strategy is mandatory and injected here.
-    GroundedEncoder(const Problem& problem, z3::context& ctx,
+    GroundedEncoder(const Problem& problem, cvc5::TermManager& ctx,
                     std::unique_ptr<ParallelismStrategy> parallelism);
 
     // Pipeline data (set once before search, used by encode_symmetries)
@@ -35,13 +36,13 @@ public:
     void set_state_constraints(StateConstraints sc) { state_constraints_ = std::move(sc); }
 
     // Encoding steps
-    z3::expr encode_initial_state();
-    z3::expr encode_actions(int t); // Encodes actions layer_idx
-    z3::expr encode_frames(int t); // Encodes frame axioms for layer_idx to layer_idx+1
-    z3::expr encode_goal(int t);    // Encodes goal conditions at layer_idx
-    z3::expr encode_parallelism(int t); // Encodes parallelism semantics
-    z3::expr encode_symmetries(int t);
-    z3::expr encode_state_constraints(int t);
+    Term encode_initial_state();
+    Term encode_actions(int t); // Encodes actions layer_idx
+    Term encode_frames(int t); // Encodes frame axioms for layer_idx to layer_idx+1
+    Term encode_goal(int t);    // Encodes goal conditions at layer_idx
+    Term encode_parallelism(int t); // Encodes parallelism semantics
+    Term encode_symmetries(int t);
+    Term encode_state_constraints(int t);
 
     /**
      * @brief Encode the prefix-monotone (front-loading) symmetry-breaking constraint.
@@ -55,42 +56,42 @@ public:
      * at k..h-1. Frame axioms then propagate the goal state to timestep h, so a
      * single goal literal at h witnesses any plan length in the batch [prev_h+1..h].
      */
-    z3::expr encode_prefix_monotone(int t); // Front-loading symmetry breaking
+    Term encode_prefix_monotone(int t); // Front-loading symmetry breaking
 
     // Strategy management
     std::string get_parallelism_strategy_name() const;
 
     // Access to variable factory for plan extraction
-    Z3VariableFactory& get_variable_factory() { return variable_factory_; }
-    const Z3VariableFactory& get_variable_factory() const { return variable_factory_; }
+    SmtVariableFactory& get_variable_factory() { return variable_factory_; }
+    const SmtVariableFactory& get_variable_factory() const { return variable_factory_; }
 
     // Get access to parallelism strategy for plan extraction
     const ParallelismStrategy* get_parallelism_strategy() const { return parallelism_strategy_.get(); }
 
     // Encode precondition + effect constraints for a single action at timestep t.
     // Returns nullopt if the action has no effects (nothing to encode).
-    std::optional<z3::expr> encode_single_action(const Action& action, int t);
+    std::optional<Term> encode_single_action(const Action& action, int t);
 
     // Per-action effect constraints (action → effects), without preconditions.
     // Together with encode_cumulative_effects, these compose encode_actions.
-    std::optional<z3::expr> encode_non_cumulative_effects(const Action& action, int t);
+    std::optional<Term> encode_non_cumulative_effects(const Action& action, int t);
 
     // Per-timestep joint effect constraints across multiple actions (no-op
     // for this encoder; kept as the seam where a chained encoder would emit
     // cumulative-effect chain variables).
     // Together with encode_non_cumulative_effects, these compose encode_actions.
-    z3::expr encode_cumulative_effects(int t);
+    Term encode_cumulative_effects(int t);
 
-    Plan extract_plan(const z3::model& model, int max_timestep) const;
+    Plan extract_plan(const cvc5::Solver& solver, int max_timestep) const;
 
-    // Helper functions to convert expressions/effects to Z3 using visitor
+    // Helper functions to convert expressions/effects to terms using the visitor
     // (used by the abstract suffix encoder and propagator modules)
-    z3::expr convert_expr_id_to_z3(ExprID id, int timestep = -1);
-    z3::expr convert_effect_to_z3(const EffectExpression& effect, int timestep);
+    Term convert_expr_id_to_z3(ExprID id, int timestep = -1);
+    Term convert_effect_to_z3(const EffectExpression& effect, int timestep);
 
-    /// Convert an action's cost expression to Z3 at the given timestep,
+    /// Convert an action's cost expression to a term at the given timestep,
     /// evaluated at the start-of-timestep state x_t.
-    z3::expr convert_cost_to_z3(const Action& action, int timestep) {
+    Term convert_cost_to_z3(const Action& action, int timestep) {
         return convert_expr_id_to_z3(action.cost_id(), timestep);
     }
 
@@ -99,10 +100,16 @@ protected:
     // Helper function to print EPC index for debugging
     void print_epc_index(const std::string& context) const;
 
+    /// cvc5 has no operator overloading: every connective, comparison and
+    /// arithmetic node is built through the factory's TermBuilder. Read through
+    /// the factory so the Int-vs-Real policy (set with set_problem) is always
+    /// the current one.
+    const TermBuilder& tb() const { return variable_factory_.builder(); }
+
     // Member variables accessible to derived classes
     const Problem& problem_; // The planning problem instance
-    z3::context& ctx_;       // Z3 context (shared)
-    Z3VariableFactory variable_factory_; // Factory for creating and managing Z3 variables
+    cvc5::TermManager& ctx_; // cvc5 TermManager (shared)
+    SmtVariableFactory variable_factory_; // Factory for creating and managing SMT variables
 
     GroundedEncodingVisitor grounded_visitor_; // Grounded encoding visitor for individual variables
 
@@ -129,8 +136,8 @@ public:
     /// instead of the encoding).
     void set_lazy_frames(bool enabled) { lazy_frames_enabled_ = enabled; }
 
-    /// Extract true action variables at a timestep from a Z3 model.
-    std::vector<const Action*> extract_parallel_actions_at_timestep(const z3::model& model, int timestep) const;
+    /// Extract true action variables at a timestep from the solver's model.
+    std::vector<const Action*> extract_parallel_actions_at_timestep(const cvc5::Solver& solver, int timestep) const;
 
 protected:
 

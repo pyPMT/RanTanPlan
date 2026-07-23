@@ -31,7 +31,6 @@
 #include "util/logger.hpp"
 #include "util/stats.hpp"
 
-#include "z3++.h"
 
 namespace nb = nanobind;
 using namespace rantanplan;
@@ -39,7 +38,7 @@ using namespace rantanplan;
 namespace {
 
 /// (Re-)initialize the Config singleton from module args and sync the
-/// logger / Z3 verbosity, exactly like the CLI driver did.
+/// logger verbosity, exactly like the CLI driver did.
 void initialize_config(const std::vector<std::string>& args) {
     // These flags exit(0) inside the CLI parser, which would kill the
     // interpreter; they have module-level equivalents instead.
@@ -61,9 +60,8 @@ void initialize_config(const std::vector<std::string>& args) {
     config.initialize(static_cast<int>(argv.size()), argv.data());
     Logger::instance().set_verbosity(config.global.verbosity);
 
-    // Match the CLI driver's Z3 verbosity mapping (SILENT=0, INFO=0, VERBOSE=1, DEBUG=5)
-    constexpr int z3_verbosity[] = {0, 0, 1, 5};
-    z3::set_param("verbose", z3_verbosity[static_cast<int>(config.global.verbosity)]);
+    // cvc5 has no global verbosity parameter: verbosity is a per-Solver option
+    // (`verbosity`), set where the Solver is built rather than process-wide.
 }
 
 /// Log sink callback: (level: int, text: str), level = VerbosityLevel
@@ -176,12 +174,6 @@ ir::ResultIR solve_anytime_handle(
     });
 }
 
-std::string z3_version() {
-    unsigned major = 0, minor = 0, build = 0, revision = 0;
-    Z3_get_version(&major, &minor, &build, &revision);
-    return std::to_string(major) + "." + std::to_string(minor) + "." +
-           std::to_string(build) + "." + std::to_string(revision);
-}
 
 } // namespace
 
@@ -305,10 +297,10 @@ NB_MODULE(_rantanplan, m) {
         .def("interrupt",
              [](Preprocessed& p) { p.interrupt_slot.interrupt(); },
              "Cancel the solve currently running on this handle, from any "
-             "thread (flips Z3's interrupt flag; near-instant, no GIL "
+             "thread (calls cvc5::Solver::interrupt(); near-instant, no GIL "
              "gymnastics). The interrupted solve returns promptly with "
-             "TIMEOUT status. Only the Z3 search is interruptible: during "
-             "preprocessing or other non-Z3 phases this is a no-op.");
+             "TIMEOUT status. Only the search is interruptible: during "
+             "preprocessing, encoder and planner construction this is a no-op.");
 
     // ── Functions ───────────────────────────────────────────────────────
     m.def("preprocess", &preprocess_ir, nb::arg("problem"), nb::arg("args"),
@@ -356,8 +348,4 @@ NB_MODULE(_rantanplan, m) {
               return out;
           },
           "(name, description) pairs for all registered strategies.");
-
-    m.def("z3_version", &z3_version,
-          "Version of the libz3 this module is linked against (must match "
-          "the z3-solver package's, or two copies are loaded).");
 }

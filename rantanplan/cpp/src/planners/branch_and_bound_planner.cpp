@@ -8,7 +8,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
+#include <string>
 
 namespace rantanplan {
 
@@ -39,36 +41,51 @@ void BranchAndBoundPlanner::consume_artifacts(PreprocessedProblem& artifacts) {
 }
 
 BranchAndBoundPlanner::BranchAndBoundPlanner(
-    const Problem& problem, GroundedEncoder& encoder, z3::context& ctx,
+    const Problem& problem, GroundedEncoder& encoder, cvc5::TermManager& tm,
     SemanticsKind semantics)
-    : BasePlanner(problem, encoder, ctx),
-      abstract_(problem, ctx, encoder, semantics) {
+    : BasePlanner(problem, encoder, tm),
+      abstract_(problem, tm, encoder, semantics) {
 }
 
 void BranchAndBoundPlanner::add_timestep_constraints(int timestep) {
-    BasePlanner::add_timestep_constraints(solver_, encoder_, *propagator_strategy_, timestep);
+    BasePlanner::add_timestep_constraints(solver_, encoder_, timestep);
 }
 
-/// Extract the numeric cost value from a Z3 model. Handles Z3's decimal string
-/// representation, including the trailing '?' that Z3 appends for approximate values.
+/// Extract the numeric cost value from the model. cvc5 returns values as exact
+/// rationals rather than Z3's approximate decimal string, so this reads the
+/// rational directly; non-numeric values still yield 0.0, as before.
 double BranchAndBoundPlanner::extract_cost_from_model(
-    const z3::model& model, const z3::expr& cost_expr) {
-    z3::expr val = model.eval(cost_expr, true);
-    std::string decimal = val.get_decimal_string(10);
-
-    // get_decimal_string may return "?" for non-numeric values
-    if (decimal == "?" || decimal.empty()) return 0.0;
-
-    // Remove trailing '?' that Z3 sometimes appends for approximate values
-    if (!decimal.empty() && decimal.back() == '?') {
-        decimal.pop_back();
-    }
-
+    const cvc5::Solver& solver, const Term& cost_expr) {
     try {
-        return std::stod(decimal);
+        Term val = solver.getValue(cost_expr);
+
+        if (val.isIntegerValue()) {
+            return std::stod(val.getIntegerValue());
+        }
+        if (val.isReal64Value()) {
+            auto [num, den] = val.getReal64Value();
+            if (den == 0) return 0.0;
+            return static_cast<double>(num) / static_cast<double>(den);
+        }
+        // PORT-QUESTION: fallback for rationals that do not fit in 64 bits.
+        // cvc5 documents getRealValue() only as "the representation of a
+        // rational value as a (rational) string"; observed output is "n/d"
+        // (or a plain integer), which is what is parsed here. If a build
+        // emits some other spelling this silently returns 0.0, exactly as the
+        // Z3 version did for an unparsable decimal string.
+        if (val.isRealValue()) {
+            std::string rational = val.getRealValue();
+            size_t slash = rational.find('/');
+            if (slash == std::string::npos) return std::stod(rational);
+            double num = std::stod(rational.substr(0, slash));
+            double den = std::stod(rational.substr(slash + 1));
+            if (den == 0.0) return 0.0;
+            return num / den;
+        }
     } catch (...) {
         return 0.0;
     }
+    return 0.0;
 }
 
 // ============================================================================
@@ -108,7 +125,7 @@ Plan BranchAndBoundPlanner::search() {
     int start_timestep = std::max(0, config.planner.start_timestep);
     schedule_ = HorizonSchedule::from_string(config.planner.horizon_schedule);
 
-    std::string search_msg = "B&B search with propagator: " + propagator_strategy_->get_name();
+    std::string search_msg = "B&B search";
     if (start_timestep > 0) {
         search_msg += " from timestep " + std::to_string(start_timestep);
     }
@@ -121,13 +138,12 @@ Plan BranchAndBoundPlanner::search() {
     init_deadline();
 
     // Initialize
-    solver_.add(encoder_.encode_initial_state());
-    propagator_strategy_->register_timestep_variables(0);
+    solver_.assertFormula(encoder_.encode_initial_state());
     abstract_.initialize();
 
     // Permanent abstract constraints (add once, like encode_actions/frames)
-    solver_.add(abstract_.encode_mod_v_equivalences());
-    solver_.add(abstract_.encode_loop_formulas());
+    solver_.assertFormula(abstract_.encode_mod_v_equivalences());
+    solver_.assertFormula(abstract_.encode_loop_formulas());
 
     Plan best_plan;
     double upper_bound = std::numeric_limits<double>::infinity();
@@ -169,25 +185,25 @@ Plan BranchAndBoundPlanner::search() {
         // decomposed per-step methods)
         for (int i = 0; i < h; ++i) {
             if (i > 0) {
-                solver_.add(abstract_.encode_axiom_6(i));
+                solver_.assertFormula(abstract_.encode_axiom_6(i));
             }
-            solver_.add(abstract_.encode_axiom_7_step(i));
+            solver_.assertFormula(abstract_.encode_axiom_7_step(i));
         }
 
-        solver_.add(abstract_.encode_relaxed_preconditions(h));
-        solver_.add(abstract_.encode_abstract_goal(h));
+        solver_.assertFormula(abstract_.encode_relaxed_preconditions(h));
+        solver_.assertFormula(abstract_.encode_abstract_goal(h));
 
         // 4. Build total cost expression and goal for this horizon
-        z3::expr total_cost = abstract_.build_total_cost(h);
+        Term total_cost = abstract_.build_total_cost(h);
 
         std::string goal_name = "goal_at_" + std::to_string(h);
-        z3::expr goal_lit = ctx_.bool_const(goal_name.c_str());
-        solver_.add(z3::implies(goal_lit, encoder_.encode_goal(h)));
+        Term goal_lit = tm_.mkConst(tm_.getBooleanSort(), goal_name);
+        solver_.assertFormula(tb_.mk_implies(goal_lit, encoder_.encode_goal(h)));
 
         // 5. Inner B&B loop at this horizon
         bool advance_horizon = false;
         while (!advance_horizon) {
-            // Apply Z3 timeout for the inner loop check too
+            // Apply the solver timeout for the inner loop check too
             if (!apply_solver_timeout(solver_)) {
                 advance_horizon = true;
                 break;
@@ -195,21 +211,48 @@ Plan BranchAndBoundPlanner::search() {
 
             // Create cost bound assumption
             std::string cost_name = "cost_lt_" + std::to_string(cost_bound_counter++);
-            z3::expr cost_bound_lit = ctx_.bool_const(cost_name.c_str());
+            Term cost_bound_lit = tm_.mkConst(tm_.getBooleanSort(), cost_name);
             bool have_bound = !std::isinf(upper_bound);
             if (have_bound) {
-                z3::expr bound_val = encoder_.get_variable_factory().make_numeric_val(upper_bound);
-                solver_.add(z3::implies(cost_bound_lit, total_cost < bound_val));
+                Term bound_val = encoder_.get_variable_factory().make_numeric_val(upper_bound);
+                solver_.assertFormula(
+                    tb_.mk_implies(cost_bound_lit, tb_.lt(total_cost, bound_val)));
             }
 
-            z3::expr_vector assumptions(ctx_);
+            TermVec assumptions;
             assumptions.push_back(goal_lit);
             if (have_bound) {
                 assumptions.push_back(cost_bound_lit);
             }
 
+            // Ask for a CONCRETE solution first, by assuming every abstract
+            // action false, and only fall back to the relaxed query if that is
+            // unsatisfiable.
+            //
+            // The original code ran the relaxed query alone and then *tested*
+            // the model with is_concrete_solution(). That silently depended on
+            // the solver preferring a model with no abstract actions: the
+            // relaxed formula admits both, and nothing in it favours either.
+            // Z3 happened to return concrete models; cvc5 returns abstract ones,
+            // so every horizon was classified "abstract -> advance" and the
+            // bound stayed inf forever -- the search ran to 500 horizons without
+            // ever recognising the 3-step plan it was being handed.
+            //
+            // A model is not part of a formula's specification. Concreteness has
+            // to be *asserted*, not hoped for.
+            TermVec concrete_assumptions = assumptions;
+            for (const Term& a_abs : abstract_.abstract_action_vars()) {
+                concrete_assumptions.push_back(tb_.mk_not(a_abs));
+            }
+
             auto solve_start = std::chrono::high_resolution_clock::now();
-            z3::check_result result = solver_.check(assumptions);
+            cvc5::Result result = solver_.checkSatAssuming(concrete_assumptions);
+            if (!result.isSat()) {
+                // No concrete plan at this horizon under the current bound. The
+                // relaxed query then distinguishes "horizon exhausted, keep
+                // going" from "globally unsatisfiable".
+                result = solver_.checkSatAssuming(assumptions);
+            }
             auto solve_end = std::chrono::high_resolution_clock::now();
             auto solve_time = std::chrono::duration<double>(solve_end - solve_start).count();
 
@@ -223,13 +266,12 @@ Plan BranchAndBoundPlanner::search() {
                 {"mem",   std::to_string(static_cast<int>(current_memory)) + "MB"}
             });
 
-            if (result == z3::unsat) {
+            if (result.isUnsat()) {
                 if (std::isinf(upper_bound)) {
                     if (h == 0) {
                         Logger::instance().info(
                             "\n*** UNSOLVABLE_PROVEN: no plan exists ***");
                         collect_statistics();
-                        propagator_strategy_->cleanup();
                         return Plan();
                     }
                     advance_horizon = true;
@@ -245,16 +287,18 @@ Plan BranchAndBoundPlanner::search() {
                         ", cost=" + std::to_string(upper_bound) +
                         " (total time: " + std::to_string(total_time) + "s) ***");
                     collect_statistics();
-                    propagator_strategy_->cleanup();
                     return best_plan;
                 }
-            } else if (result == z3::sat) {
-                z3::model model = solver_.get_model();
-
-                if (abstract_.is_concrete_solution(model)) {
-                    double plan_cost = extract_cost_from_model(model, total_cost);
+            } else if (result.isSat()) {
+                // PORT-QUESTION: cvc5 has no model object — values are read
+                // with solver.getValue(). This assumes both
+                // AbstractSuffixEncoder::is_concrete_solution and
+                // BaseEncoder::extract_plan are re-typed to take the Solver in
+                // place of the z3::model (encoders layer, ported separately).
+                if (abstract_.is_concrete_solution(solver_)) {
+                    double plan_cost = extract_cost_from_model(solver_, total_cost);
                     upper_bound = plan_cost;
-                    best_plan = encoder_.extract_plan(model, h);
+                    best_plan = encoder_.extract_plan(solver_, h);
                     solution_found_ = true;
                     solution_count_++;
 
@@ -276,7 +320,7 @@ Plan BranchAndBoundPlanner::search() {
                     advance_horizon = true;
                 }
             } else {
-                handle_unknown_result(solver_, "B&B horizon " + std::to_string(h));
+                handle_unknown_result(result, "B&B horizon " + std::to_string(h));
                 advance_horizon = true;
             }
         }
@@ -319,7 +363,6 @@ Plan BranchAndBoundPlanner::search() {
     }
 
     collect_statistics();
-    propagator_strategy_->cleanup();
     return best_plan;
 }
 

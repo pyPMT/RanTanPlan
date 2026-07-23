@@ -67,13 +67,14 @@ Use --list-strategies to see available strategies and their descriptions.
     
     # Additional flags that work with all strategies
     parser.add_argument("--persist-clauses", action="store_true",
-                       help="Enable Z3 clause persistence for user propagator lemmas")
+                       help="Enable solver clause persistence for propagator lemmas "
+                            "(inert until the propagator port lands)")
     parser.add_argument("--symmetries", action="store_true",
                        help="Enable symmetry detection and breaking")
     parser.add_argument("--no-cnf-normalization", action="store_true",
                        help="Disable CNF normalization of goals and preconditions")
     parser.add_argument("--smt-rpg-checker", action="store_true",
-                       help="Use Z3 SMT solver for RPG applicability checks instead of interval arithmetic (default: interval)")
+                       help="Use the SMT solver for RPG applicability checks instead of interval arithmetic (default: interval)")
     parser.add_argument("--no-goal-relevance", action="store_true",
                        help="Disable semantic goal-relevance analysis (enabled by default)")
 

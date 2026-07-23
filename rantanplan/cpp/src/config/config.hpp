@@ -35,7 +35,7 @@ public:
     struct RPG {
         bool enabled = true;            ///< Run NumericRPG preprocessing (lower bound + action removal)
         bool action_removal = true;     ///< Prune unreachable actions using RPG results
-        bool use_interval_checker = true; ///< Interval-based formula evaluator (--smt-rpg-checker reverts to Z3)
+        bool use_interval_checker = true; ///< Interval-based formula evaluator (--smt-rpg-checker reverts to the SMT solver)
         /// Stop when goals become achievable (before fixpoint). Default false:
         /// early termination is unsound for action removal because later RPG layers
         /// may discover actions reachable only through over-approximated bounds.
@@ -52,7 +52,12 @@ public:
     } rpg;
     
     struct Planner {
-        std::string strategy = "els";  ///< Strategy name (looked up in StrategyRegistry)
+        // M4: the usual default is "els" (exists-step, LAZY semantic
+        // interference), but lazy interference needs a propagator, and those
+        // are out of the build until M5. "e" is the same exists-step semantics
+        // with EAGER interference, so it works with the eager clause encoding.
+        // REVERT TO "els" AT M5, when ExistsCycleModule lands as THEORY_PLAN.
+        std::string strategy = "e";  ///< Strategy name (looked up in StrategyRegistry)
         std::string mode = "satisficing";  ///< Search mode: satisficing, optimal, anytime
         std::string output_plan = "plan.txt";  ///< Plan output file path (IPC format)
         int max_steps = 500;
@@ -72,7 +77,7 @@ public:
     /// before parsing, so a second in-process run does not inherit the
     /// previous run's flags (or post-parse mutations like start_timestep).
     /// Concurrent solves in one process remain unsupported (singleton
-    /// Config, global z3::set_param).
+    /// Config).
     void initialize(int argc, char* argv[]);
     void validate() const;
 

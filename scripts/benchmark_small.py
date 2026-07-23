@@ -120,7 +120,10 @@ def run_instance(domain_path, problem_path, strategy, timeout, extra_params=None
                                 stats.get("pipeline.final_actions", 0))),
             "activated_pairs": int(stats.get("planner.activated_pairs", 0)),
             "total_pairs": int(stats.get("planner.total_pairs", 0)),
-            "rlimit": int(stats.get("z3.rlimit count", 0)),
+            # cvc5's deterministic work counter; the successor of Z3's
+            # "z3.rlimit count". Comparable within one solver only -- never
+            # compare these values against pre-migration Z3 baselines.
+            "rlimit": int(stats.get("cvc5.resource::resourceUnitsUsed", 0)),
         }
 
     except Exception as e:

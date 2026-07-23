@@ -16,7 +16,6 @@
 #include "util/scoped_timer.hpp"
 #include "util/stats.hpp"
 #include "util/logger.hpp"
-#include "planners/propagators/modules/logging_module.hpp"
 #include "passes/pipeline.hpp"
 #include "passes/action_pruning_pass.hpp"
 #include "passes/arithmetic_profile_pass.hpp"
@@ -35,13 +34,13 @@
 #include "analysis/interference_analysis.hpp"
 #include "grounding/array_lowering.hpp"
 
-#include "z3++.h"
+#include <cvc5/cvc5.h>
 
 namespace rantanplan::api {
 
 namespace {
 /// Captures the canonicalized (post-lowering, pre-grounding) problem for
-/// symmetry detection. The snapshot must be all-scalar — the detection's Z3
+/// symmetry detection. The snapshot must be all-scalar — the detection's SMT
 /// equivalence check cannot convert SET_* / ARRAY_INDEX / nested-term nodes
 /// (raw set nodes used to crash it) — yet still lifted and pre-StaticFluent
 /// (small formula; the distinguishing static assignments intact), which is
@@ -60,23 +59,23 @@ private:
 
 void InterruptSlot::interrupt() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (ctx_) {
-        ctx_->interrupt();  // Z3_interrupt: safe from another thread
+    if (solver_) {
+        solver_->interrupt();  // fork patch (M1): safe from another thread
     }
 }
 
-ScopedContextPublisher::ScopedContextPublisher(InterruptSlot* slot, z3::context& ctx)
+ScopedSolverPublisher::ScopedSolverPublisher(InterruptSlot* slot, cvc5::Solver& solver)
     : slot_(slot) {
     if (slot_) {
         std::lock_guard<std::mutex> lock(slot_->mutex_);
-        slot_->ctx_ = &ctx;
+        slot_->solver_ = &solver;
     }
 }
 
-ScopedContextPublisher::~ScopedContextPublisher() {
+ScopedSolverPublisher::~ScopedSolverPublisher() {
     if (slot_) {
         std::lock_guard<std::mutex> lock(slot_->mutex_);
-        slot_->ctx_ = nullptr;
+        slot_->solver_ = nullptr;
     }
 }
 
@@ -142,7 +141,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     //     gated on goal_relevance because achievers only exist with it)
     //   - SymmetryAnalysis after all pruning (runs on smallest action set)
     //   - ArithmeticProfile last (reads final expressions, sets all_integer for
-    //     every downstream Z3 translation)
+    //     every downstream SMT translation)
 
     // The symmetry-detection snapshot is taken *mid-pipeline* by
     // SymmetrySnapshotPass (above): after the canonicalize lowerings so the
@@ -273,10 +272,7 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
         result.log_messages.push_back(ir::LogMessageIR{1 /* INFO */, message});
     };
 
-    z3::context ctx;
-    // Declared after ctx: unpublishes (and waits for any in-flight
-    // interrupt()) before ctx is destroyed.
-    ScopedContextPublisher publish(interrupt_slot, ctx);
+    cvc5::TermManager ctx;
 
     rantanplan::Logger::instance().info("Using strategy: " + config.planner.strategy + " (mode: " + config.planner.mode + ")");
 
@@ -287,17 +283,15 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
     auto encoder = rantanplan::StrategyFactory::create_encoder(spec, pipeline_result, ctx);
     auto planner = rantanplan::StrategyFactory::create_planner(spec, pipeline_result, *encoder, ctx);
 
-    // Get solver reference and create propagator using factory
-    // (must come after the planner: the propagator attaches to its solver)
-    auto propagator = rantanplan::StrategyFactory::create_propagator(spec, planner->get_solver(), problem, *encoder);
+    // Publish the planner's solver for cross-thread interrupt(). Declared after
+    // the planner so it unpublishes (and waits for any in-flight interrupt())
+    // before the solver dies.
+    ScopedSolverPublisher publish(interrupt_slot, planner->get_solver());
 
-    // Add logging module if requested
-    if (config.has_log_file()) {
-        propagator->add_module(std::make_unique<rantanplan::LoggingModule>(
-            config.logging.log_file, config.planner.strategy));
-    }
-
-    planner->set_propagator_strategy(std::move(propagator));
+    // No propagator at M4: PropagatorStrategy and its modules are out of the
+    // build pending the THEORY_PLAN reimplementation (migration-plan.md §7.8),
+    // and the reduced registry only lists strategies that do not need one.
+    // LoggingModule is dropped for good here -- backlog item B3.
 
     if (on_plan) {
         planner->set_intermediate_plan_callback(on_plan);

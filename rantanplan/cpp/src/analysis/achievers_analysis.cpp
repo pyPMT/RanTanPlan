@@ -50,11 +50,13 @@ void AchieversAnalysis::initialize_from_rpg_data(const Problem& problem, RPGData
     auto start_total = std::chrono::high_resolution_clock::now();
 
     // Initialize SMT infrastructure
-    ctx_ = std::make_unique<z3::context>();
-    variable_factory_ = std::make_unique<Z3VariableFactory>(*ctx_);
+    ctx_ = std::make_unique<cvc5::TermManager>();
+    tb_ = std::make_unique<TermBuilder>(*ctx_);
+    tb_->set_problem(problem_);
+    variable_factory_ = std::make_unique<SmtVariableFactory>(*ctx_);
     variable_factory_->set_problem(problem_);
     visitor_ = std::make_unique<GroundedEncodingVisitor>(*ctx_, problem_, variable_factory_.get());
-    persistent_solver_ = std::make_unique<z3::solver>(*ctx_);
+    persistent_solver_ = std::make_unique<cvc5::Solver>(*ctx_);
 
     // Store RPG data
     state_variable_bounds_ = std::move(rpg_data.state_variable_bounds);
@@ -136,16 +138,21 @@ void AchieversAnalysis::compute_init_satisfied(const Problem& problem) {
     // landmark closure (init-satisfied conditions are excluded) and
     // relaxed-plan seeding (they need no achiever).
     init_satisfied_conditions_.clear();
-    z3::solver init_solver(*ctx_);
+    cvc5::Solver init_solver(*ctx_);
+    // Options must be set before the first assertFormula.
+    init_solver.setOption("produce-models", "true");
     for (const Assignment& a : problem.initial_state()) {
-        init_solver.add(visitor_->convert_from_pool(a.fluent_id(), 0) ==
-                        visitor_->convert_from_pool(a.value_id(), 0));
+        init_solver.assertFormula(
+            tb_->mk_eq(visitor_->convert_from_pool(a.fluent_id(), 0),
+                       visitor_->convert_from_pool(a.value_id(), 0)));
     }
-    if (init_solver.check() != z3::sat) return;
-    z3::model init_model = init_solver.get_model();
+    if (!init_solver.checkSat().isSat()) return;
+    // cvc5 has no model object: values are read straight off the solver, which
+    // completes the model for symbols the assertions left unconstrained.
     for (ExprID cond : get_all_conditions()) {
-        z3::expr cond_z3 = visitor_->convert_from_pool(cond, 0);
-        if (init_model.eval(cond_z3, true).is_true()) {
+        Term cond_z3 = visitor_->convert_from_pool(cond, 0);
+        Term cond_val = init_solver.getValue(cond_z3);
+        if (cond_val.isBooleanValue() && cond_val.getBooleanValue()) {
             init_satisfied_conditions_.insert(cond);
         }
     }
@@ -315,7 +322,7 @@ void AchieversAnalysis::analyze_semantic_achievers() {
                             continue;
                         }
 
-                        // Bounds changed → re-verify with Z3 (falls through)
+                        // Bounds changed → re-verify with SMT (falls through)
                     }
                 }
 
@@ -326,7 +333,7 @@ void AchieversAnalysis::analyze_semantic_achievers() {
                 }
             }
 
-            // Z3 check (first run, or re-verification of previous achiever)
+            // SMT check (first run, or re-verification of previous achiever)
             if (check_action_achieves_condition_with_pushpop(action, condition_eid)) {
                 condition_to_achievers_[condition_eid].insert(action);
                 action_to_achieved_conditions_[action].insert(condition_eid);
@@ -468,21 +475,25 @@ void AchieversAnalysis::add_bounds_constraints_to_solver() {
     // Add bounds constraints for all state variables in both timesteps
     for (const auto& [fluent_eid, interval] : state_variable_bounds_) {
         // Add bounds for current state (timestep 0)
-        z3::expr fluent_current = visitor_->convert_from_pool(fluent_eid, 0);
+        Term fluent_current = visitor_->convert_from_pool(fluent_eid, 0);
         if (!std::isinf(interval.lower)) {
-            persistent_solver_->add(fluent_current >= variable_factory_->make_numeric_val(interval.lower));
+            persistent_solver_->assertFormula(
+                tb_->geq(fluent_current, variable_factory_->make_numeric_val(interval.lower)));
         }
         if (!std::isinf(interval.upper)) {
-            persistent_solver_->add(fluent_current <= variable_factory_->make_numeric_val(interval.upper));
+            persistent_solver_->assertFormula(
+                tb_->leq(fluent_current, variable_factory_->make_numeric_val(interval.upper)));
         }
 
         // Add bounds for next state (timestep 1)
-        z3::expr fluent_next = visitor_->convert_from_pool(fluent_eid, 1);
+        Term fluent_next = visitor_->convert_from_pool(fluent_eid, 1);
         if (!std::isinf(interval.lower)) {
-            persistent_solver_->add(fluent_next >= variable_factory_->make_numeric_val(interval.lower));
+            persistent_solver_->assertFormula(
+                tb_->geq(fluent_next, variable_factory_->make_numeric_val(interval.lower)));
         }
         if (!std::isinf(interval.upper)) {
-            persistent_solver_->add(fluent_next <= variable_factory_->make_numeric_val(interval.upper));
+            persistent_solver_->assertFormula(
+                tb_->leq(fluent_next, variable_factory_->make_numeric_val(interval.upper)));
         }
     }
 }
@@ -496,31 +507,31 @@ bool AchieversAnalysis::check_action_achieves_condition_with_pushpop(const Actio
     for (const auto& effect_wrapper : action.effects()) {
         const EffectExpression& effect = effect_wrapper.effect_expression();
 
-        z3::expr fluent_current = visitor_->convert_from_pool(effect.fluent_id(), 0);
-        z3::expr fluent_next = visitor_->convert_from_pool(effect.fluent_id(), 1);
-        z3::expr value_z3 = visitor_->convert_from_pool(effect.value_id(), 0);
+        Term fluent_current = visitor_->convert_from_pool(effect.fluent_id(), 0);
+        Term fluent_next = visitor_->convert_from_pool(effect.fluent_id(), 1);
+        Term value_z3 = visitor_->convert_from_pool(effect.value_id(), 0);
 
         // Handle different effect kinds
-        z3::expr effect_constraint = ctx_->bool_val(true);
+        Term effect_constraint = tb_->bool_val(true);
         switch (effect.kind()) {
             case EffectExpression::Kind::ASSIGN:
-                effect_constraint = (fluent_next == value_z3);
+                effect_constraint = tb_->mk_eq(fluent_next, value_z3);
                 break;
             case EffectExpression::Kind::INCREASE:
-                effect_constraint = (fluent_next == fluent_current + value_z3);
+                effect_constraint = tb_->mk_eq(fluent_next, tb_->add(fluent_current, value_z3));
                 break;
             case EffectExpression::Kind::DECREASE:
-                effect_constraint = (fluent_next == fluent_current - value_z3);
+                effect_constraint = tb_->mk_eq(fluent_next, tb_->sub(fluent_current, value_z3));
                 break;
         }
 
         // Handle conditional effects
         if (effect.is_conditional()) {
-            z3::expr condition_z3 = visitor_->convert_from_pool(effect.condition_id(), 0);
-            effect_constraint = z3::implies(condition_z3, effect_constraint);
+            Term condition_z3 = visitor_->convert_from_pool(effect.condition_id(), 0);
+            effect_constraint = tb_->mk_implies(condition_z3, effect_constraint);
         }
 
-        persistent_solver_->add(effect_constraint);
+        persistent_solver_->assertFormula(effect_constraint);
         has_effects = true;
     }
 
@@ -535,8 +546,8 @@ bool AchieversAnalysis::check_action_achieves_condition_with_pushpop(const Actio
     // fly(city2, city2) would be reported as an achiever of "at city2"
     // even though it can only fire when the plane is already at city2.
     if (action.has_precondition()) {
-        z3::expr precond_z3 = visitor_->convert_from_pool(action.precondition_id(), 0);
-        persistent_solver_->add(precond_z3);
+        Term precond_z3 = visitor_->convert_from_pool(action.precondition_id(), 0);
+        persistent_solver_->assertFormula(precond_z3);
     }
 
     // Step 3: Add frame axioms for fluents not modified by this action
@@ -545,28 +556,28 @@ bool AchieversAnalysis::check_action_achieves_condition_with_pushpop(const Actio
 
     for (ExprID fluent_eid : condition_fluents) {
         if (!modified_fluents.contains(fluent_eid)) {
-            z3::expr fluent_current = visitor_->convert_from_pool(fluent_eid, 0);
-            z3::expr fluent_next = visitor_->convert_from_pool(fluent_eid, 1);
-            persistent_solver_->add(fluent_current == fluent_next);
+            Term fluent_current = visitor_->convert_from_pool(fluent_eid, 0);
+            Term fluent_next = visitor_->convert_from_pool(fluent_eid, 1);
+            persistent_solver_->assertFormula(tb_->mk_eq(fluent_current, fluent_next));
         }
     }
 
     // Step 4: Encode the transition requirement: condition becomes true
-    z3::expr condition_current = visitor_->convert_from_pool(condition_eid, 0);
-    z3::expr condition_next = visitor_->convert_from_pool(condition_eid, 1);
+    Term condition_current = visitor_->convert_from_pool(condition_eid, 0);
+    Term condition_next = visitor_->convert_from_pool(condition_eid, 1);
 
     // The key requirement: condition is false at current state, true at next state
-    persistent_solver_->add(!condition_current);  // condition is currently false
-    persistent_solver_->add(condition_next);       // condition becomes true after action
+    persistent_solver_->assertFormula(tb_->mk_not(condition_current));  // condition is currently false
+    persistent_solver_->assertFormula(condition_next);                  // condition becomes true after action
 
     // Step 5: Check if there exists such a transition
     ++z3_query_count_;
-    z3::check_result result = persistent_solver_->check();
+    cvc5::Result result = persistent_solver_->checkSat();
 
     // Pop the solver scope to remove all constraints added for this query
     persistent_solver_->pop();
 
-    return result == z3::sat;
+    return result.isSat();
 }
 
 std::unordered_set<ExprID> AchieversAnalysis::collect_query_relevant_fluents(
@@ -630,17 +641,20 @@ void AchieversAnalysis::update(const Problem& new_problem, RPGData new_rpg_data)
     arpg_num_layers_ = new_rpg_data.layer_count;
 
     // 3. Recreate SMT infrastructure (new bounds → new solver)
-    //    Destroy in reverse dependency order to avoid use-after-free:
-    //    solver depends on context, visitor depends on context + factory.
+    //    Destroy in reverse dependency order to avoid use-after-free: solver
+    //    depends on the TermManager, visitor depends on TermManager + factory.
     persistent_solver_.reset();
     visitor_.reset();
     variable_factory_.reset();
+    tb_.reset();
     ctx_.reset();
-    ctx_ = std::make_unique<z3::context>();
-    variable_factory_ = std::make_unique<Z3VariableFactory>(*ctx_);
+    ctx_ = std::make_unique<cvc5::TermManager>();
+    tb_ = std::make_unique<TermBuilder>(*ctx_);
+    tb_->set_problem(problem_);
+    variable_factory_ = std::make_unique<SmtVariableFactory>(*ctx_);
     variable_factory_->set_problem(problem_);
     visitor_ = std::make_unique<GroundedEncodingVisitor>(*ctx_, problem_, variable_factory_.get());
-    persistent_solver_ = std::make_unique<z3::solver>(*ctx_);
+    persistent_solver_ = std::make_unique<cvc5::Solver>(*ctx_);
     initialize_persistent_solver();
 
     // 4. Re-analyze: analyze() rebuilds precondition/condition maps (cheap),

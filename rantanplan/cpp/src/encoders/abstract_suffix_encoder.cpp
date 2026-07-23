@@ -4,6 +4,9 @@
 #include "../problem/visitors/fluent_collector.hpp"
 #include "../problem/expr_enums.hpp"
 
+#include <string>
+#include <unordered_map>
+
 namespace rantanplan {
 
 // ============================================================================
@@ -11,33 +14,53 @@ namespace rantanplan {
 // ============================================================================
 
 AbstractSuffixEncoder::AbstractSuffixEncoder(
-    const Problem& problem, z3::context& ctx,
+    const Problem& problem, cvc5::TermManager& ctx,
     GroundedEncoder& encoder,
     SemanticsKind semantics)
-    : problem_(problem), ctx_(ctx), encoder_(encoder),
+    : problem_(problem), ctx_(ctx), tb_(ctx), encoder_(encoder),
       semantics_(semantics),
       syntactic_(semantics == SemanticsKind::Sequential
                      ? nullptr
                      : std::make_unique<SyntacticInterference>(problem)),
-      cached_loop_formulas_(ctx.bool_val(true)),
-      epc_index_(&encoder.get_epc_index()) {}
+      epc_index_(&encoder.get_epc_index()),
+      cached_loop_formulas_(tb_.bool_val(true)) {
+    tb_.set_problem(&problem_);
+}
 
 void AbstractSuffixEncoder::initialize() {
     const auto& actions = problem_.actions();
     const auto& fluents = problem_.grounded_fluents();
 
-    // One abstract Bool per action
+    // One abstract Bool per action.
+    //
+    // PORT-QUESTION: `action.name()` is the *schema* name (the grounded
+    // parameters live in action.parameters(), see
+    // SmtVariableFactory::get_action_var_name), so all groundings of one schema
+    // render the same "abs_<name>". Z3's ctx.bool_const was interned by name, so
+    // they all shared ONE abstract variable; cvc5's mkConst is fresh per call
+    // and would give each grounding its own. The name-keyed map below preserves
+    // the Z3 behaviour exactly. If the sharing was accidental rather than
+    // intended, this is the line to change (and it is a semantic change to the
+    // abstract suffix, not a port detail).
+    std::unordered_map<std::string, Term> abs_by_name;
     action_abs_.reserve(actions.size());
     for (const auto& action : actions) {
         std::string name = "abs_" + action.name();
-        action_abs_.push_back(ctx_.bool_const(name.c_str()));
+        auto it = abs_by_name.find(name);
+        if (it == abs_by_name.end()) {
+            Term var = ctx_.mkConst(ctx_.getBooleanSort(), name);
+            it = abs_by_name.emplace(name, var).first;
+        }
+        action_abs_.push_back(it->second);
     }
+    action_abs_unique_.reserve(abs_by_name.size());
+    for (const auto& [name, var] : abs_by_name) action_abs_unique_.push_back(var);
 
     // One mod_v Bool per grounded fluent
     mod_vars_.reserve(fluents.size());
     for (size_t i = 0; i < fluents.size(); ++i) {
         std::string name = "mod_" + std::to_string(i);
-        mod_vars_.push_back(ctx_.bool_const(name.c_str()));
+        mod_vars_.push_back(ctx_.mkConst(ctx_.getBooleanSort(), name));
         fluent_to_mod_index_[fluents[i]] = i;
     }
 }
@@ -65,8 +88,8 @@ std::vector<ExprID> AbstractSuffixEncoder::get_precondition_conjuncts(ExprID pre
     return conjuncts;
 }
 
-z3::expr_vector AbstractSuffixEncoder::get_mod_vars_for_expr(ExprID expr_id) const {
-    z3::expr_vector mods(ctx_);
+TermVec AbstractSuffixEncoder::get_mod_vars_for_expr(ExprID expr_id) const {
+    TermVec mods;
     FluentCollector collector(problem_);
     collector.collect_from_id(expr_id);
     for (ExprID fluent_id : collector.get_fluents()) {
@@ -86,15 +109,15 @@ z3::expr_vector AbstractSuffixEncoder::get_mod_vars_for_expr(ExprID expr_id) con
 // Horizon-independent — only references abstract vars and action structure.
 // ============================================================================
 
-z3::expr AbstractSuffixEncoder::encode_mod_v_equivalences() {
-    z3::expr_vector all_constraints(ctx_);
+Term AbstractSuffixEncoder::encode_mod_v_equivalences() {
+    TermVec all_constraints;
 
     if (epc_index_) {
         for (size_t v_idx = 0; v_idx < mod_vars_.size(); ++v_idx) {
             ExprID fluent_id = problem_.grounded_fluents()[v_idx];
             auto it = epc_index_->find(fluent_id);
 
-            z3::expr_vector affecting_abs(ctx_);
+            TermVec affecting_abs;
             if (it != epc_index_->end()) {
                 for (const auto& [action_ptr, _] : it->second) {
                     int aid = action_ptr->id();
@@ -106,15 +129,15 @@ z3::expr AbstractSuffixEncoder::encode_mod_v_equivalences() {
 
             if (affecting_abs.empty()) {
                 // No action can affect this fluent — mod_v must be false
-                all_constraints.push_back(!mod_vars_[v_idx]);
+                all_constraints.push_back(tb_.mk_not(mod_vars_[v_idx]));
             } else {
                 all_constraints.push_back(
-                    mod_vars_[v_idx] == z3::mk_or(affecting_abs));
+                    tb_.mk_eq(mod_vars_[v_idx], tb_.mk_or(affecting_abs)));
             }
         }
     }
 
-    return all_constraints.empty() ? ctx_.bool_val(true) : z3::mk_and(all_constraints);
+    return all_constraints.empty() ? tb_.bool_val(true) : tb_.mk_and(all_constraints);
 }
 
 // ============================================================================
@@ -139,7 +162,7 @@ z3::expr AbstractSuffixEncoder::encode_mod_v_equivalences() {
 // The result is cached since it depends only on action structure, not horizon.
 // ============================================================================
 
-z3::expr AbstractSuffixEncoder::encode_loop_formulas() {
+Term AbstractSuffixEncoder::encode_loop_formulas() {
     if (loop_formulas_built_) return cached_loop_formulas_;
 
     // Build dependency graph for loop formula detection.
@@ -217,7 +240,7 @@ z3::expr AbstractSuffixEncoder::encode_loop_formulas() {
 
     auto sccs = graph.compute_strongly_connected_components();
 
-    z3::expr_vector loop_constraints(ctx_);
+    TermVec loop_constraints;
 
     for (const auto& scc : sccs) {
         // Skip trivial SCCs (size 1, no self-loop)
@@ -229,13 +252,13 @@ z3::expr AbstractSuffixEncoder::encode_loop_formulas() {
 
         std::unordered_set<int> scc_set(scc.begin(), scc.end());
 
-        // Build OR of all nodes in SCC (as z3 expressions)
-        z3::expr_vector scc_exprs(ctx_);
+        // Build OR of all nodes in SCC (as terms)
+        TermVec scc_exprs;
         for (int node : scc) {
             if (static_cast<size_t>(node) < num_fluents) {
                 scc_exprs.push_back(mod_vars_[node]);
             }
-            // Precondition atoms are not z3 variables in the abstract suffix;
+            // Precondition atoms are not SMT variables in the abstract suffix;
             // they participate in the dependency graph but the loop formula
             // constraint only applies to mod_v variables.
         }
@@ -243,7 +266,7 @@ z3::expr AbstractSuffixEncoder::encode_loop_formulas() {
         if (scc_exprs.empty()) continue;
 
         // Find R(L): nodes outside SCC with edges into SCC
-        z3::expr_vector external_support(ctx_);
+        TermVec external_support;
         for (int node : scc) {
             // Check all potential predecessors
             for (size_t pred = 0; pred < total_nodes; ++pred) {
@@ -256,26 +279,26 @@ z3::expr AbstractSuffixEncoder::encode_loop_formulas() {
                     // state conditions that can provide external support.
                     // Treat them as always satisfiable (grounded in the
                     // concrete prefix) by adding unconditional support.
-                    external_support.push_back(ctx_.bool_val(true));
+                    external_support.push_back(tb_.bool_val(true));
                 }
             }
         }
 
         if (external_support.empty()) {
             // No external support — SCC nodes must all be false
-            for (unsigned i = 0; i < scc_exprs.size(); ++i) {
-                loop_constraints.push_back(!scc_exprs[i]);
+            for (size_t i = 0; i < scc_exprs.size(); ++i) {
+                loop_constraints.push_back(tb_.mk_not(scc_exprs[i]));
             }
         } else {
             // (OR scc_nodes) => (OR external_support)
             loop_constraints.push_back(
-                z3::implies(z3::mk_or(scc_exprs), z3::mk_or(external_support)));
+                tb_.mk_implies(tb_.mk_or(scc_exprs), tb_.mk_or(external_support)));
         }
     }
 
     cached_loop_formulas_ = loop_constraints.empty()
-        ? ctx_.bool_val(true)
-        : z3::mk_and(loop_constraints);
+        ? tb_.bool_val(true)
+        : tb_.mk_and(loop_constraints);
     loop_formulas_built_ = true;
 
     return cached_loop_formulas_;
@@ -299,26 +322,26 @@ z3::expr AbstractSuffixEncoder::encode_loop_formulas() {
 // remains valid forever.
 // ============================================================================
 
-z3::expr AbstractSuffixEncoder::encode_axiom_6(int i) {
+Term AbstractSuffixEncoder::encode_axiom_6(int i) {
     // For each action a, at step i > 0:
     // a_i => (a_{i-1} OR (OR_{phi in pre_a} NOT phi_{i-1}) OR (OR_{a' in M_a} a'_{i-1}))
-    z3::expr_vector all_constraints(ctx_);
+    TermVec all_constraints;
     const auto& actions = problem_.actions();
     auto& vf = encoder_.get_variable_factory();
 
     for (size_t a_idx = 0; a_idx < actions.size(); ++a_idx) {
         const Action& action = actions[a_idx];
-        const z3::expr& a_i = vf.get_action_variable(action, i);
-        const z3::expr& a_prev = vf.get_action_variable(action, i - 1);
+        const Term& a_i = vf.get_action_variable(action, i);
+        const Term& a_prev = vf.get_action_variable(action, i - 1);
 
-        z3::expr_vector reasons(ctx_);
+        TermVec reasons;
         reasons.push_back(a_prev);  // action was already executing
 
         // Precondition was not satisfied at i-1
         if (action.has_precondition()) {
             auto conjuncts = get_precondition_conjuncts(action.precondition_id());
             for (ExprID phi : conjuncts) {
-                reasons.push_back(!encoder_.convert_expr_id_to_z3(phi, i - 1));
+                reasons.push_back(tb_.mk_not(encoder_.convert_expr_id_to_z3(phi, i - 1)));
             }
         }
 
@@ -351,10 +374,10 @@ z3::expr AbstractSuffixEncoder::encode_axiom_6(int i) {
             }
         }
 
-        all_constraints.push_back(z3::implies(a_i, z3::mk_or(reasons)));
+        all_constraints.push_back(tb_.mk_implies(a_i, tb_.mk_or(reasons)));
     }
 
-    return all_constraints.empty() ? ctx_.bool_val(true) : z3::mk_and(all_constraints);
+    return all_constraints.empty() ? tb_.bool_val(true) : tb_.mk_and(all_constraints);
 }
 
 // ============================================================================
@@ -368,25 +391,25 @@ z3::expr AbstractSuffixEncoder::encode_axiom_6(int i) {
 // Each clause is independent and permanent once added.
 // ============================================================================
 
-z3::expr AbstractSuffixEncoder::encode_axiom_7_step(int i) {
+Term AbstractSuffixEncoder::encode_axiom_7_step(int i) {
     const auto& actions = problem_.actions();
     auto& vf = encoder_.get_variable_factory();
 
-    if (action_abs_.empty()) return ctx_.bool_val(true);
+    if (action_abs_.empty()) return tb_.bool_val(true);
 
-    z3::expr_vector any_abstract(ctx_);
+    TermVec any_abstract;
     for (const auto& a_abs : action_abs_) {
         any_abstract.push_back(a_abs);
     }
 
-    z3::expr_vector any_concrete(ctx_);
+    TermVec any_concrete;
     for (const auto& action : actions) {
         any_concrete.push_back(vf.get_action_variable(action, i));
     }
 
-    if (any_concrete.empty()) return ctx_.bool_val(true);
+    if (any_concrete.empty()) return tb_.bool_val(true);
 
-    return z3::implies(z3::mk_or(any_abstract), z3::mk_or(any_concrete));
+    return tb_.mk_implies(tb_.mk_or(any_abstract), tb_.mk_or(any_concrete));
 }
 
 // ============================================================================
@@ -398,8 +421,8 @@ z3::expr AbstractSuffixEncoder::encode_axiom_7_step(int i) {
 // horizon-dependent. The planner gates this with an assumption literal.
 // ============================================================================
 
-z3::expr AbstractSuffixEncoder::encode_relaxed_preconditions(int n) {
-    z3::expr_vector all_constraints(ctx_);
+Term AbstractSuffixEncoder::encode_relaxed_preconditions(int n) {
+    TermVec all_constraints;
     const auto& actions = problem_.actions();
 
     for (size_t a_idx = 0; a_idx < actions.size(); ++a_idx) {
@@ -407,31 +430,31 @@ z3::expr AbstractSuffixEncoder::encode_relaxed_preconditions(int n) {
         if (!action.has_precondition()) continue;
 
         auto conjuncts = get_precondition_conjuncts(action.precondition_id());
-        z3::expr_vector relaxed_preconds(ctx_);
+        TermVec relaxed_preconds;
 
         for (ExprID phi : conjuncts) {
-            z3::expr phi_at_n = encoder_.convert_expr_id_to_z3(phi, n);
-            z3::expr_vector mods = get_mod_vars_for_expr(phi);
+            Term phi_at_n = encoder_.convert_expr_id_to_z3(phi, n);
+            TermVec mods = get_mod_vars_for_expr(phi);
 
             if (mods.empty()) {
                 relaxed_preconds.push_back(phi_at_n);
             } else {
-                z3::expr_vector disj(ctx_);
+                TermVec disj;
                 disj.push_back(phi_at_n);
-                for (unsigned i = 0; i < mods.size(); ++i) {
+                for (size_t i = 0; i < mods.size(); ++i) {
                     disj.push_back(mods[i]);
                 }
-                relaxed_preconds.push_back(z3::mk_or(disj));
+                relaxed_preconds.push_back(tb_.mk_or(disj));
             }
         }
 
         if (!relaxed_preconds.empty()) {
             all_constraints.push_back(
-                z3::implies(action_abs_[a_idx], z3::mk_and(relaxed_preconds)));
+                tb_.mk_implies(action_abs_[a_idx], tb_.mk_and(relaxed_preconds)));
         }
     }
 
-    return all_constraints.empty() ? ctx_.bool_val(true) : z3::mk_and(all_constraints);
+    return all_constraints.empty() ? tb_.bool_val(true) : tb_.mk_and(all_constraints);
 }
 
 // ============================================================================
@@ -445,45 +468,45 @@ z3::expr AbstractSuffixEncoder::encode_relaxed_preconditions(int n) {
 // The planner gates this with an assumption literal.
 // ============================================================================
 
-z3::expr AbstractSuffixEncoder::encode_abstract_goal(int n) {
-    z3::expr_vector goal_constraints(ctx_);
+Term AbstractSuffixEncoder::encode_abstract_goal(int n) {
+    TermVec goal_constraints;
 
     for (const auto& goal : problem_.goals()) {
-        z3::expr g_at_n = encoder_.convert_expr_id_to_z3(goal.goal_id(), n);
-        z3::expr_vector mods = get_mod_vars_for_expr(goal.goal_id());
+        Term g_at_n = encoder_.convert_expr_id_to_z3(goal.goal_id(), n);
+        TermVec mods = get_mod_vars_for_expr(goal.goal_id());
 
         if (mods.empty()) {
             goal_constraints.push_back(g_at_n);
         } else {
-            z3::expr_vector disj(ctx_);
+            TermVec disj;
             disj.push_back(g_at_n);
-            for (unsigned i = 0; i < mods.size(); ++i) {
+            for (size_t i = 0; i < mods.size(); ++i) {
                 disj.push_back(mods[i]);
             }
-            goal_constraints.push_back(z3::mk_or(disj));
+            goal_constraints.push_back(tb_.mk_or(disj));
         }
     }
 
-    return goal_constraints.empty() ? ctx_.bool_val(true) : z3::mk_and(goal_constraints);
+    return goal_constraints.empty() ? tb_.bool_val(true) : tb_.mk_and(goal_constraints);
 }
 
 // ============================================================================
 // Cost and solution queries
 // ============================================================================
 
-z3::expr AbstractSuffixEncoder::build_total_cost(int n) {
-    z3::expr total = encoder_.get_variable_factory().make_zero();
+Term AbstractSuffixEncoder::build_total_cost(int n) {
+    Term total = encoder_.get_variable_factory().make_zero();
     for (int i = 0; i < n; ++i) {
-        total = total + build_concrete_cost_term(i);
+        total = tb_.add(total, build_concrete_cost_term(i));
     }
-    total = total + build_abstract_cost_term();
+    total = tb_.add(total, build_abstract_cost_term());
     return total;
 }
 
-bool AbstractSuffixEncoder::is_concrete_solution(const z3::model& model) const {
+bool AbstractSuffixEncoder::is_concrete_solution(const cvc5::Solver& solver) const {
     for (const auto& a_abs : action_abs_) {
-        z3::expr val = model.eval(a_abs, true);
-        if (val.is_true()) return false;
+        Term val = solver.getValue(a_abs);
+        if (val.isBooleanValue() && val.getBooleanValue()) return false;
     }
     return true;
 }
@@ -505,31 +528,31 @@ bool AbstractSuffixEncoder::is_concrete_solution(const z3::model& model) const {
 // reachable state.
 // ============================================================================
 
-z3::expr AbstractSuffixEncoder::build_concrete_cost_term(int i) {
+Term AbstractSuffixEncoder::build_concrete_cost_term(int i) {
     auto& vf = encoder_.get_variable_factory();
-    z3::expr zero = vf.make_zero();
-    z3::expr cost = zero;
+    Term zero = vf.make_zero();
+    Term cost = zero;
 
     for (const auto& action : problem_.actions()) {
-        const z3::expr& a_var = vf.get_action_variable(action, i);
-        z3::expr c_a = encoder_.convert_cost_to_z3(action, i);
-        cost = cost + z3::ite(a_var, c_a, zero);
+        const Term& a_var = vf.get_action_variable(action, i);
+        Term c_a = encoder_.convert_cost_to_z3(action, i);
+        cost = tb_.add(cost, tb_.mk_ite(a_var, c_a, zero));
     }
     return cost;
 }
 
-z3::expr AbstractSuffixEncoder::build_abstract_cost_term() {
+Term AbstractSuffixEncoder::build_abstract_cost_term() {
     auto& vf = encoder_.get_variable_factory();
-    z3::expr zero = vf.make_zero();
-    z3::expr cost = zero;
+    Term zero = vf.make_zero();
+    Term cost = zero;
     const auto& actions = problem_.actions();
     for (size_t i = 0; i < action_abs_.size(); ++i) {
-        // For constant costs: exact via Z3 expression.
+        // For constant costs: exact via the cost expression.
         // For SDAC: use externally provided lower bound from RPG interval analysis.
-        z3::expr c_a = (!cost_lower_bounds_.empty())
+        Term c_a = (!cost_lower_bounds_.empty())
             ? vf.make_numeric_val(cost_lower_bounds_[i])
             : encoder_.convert_expr_id_to_z3(actions[i].cost_id(), 0);
-        cost = cost + z3::ite(action_abs_[i], c_a, zero);
+        cost = tb_.add(cost, tb_.mk_ite(action_abs_[i], c_a, zero));
     }
     return cost;
 }

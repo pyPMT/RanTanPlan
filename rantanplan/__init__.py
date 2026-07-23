@@ -8,18 +8,7 @@ env.factory.add_engine('rantanplan', 'rantanplan.planner_wrapper', 'RantanPlanPl
 env.factory.add_engine('rantanplan-optimal', 'rantanplan.planner_wrapper', 'RantanPlanOptimalPlanner')
 env.factory.add_engine('rantanplan-anytime', 'rantanplan.planner_wrapper', 'RantanPlanAnytimePlanner')
 
-# Fail fast on a libz3 mismatch: the extension module must link the exact libz3
-# the z3 package loads (two copies in one process is undefined behavior).
-# Compare major.minor.build only -- the module reports a 4th revision component.
-# If the module is missing entirely, planner_wrapper's UPException covers it.
-from .planner_wrapper import _rantanplan as _ext_module
-if _ext_module is not None:
-    import z3 as _z3
-    _built = _ext_module.z3_version().split('.')[:3]
-    _installed = _z3.get_version_string().split('.')[:3]
-    if _built != _installed:
-        raise ImportError(
-            f"The _rantanplan extension module was built against Z3 "
-            f"{'.'.join(_built)} but the installed z3-solver package is "
-            f"{'.'.join(_installed)}. Rebuild it against the installed Z3: "
-            f"pip install -e . --no-build-isolation")
+# No libz3 guard any more: the extension links the cvc5 fork's libcvc5 directly
+# out of its build tree (CMakeLists CVC5_BUILD_DIR), not a pip package, so there
+# is no second copy to disagree with. If the module is missing entirely,
+# planner_wrapper's UPException covers it.
