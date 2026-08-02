@@ -87,6 +87,23 @@ private:
     bool conflict_raised_ = false;
     bool decide_registered_ = false;
 
+    // Callback traffic and cost, reported by cleanup() as propagator.*.
+    // Together with planner.solve_time these give the share of solving time
+    // spent inside the propagator, and the push/pop load on module trails.
+    long long fixed_calls_ = 0;
+    long long final_calls_ = 0;
+    long long push_calls_ = 0;
+    long long pop_calls_ = 0;
+    long long pop_scopes_ = 0;
+    long long decide_calls_ = 0;
+    double callback_ms_ = 0.0;
+
+    /// Whether callback timing is worth its two clock reads.  A propagator
+    /// with no modules (seq, seq-dt) still receives every fixed() callback,
+    /// but has no module work to attribute, so timing it would only measure
+    /// the measurement.
+    bool timing_enabled() const { return !modules_.empty(); }
+
     /// Update the shared action trail when an action variable is fixed to true.
     bool update_action_trail(const z3::expr& ast, const z3::expr& value);
 };

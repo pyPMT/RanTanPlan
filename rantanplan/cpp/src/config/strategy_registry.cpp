@@ -76,7 +76,12 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
         {"elsc-dt",   {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::DoubleTail},
                        "Exists-step, lazy semantic interference, chained encoder, double-tail"}},
 
-        // Frame propagator variant
+        // Frame propagator variants (each mirrors its non-fp counterpart, with
+        // eager frame axioms replaced by the lazy frame propagator module).
+        {"e-fp",      {{E::Grounded, S::Exists,     I::EagerSyntactic,  {M::ExistsCycle, M::FrameAxiom}, K::Sequential},
+                       "Exists-step, eager syntactic interference, frame propagator"}},
+        {"els-fp",    {{E::Grounded, S::Exists,     I::LazySemantic,    {M::ExistsCycle, M::FrameAxiom}, K::Sequential},
+                       "Exists-step, lazy semantic interference, frame propagator"}},
         {"elsc-fp",   {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle, M::FrameAxiom}, K::Sequential},
                        "Exists-step, lazy semantic, chained encoder, frame propagator"}},
 

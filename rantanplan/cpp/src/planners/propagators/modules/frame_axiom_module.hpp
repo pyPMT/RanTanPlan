@@ -62,6 +62,12 @@ private:
         int num_cant_explain = 0;
         int num_can_explain = 0;
 
+        /// Has this clause ever been materialized (propagation or conflict)?
+        /// Lifetime statistic: deliberately not trailed, so it is not undone
+        /// on backtracking.  Counts distinct clauses, giving a ratio against
+        /// the eager encoding that is comparable to the mutex generation ratio.
+        bool materialized = false;
+
         bool owned() const { return num_can_explain > 0; }
 
         FrameClause(int t, ExprID fid, bool is_bool)
@@ -103,10 +109,25 @@ private:
 
     // Stats
     int frame_conflict_count_ = 0;
-    int frame_propagation_count_ = 0;
+    int frame_persistence_prop_count_ = 0;
+    int frame_unit_prop_count_ = 0;
     int frame_on_fixed_count_ = 0;
-    int frame_final_violation_count_ = 0;
+    int frame_on_final_count_ = 0;
+    int frame_final_conflict_count_ = 0;
+    int frame_final_propagation_count_ = 0;
     int frame_vars_registered_ = 0;
+
+    // Size of the eager frame encoding this module replaces: one axiom per
+    // (fluent with modifiers, transition), of width = number of explainers.
+    // Registered here because encode_frames() short-circuits under lazy frames,
+    // so the eager counters are never produced in an -fp run.
+    long long frame_clauses_materialized_ = 0;
+    long long frame_eager_axioms_ = 0;
+    long long frame_eager_literals_ = 0;
+    long long frame_static_persistence_ = 0;
+
+    // Wall-clock spent inside this module's Z3 callbacks.
+    double frame_callback_ms_ = 0.0;
 
     // --- Helpers ---
 
@@ -118,6 +139,8 @@ private:
     void report_frame_conflict(const FrameClause& clause, size_t clause_idx);
     void propagate_fluent_preservation(const FrameClause& clause, size_t clause_idx);
     void propagate_last_entry(const FrameClause& clause, size_t clause_idx);
+    /// Record that clause_idx produced a lemma (see FrameClause::materialized).
+    void mark_materialized(size_t clause_idx);
     void build_frame_fixed(z3::expr_vector& fixed,
                            const FrameClause& clause, size_t clause_idx,
                            bool include_change, int skip_idx = -1);

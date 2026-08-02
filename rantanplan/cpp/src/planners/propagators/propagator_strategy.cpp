@@ -1,5 +1,7 @@
 #include "propagator_strategy.hpp"
 #include "../../config/config.hpp"
+#include "../../util/scoped_timer.hpp"
+#include "../../util/stats.hpp"
 #include "../../z3core/z3_variable_factory.hpp"
 
 namespace rantanplan {
@@ -75,11 +77,17 @@ bool PropagatorStrategy::update_action_trail(const z3::expr& ast,
 // ---------------------------------------------------------------------------
 
 void PropagatorStrategy::push() {
+    AccumulatingTimer timer(callback_ms_, timing_enabled());
+    push_calls_++;
     shared_.action_decision_levels.push_back(shared_.action_trail.size());
     for (auto& m : modules_) m->on_push();
 }
 
 void PropagatorStrategy::pop(unsigned num_scopes) {
+    AccumulatingTimer timer(callback_ms_, timing_enabled());
+    pop_calls_++;
+    pop_scopes_ += num_scopes;
+
     // Restore shared action trail
     for (unsigned i = 0; i < num_scopes; ++i) {
         if (!shared_.action_decision_levels.empty()) {
@@ -97,6 +105,8 @@ void PropagatorStrategy::pop(unsigned num_scopes) {
 }
 
 void PropagatorStrategy::fixed(const z3::expr& ast, const z3::expr& value) {
+    AccumulatingTimer timer(callback_ms_, timing_enabled());
+    fixed_calls_++;
     conflict_raised_ = false;
     update_action_trail(ast, value);
     for (auto& m : modules_) {
@@ -106,10 +116,14 @@ void PropagatorStrategy::fixed(const z3::expr& ast, const z3::expr& value) {
 }
 
 void PropagatorStrategy::decide(const z3::expr& val, unsigned bit, bool is_pos) {
+    AccumulatingTimer timer(callback_ms_, timing_enabled());
+    decide_calls_++;
     for (auto& m : modules_) m->on_decide(val, bit, is_pos);
 }
 
 void PropagatorStrategy::final() {
+    AccumulatingTimer timer(callback_ms_, timing_enabled());
+    final_calls_++;
     conflict_raised_ = false;
     for (auto& m : modules_) {
         m->on_final();
@@ -147,6 +161,28 @@ void PropagatorStrategy::register_timestep_variables(int timestep) {
 // ---------------------------------------------------------------------------
 
 void PropagatorStrategy::cleanup() {
+    auto& stats = Stats::instance();
+    stats.set("propagator.fixed_calls", static_cast<double>(fixed_calls_));
+    stats.set("propagator.final_calls", static_cast<double>(final_calls_));
+    stats.set("propagator.decide_calls", static_cast<double>(decide_calls_));
+    stats.set("propagator.push_calls", static_cast<double>(push_calls_));
+    stats.set("propagator.pop_calls", static_cast<double>(pop_calls_));
+    stats.set("propagator.pop_scopes", static_cast<double>(pop_scopes_));
+    stats.set("propagator.registered_vars",
+              static_cast<double>(registered_ids_.size()));
+
+    // Both timing keys stay absent when timing was off, rather than being
+    // reported as zero — an unmeasured propagator must not read as one that
+    // spent no time.  planner.* time stats are in seconds and are fully
+    // accumulated by the time cleanup() runs.
+    if (timing_enabled()) {
+        stats.set("propagator.callback_ms", callback_ms_);
+        double solve_time_s = stats.get("planner.solve_time");
+        if (solve_time_s > 0.0)
+            stats.set("propagator.callback_time_fraction",
+                      (callback_ms_ / 1000.0) / solve_time_s);
+    }
+
     for (auto& m : modules_) m->cleanup();
 }
 

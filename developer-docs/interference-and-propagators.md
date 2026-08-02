@@ -235,6 +235,60 @@ differing in whether they consume an eager or lazy interference graph),
 `ExistsCycle` (cycle detection for ∃-step — a candidate parallel step is
 valid iff its interference subgraph is acyclic), and `FrameAxiom` (supplies
 frame axioms lazily from the propagator instead of the encoding, for the
-`elsc-fp` strategy). A `StrategySpec`'s `propagator` field is a
+`-fp` strategies). A `StrategySpec`'s `propagator` field is a
 `std::set<PropagatorModuleKind>` — strategies can combine modules (e.g.
 `elsc-fp` uses `{ExistsCycle, FrameAxiom}` together).
+
+The `-fp` family adds `FrameAxiom` to an existing strategy and changes
+nothing else, so each one pairs with a baseline for ablation: `e-fp` with
+`e` (eager syntactic interference), `els-fp` with `els` (lazy semantic), and
+`elsc-fp` with `elsc` (lazy semantic, chained encoder). `StrategyFactory`
+calls `encoder.set_lazy_frames(true)` whenever `FrameAxiom` is present, which
+makes `GroundedEncoder::encode_frames()` return `true` and hands all frame
+reasoning to the module.
+
+### What the propagators report
+
+Every module writes its counters in `cleanup()`, which the planners call on
+all exit paths, so `--stats-file` captures them for solved, unsolved and
+horizon-exhausted runs alike. `PropagatorStrategy::cleanup()` adds
+dispatcher-level numbers first:
+
+| Key | Meaning |
+| --- | --- |
+| `propagator.fixed_calls`, `.final_calls`, `.decide_calls` | Z3 callback counts (all modules) |
+| `propagator.push_calls`, `.pop_calls`, `.pop_scopes` | backtracking traffic through the module trails |
+| `propagator.callback_ms` | wall-clock inside all propagator callbacks |
+| `propagator.callback_time_fraction` | that time over `planner.solve_time` |
+
+The two timing keys are **absent** for a strategy with no modules (`seq`,
+`seq-dt`). Those still receive every `fixed()` callback — hundreds of
+millions of them on a large instance — but have no module work to attribute,
+so the clock reads are skipped rather than spent measuring the measurement.
+Absent, not zero: an unmeasured propagator must not read as one that spent no
+time.
+| `propagator.registered_vars` | distinct variables watched |
+
+`FrameAxiomModule::cleanup()` adds the frame-specific view:
+
+| Key | Meaning |
+| --- | --- |
+| `frame_prop.clauses_created` | frame clauses monitored (one per fluent-with-modifiers per transition) |
+| `frame_prop.persistence_propagations` | "no explainer left ⇒ fluent persists" |
+| `frame_prop.unit_propagations` | "fluent changed and one explainer left ⇒ it fired" |
+| `frame_prop.propagations` | sum of the two above |
+| `frame_prop.conflicts` | frame conflicts raised |
+| `frame_prop.final_conflicts`, `.final_propagations` | the subset caught by the `final` sweep rather than during `fixed` |
+| `frame_prop.callback_ms` | wall-clock inside this module's callbacks |
+| `frame_prop.f_eager_axioms` | frame axioms the eager encoding would have posted — matches `encoder.frame_axioms` of the non-`fp` baseline |
+| `frame_prop.f_eager_literals` | their total width (explainers summed over axioms) |
+| `frame_prop.clauses_materialized` / `.f_lazy` | *distinct* frame clauses that ever produced a lemma |
+| `frame_prop.f_lazy_over_f_eager` | the two above as a ratio, always ≤ 1 |
+| `frame_prop.f_lazy_emissions`, `.emissions_over_f_eager` | the same counted *with* repetitions, which can exceed `f_eager` by orders of magnitude |
+| `frame_prop.static_persistence` | fluents no action writes, given `f^{t+1} = f^t` directly instead of a clause |
+
+The two lazy/eager ratios answer different questions: `f_lazy_over_f_eager`
+is the share of the eager frame encoding the search ever needed at all (the
+measure comparable to the mutex generation ratio), while
+`emissions_over_f_eager` is how much repeated work the lazy scheme does on
+the clauses it does touch.

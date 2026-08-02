@@ -1,5 +1,6 @@
 #include "frame_axiom_module.hpp"
 #include "../../../config/config.hpp"
+#include "../../../util/scoped_timer.hpp"
 #include "../../../util/stats.hpp"
 #include "../../../encoders/grounded_encoder.hpp"
 #include <algorithm>
@@ -16,6 +17,7 @@ void FrameAxiomModule::on_push() {
 }
 
 void FrameAxiomModule::on_pop(unsigned num_scopes) {
+    AccumulatingTimer timer(frame_callback_ms_);
     unsigned effective = std::min(num_scopes,
                                   static_cast<unsigned>(frame_decision_levels_.size()));
     assert(effective == num_scopes && "pop without matching push");
@@ -60,6 +62,10 @@ void FrameAxiomModule::on_pop(unsigned num_scopes) {
 // ============================================================================
 
 void FrameAxiomModule::on_fixed(const z3::expr& ast, const z3::expr& value) {
+    // Timed from the top: the role lookup runs for every variable Z3 fixes,
+    // watched or not, and is part of the module's overhead.
+    AccumulatingTimer timer(frame_callback_ms_);
+
     auto it = frame_var_to_roles_.find(ast.id());
     if (it == frame_var_to_roles_.end()) return;
 
@@ -121,6 +127,9 @@ void FrameAxiomModule::on_fixed(const z3::expr& ast, const z3::expr& value) {
 // ============================================================================
 
 void FrameAxiomModule::on_final() {
+    AccumulatingTimer timer(frame_callback_ms_);
+    frame_on_final_count_++;
+
     for (size_t ci = 0; ci < frame_clauses_.size(); ++ci) {
         auto& clause = frame_clauses_[ci];
 
@@ -129,13 +138,13 @@ void FrameAxiomModule::on_final() {
         // After owned() check: num_can_explain == 0
 
         if (clause.eq_state == 0) {
-            frame_final_violation_count_++;
+            frame_final_conflict_count_++;
             report_frame_conflict(clause, ci);
             return;
         }
 
         if (clause.eq_state == -1) {
-            frame_final_violation_count_++;
+            frame_final_propagation_count_++;
             propagate_fluent_preservation(clause, ci);
             return;
         }
@@ -170,6 +179,13 @@ void FrameAxiomModule::check_frame_clause(FrameClause& clause, size_t clause_idx
 // ============================================================================
 // Conflict & propagation
 // ============================================================================
+
+void FrameAxiomModule::mark_materialized(size_t clause_idx) {
+    auto& clause = frame_clauses_[clause_idx];
+    if (clause.materialized) return;
+    clause.materialized = true;
+    frame_clauses_materialized_++;
+}
 
 void FrameAxiomModule::build_frame_fixed(
         z3::expr_vector& fixed,
@@ -207,6 +223,7 @@ void FrameAxiomModule::report_frame_conflict(const FrameClause& clause, size_t c
     z3::expr_vector fixed(host_->z3_ctx());
     build_frame_fixed(fixed, clause, clause_idx, true);
     frame_conflict_count_++;
+    mark_materialized(clause_idx);
     host_->module_conflict(fixed);
 }
 
@@ -214,7 +231,8 @@ void FrameAxiomModule::propagate_fluent_preservation(const FrameClause& clause, 
     z3::expr_vector fixed(host_->z3_ctx());
     build_frame_fixed(fixed, clause, clause_idx, false);
 
-    frame_propagation_count_++;
+    frame_persistence_prop_count_++;
+    mark_materialized(clause_idx);
     if (clause.is_boolean) {
         host_->module_propagate(fixed, frame_fluent_ft1_[clause_idx] == frame_fluent_ft_[clause_idx]);
     } else {
@@ -236,11 +254,13 @@ void FrameAxiomModule::propagate_last_entry(const FrameClause& clause, size_t cl
     build_frame_fixed(fixed, clause, clause_idx, true, static_cast<int>(idx));
 
     if (entry.action_state == -1) {
-        frame_propagation_count_++;
+        frame_unit_prop_count_++;
+        mark_materialized(clause_idx);
         host_->module_propagate(fixed, frame_action_expr_[clause_idx][idx]);
     } else if (entry.is_conditional && entry.action_state == 1 && entry.cond_state == -1) {
         fixed.push_back(frame_action_expr_[clause_idx][idx]);
-        frame_propagation_count_++;
+        frame_unit_prop_count_++;
+        mark_materialized(clause_idx);
         host_->module_propagate(fixed, frame_cond_expr_[clause_idx][idx]);
     }
 }
@@ -270,10 +290,18 @@ void FrameAxiomModule::register_frame_variables(int t) {
             z3::expr f_t = grounded->convert_expr_id_to_z3(eid, t);
             z3::expr f_t1 = grounded->convert_expr_id_to_z3(eid, t + 1);
             shared_->solver->add(f_t1 == f_t);
+            frame_static_persistence_++;
             continue;
         }
 
         const auto& action_effects = epc_it->second;
+
+        // F_eager accounting: encode_frames() would post exactly one axiom for
+        // this (fluent, transition), a disjunction over |action_effects|
+        // explainers.  It short-circuits under lazy frames, so count here.
+        frame_eager_axioms_++;
+        frame_eager_literals_ += static_cast<long long>(action_effects.size());
+
         bool is_bool = shared_->problem->is_bool_type(eid);
         size_t clause_idx = frame_clauses_.size();
 
@@ -384,12 +412,48 @@ void FrameAxiomModule::recompute_derived(FrameClause& clause) {
 
 void FrameAxiomModule::cleanup() {
     auto& stats = Stats::instance();
+
+    const int propagations = frame_persistence_prop_count_ + frame_unit_prop_count_;
+    const int final_violations =
+        frame_final_conflict_count_ + frame_final_propagation_count_;
+
     stats.set("frame_prop.clauses_created", static_cast<double>(frame_clauses_.size()));
     stats.set("frame_prop.conflicts", static_cast<double>(frame_conflict_count_));
-    stats.set("frame_prop.propagations", static_cast<double>(frame_propagation_count_));
+    stats.set("frame_prop.propagations", static_cast<double>(propagations));
+    stats.set("frame_prop.persistence_propagations",
+              static_cast<double>(frame_persistence_prop_count_));
+    stats.set("frame_prop.unit_propagations",
+              static_cast<double>(frame_unit_prop_count_));
     stats.set("frame_prop.on_fixed_calls", static_cast<double>(frame_on_fixed_count_));
-    stats.set("frame_prop.on_final_violations", static_cast<double>(frame_final_violation_count_));
+    stats.set("frame_prop.on_final_calls", static_cast<double>(frame_on_final_count_));
+    stats.set("frame_prop.on_final_violations", static_cast<double>(final_violations));
+    stats.set("frame_prop.final_conflicts",
+              static_cast<double>(frame_final_conflict_count_));
+    stats.set("frame_prop.final_propagations",
+              static_cast<double>(frame_final_propagation_count_));
     stats.set("frame_prop.vars_registered", static_cast<double>(frame_vars_registered_));
+    stats.set("frame_prop.callback_ms", frame_callback_ms_);
+
+    // Lazy-vs-eager frame constraint accounting.  F_eager is what the eager
+    // encoding would have posted over all registered transitions.  Two
+    // readings of F_lazy: distinct frame clauses ever materialized (the
+    // measure comparable to the mutex generation ratio, always <= F_eager),
+    // and total lemma emissions, which counts repeated visits to the same
+    // clause across the search and can far exceed F_eager.
+    const double f_eager = static_cast<double>(frame_eager_axioms_);
+    const double f_lazy_distinct = static_cast<double>(frame_clauses_materialized_);
+    const double f_lazy_emissions =
+        static_cast<double>(propagations + frame_conflict_count_);
+    stats.set("frame_prop.f_eager_axioms", f_eager);
+    stats.set("frame_prop.f_eager_literals", static_cast<double>(frame_eager_literals_));
+    stats.set("frame_prop.static_persistence", static_cast<double>(frame_static_persistence_));
+    stats.set("frame_prop.clauses_materialized", f_lazy_distinct);
+    stats.set("frame_prop.f_lazy", f_lazy_distinct);
+    stats.set("frame_prop.f_lazy_emissions", f_lazy_emissions);
+    if (f_eager > 0.0) {
+        stats.set("frame_prop.f_lazy_over_f_eager", f_lazy_distinct / f_eager);
+        stats.set("frame_prop.emissions_over_f_eager", f_lazy_emissions / f_eager);
+    }
 }
 
 } // namespace rantanplan
