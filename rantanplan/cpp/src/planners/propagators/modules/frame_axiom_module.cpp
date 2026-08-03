@@ -1,153 +1,389 @@
 #include "frame_axiom_module.hpp"
-#include "../../../config/config.hpp"
 #include "../../../util/scoped_timer.hpp"
 #include "../../../util/stats.hpp"
 #include "../../../encoders/grounded_encoder.hpp"
 #include <algorithm>
 #include <cassert>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
 
 namespace rantanplan {
 
 // ============================================================================
-// Push / Pop (private frame trail only)
+// Initialization — build the timeless layer once
+// ============================================================================
+
+void FrameAxiomModule::initialize(PropagatorSharedState& shared,
+                                    PropagatorStrategy& host) {
+    PropagatorModule::initialize(shared, host);
+    grounded_ = dynamic_cast<GroundedEncoder*>(shared.encoder);
+    if (grounded_) build_clause_shapes();
+}
+
+void FrameAxiomModule::emit_clause_shape(
+        ExprID fluent_id,
+        const std::vector<std::pair<const Action*, const EffectExpression*>>& effects,
+        std::unordered_map<int, uint32_t>& literal_of_action,
+        std::unordered_map<ExprID, uint32_t>& position_of_condition) {
+
+    ClauseShape shape;
+    shape.fluent_id       = fluent_id;
+    shape.first_explainer = static_cast<uint32_t>(explainers_.size());
+    shape.num_explainers  = static_cast<uint32_t>(effects.size());
+
+    for (const auto& [action, effect] : effects) {
+        Explainer x;
+
+        auto [a_it, a_new] = literal_of_action.emplace(
+            action->id(), static_cast<uint32_t>(literal_actions_.size()));
+        if (a_new) literal_actions_.push_back(action);
+        x.action_literal = a_it->second;
+
+        if (effect->is_conditional()) {
+            auto [c_it, c_new] = position_of_condition.emplace(
+                effect->condition_id(),
+                static_cast<uint32_t>(literal_conditions_.size()));
+            if (c_new) literal_conditions_.push_back(effect->condition_id());
+            // Stored as a POSITION for now; shifted into the shared literal
+            // namespace once the action count is final (see below).
+            x.cond_literal = c_it->second;
+        } else {
+            x.cond_literal = kUnconditional;
+        }
+
+        explainers_.push_back(x);
+    }
+
+    clause_shapes_.push_back(shape);
+}
+
+void FrameAxiomModule::build_clause_shapes() {
+    const auto& epc_index = grounded_->get_epc_index();
+    const Problem& problem = *shared_->problem;
+
+    std::unordered_map<int, uint32_t>    literal_of_action;
+    std::unordered_map<ExprID, uint32_t> position_of_condition;
+
+    auto modifiers_of = [&](ExprID eid)
+        -> const std::vector<std::pair<const Action*, const EffectExpression*>>* {
+        auto it = epc_index.find(eid);
+        if (it == epc_index.end() || it->second.empty()) return nullptr;
+        return &it->second;
+    };
+
+    // Two passes so that boolean shapes occupy [0, num_boolean_shapes_) and
+    // numeric ones follow.  That ordering is what lets "shape < B" replace an
+    // is_boolean flag and a pair of head-index lookup tables.
+    for (ExprID eid : problem.grounded_fluents()) {
+        const auto* effects = modifiers_of(eid);
+        if (!effects) {
+            // No action can ever touch this fluent: it is never a clause, it
+            // gets an eagerly asserted persistence chain per transition.
+            unmodifiable_fluents_.push_back(eid);
+            continue;
+        }
+        if (problem.is_bool_type(eid))
+            emit_clause_shape(eid, *effects, literal_of_action, position_of_condition);
+    }
+    num_boolean_shapes_ = static_cast<uint32_t>(clause_shapes_.size());
+
+    for (ExprID eid : problem.grounded_fluents()) {
+        const auto* effects = modifiers_of(eid);
+        if (!effects || problem.is_bool_type(eid)) continue;
+        emit_clause_shape(eid, *effects, literal_of_action, position_of_condition);
+    }
+    num_numeric_shapes_ =
+        static_cast<uint32_t>(clause_shapes_.size()) - num_boolean_shapes_;
+
+    // Conditions share one namespace with actions, sitting above them, so
+    // that a single occurrence index and a single "which literal is this"
+    // comparison cover both.
+    num_action_literals_    = static_cast<uint32_t>(literal_actions_.size());
+    num_condition_literals_ = static_cast<uint32_t>(literal_conditions_.size());
+    num_literals_           = num_action_literals_ + num_condition_literals_;
+    for (Explainer& x : explainers_)
+        if (x.cond_literal != kUnconditional) x.cond_literal += num_action_literals_;
+
+    slots_per_timestep_ = num_boolean_shapes_ + num_literals_ + num_numeric_shapes_;
+
+    // Occurrence index: count, prefix-sum, fill.  Each explainer is listed
+    // under its action literal and, if conditional, under its condition
+    // literal as well.
+    occurrences_.bucket_start.assign(num_literals_ + 1, 0);
+    for (const Explainer& x : explainers_) {
+        occurrences_.bucket_start[x.action_literal + 1]++;
+        if (x.cond_literal != kUnconditional)
+            occurrences_.bucket_start[x.cond_literal + 1]++;
+    }
+    for (uint32_t l = 1; l <= num_literals_; ++l)
+        occurrences_.bucket_start[l] += occurrences_.bucket_start[l - 1];
+
+    occurrences_.refs.resize(occurrences_.bucket_start[num_literals_]);
+    std::vector<uint32_t> cursor(occurrences_.bucket_start.begin(),
+                                 occurrences_.bucket_start.end() - 1);
+    for (uint32_t k = 0; k < clause_shapes_.size(); ++k) {
+        const ClauseShape& shape = clause_shapes_[k];
+        for (uint32_t e = shape.first_explainer;
+             e < shape.first_explainer + shape.num_explainers; ++e) {
+            const Explainer& x = explainers_[e];
+            occurrences_.refs[cursor[x.action_literal]++] = ExplainerRef{k, e};
+            if (x.cond_literal != kUnconditional)
+                occurrences_.refs[cursor[x.cond_literal]++] = ExplainerRef{k, e};
+        }
+    }
+
+    // uint16 counters bound the width of a single clause.
+    for (const ClauseShape& shape : clause_shapes_) {
+        if (shape.num_explainers > 0xFFFFu)
+            throw std::logic_error(
+                "FrameAxiom: a fluent has more than 65535 modifiers; "
+                "widen ClauseCounters");
+    }
+}
+
+// ============================================================================
+// Registration
+// ============================================================================
+
+void FrameAxiomModule::register_timestep_variables(int timestep) {
+    if (timestep > 0) register_transition(timestep - 1);
+}
+
+void FrameAxiomModule::bind_slot(uint32_t slot, const z3::expr& e) {
+    slot_expr_[slot] = e;
+    ast_to_slot_[e.id()] = slot;
+    host_->module_add(e);
+    frame_vars_registered_++;
+}
+
+void FrameAxiomModule::ensure_timestep_block(int t) {
+    const size_t want = static_cast<size_t>(t + 1) * slots_per_timestep_;
+    if (slot_value_.size() >= want) return;
+
+    // Contiguity means blocks are only ever appended one at a time.
+    assert(slot_value_.size() == static_cast<size_t>(t) * slots_per_timestep_);
+
+    // Literal and equality-bit slots start as placeholders.  They become live
+    // when their transition is registered; until then they are unreachable —
+    // every reader touches either a boolean head or a registered transition's
+    // block — and their values stay -1, which already reads as "unknown".
+    const z3::expr placeholder = host_->z3_ctx().bool_val(true);
+    slot_value_.resize(want, -1);
+    slot_expr_.resize(want, placeholder);
+
+    for (uint32_t k = 0; k < num_boolean_shapes_; ++k)
+        bind_slot(boolean_head_slot(k, t),
+                  grounded_->convert_expr_id_to_z3(clause_shapes_[k].fluent_id, t));
+}
+
+void FrameAxiomModule::activate_transition_slots(int t) {
+    const Z3VariableFactory& vf = *shared_->variable_factory;
+    z3::context& ctx = host_->z3_ctx();
+
+    for (uint32_t a = 0; a < num_action_literals_; ++a)
+        bind_slot(literal_slot(a, t),
+                  vf.get_action_variable(*literal_actions_[a], t));
+
+    // One reified bit per distinct condition per timestep, shared by every
+    // explainer guarded by that condition.
+    for (uint32_t c = 0; c < num_condition_literals_; ++c) {
+        const uint32_t literal = num_action_literals_ + c;
+        const std::string name =
+            "fc_" + std::to_string(literal) + "_" + std::to_string(t);
+        z3::expr reified = ctx.bool_const(name.c_str());
+        shared_->solver->add(
+            reified == grounded_->convert_expr_id_to_z3(literal_conditions_[c], t));
+        bind_slot(literal_slot(literal, t), reified);
+    }
+
+    // Numeric fluents are watched through a reified equality bit: the
+    // propagator can only observe booleans.
+    for (uint32_t k = num_boolean_shapes_;
+         k < clause_shapes_.size(); ++k) {
+        const ExprID fluent = clause_shapes_[k].fluent_id;
+        z3::expr f_t  = grounded_->convert_expr_id_to_z3(fluent, t);
+        z3::expr f_t1 = grounded_->convert_expr_id_to_z3(fluent, t + 1);
+        const std::string name =
+            "feq_" + std::to_string(k) + "_" + std::to_string(t);
+        z3::expr reified = ctx.bool_const(name.c_str());
+        shared_->solver->add(reified == (f_t == f_t1));
+        bind_slot(equality_bit_slot(k, t), reified);
+    }
+}
+
+void FrameAxiomModule::register_transition(int t) {
+    if (!grounded_) return;
+    if (t < num_transitions_) return;   // idempotent re-registration
+    if (t != num_transitions_)
+        throw std::logic_error(
+            "FrameAxiom requires contiguous transition registration from 0 "
+            "(got t=" + std::to_string(t) + " with " +
+            std::to_string(num_transitions_) + " already registered). "
+            "The slot layout is stride arithmetic; a gap would fabricate "
+            "phantom blocks. StrategyFactory::validate rejects this module "
+            "with the CGB and DoubleTail planners for exactly this reason.");
+
+    // f^t and f^{t+1} are both needed.  The latter is also f^t of transition
+    // t+1 and shares its slot, so the tail block is created ahead of time.
+    ensure_timestep_block(t);
+    ensure_timestep_block(t + 1);
+    activate_transition_slots(t);
+
+    const size_t num_shapes = clause_shapes_.size();
+    clause_counters_.resize(static_cast<size_t>(t + 1) * num_shapes);
+    ever_fired_.resize(clause_counters_.size(), 0);
+
+    // F_eager accounting: encode_frames() short-circuits under lazy frames, so
+    // the size of the encoding this module replaces is tallied here instead.
+    for (const ClauseShape& shape : clause_shapes_) {
+        frame_eager_axioms_++;
+        frame_eager_literals_ += static_cast<long long>(shape.num_explainers);
+    }
+
+    for (ExprID eid : unmodifiable_fluents_) {
+        z3::expr f_t  = grounded_->convert_expr_id_to_z3(eid, t);
+        z3::expr f_t1 = grounded_->convert_expr_id_to_z3(eid, t + 1);
+        shared_->solver->add(f_t1 == f_t);
+        frame_static_persistence_++;
+    }
+
+    num_transitions_ = t + 1;
+}
+
+// ============================================================================
+// Push / pop
 // ============================================================================
 
 void FrameAxiomModule::on_push() {
-    frame_decision_levels_.push_back(frame_trail_.size());
+    level_marks_.push_back(static_cast<uint32_t>(fixed_slots_.size()));
 }
 
 void FrameAxiomModule::on_pop(unsigned num_scopes) {
     AccumulatingTimer timer(frame_callback_ms_);
+    AccumulatingTimer pop_timer(frame_pop_ms_);
+
     unsigned effective = std::min(num_scopes,
-                                  static_cast<unsigned>(frame_decision_levels_.size()));
+                                  static_cast<unsigned>(level_marks_.size()));
     assert(effective == num_scopes && "pop without matching push");
     if (effective == 0) return;
 
-    size_t frame_level_start =
-        frame_decision_levels_[frame_decision_levels_.size() - effective];
-    frame_decision_levels_.resize(frame_decision_levels_.size() - effective);
+    const uint32_t mark = level_marks_[level_marks_.size() - effective];
+    level_marks_.resize(level_marks_.size() - effective);
 
-    std::vector<uint32_t> dirty_clauses;
+    // Reverse-delta replay.  Walking backwards means every slot fixed after
+    // this one is already restored, so the "other" value each counter update
+    // reads is exactly what it was when this slot was fixed — the inverse
+    // cancels the forward step precisely.  Nothing derived needs repairing.
+    while (fixed_slots_.size() > mark) {
+        const uint32_t slot = fixed_slots_.back();
+        fixed_slots_.pop_back();
 
-    while (frame_trail_.size() > frame_level_start) {
-        const auto& te = frame_trail_.back();
-        auto& clause = frame_clauses_[te.clause_idx];
+        const int8_t old_value = slot_value_[slot];
+        slot_value_[slot] = -1;
 
-        switch (te.kind) {
-        case VarRole::FLUENT_T:
-            clause.ft_val = te.prev_state; break;
-        case VarRole::FLUENT_T1:
-            clause.ft1_val = te.prev_state; break;
-        case VarRole::EQ_BOOL:
-            clause.eq_state = te.prev_state; break;
-        case VarRole::ACTION:
-            clause.entries[te.entry_idx].action_state = te.prev_state; break;
-        case VarRole::CONDITION:
-            clause.entries[te.entry_idx].cond_state = te.prev_state; break;
+        const uint32_t r = slot % slots_per_timestep_;
+        if (r >= num_boolean_shapes_ && r < num_boolean_shapes_ + num_literals_) {
+            const int t = static_cast<int>(slot / slots_per_timestep_);
+            visit_literal(r - num_boolean_shapes_, t, old_value, -1,
+                          /*run_checks=*/false);
         }
-        dirty_clauses.push_back(te.clause_idx);
-        frame_trail_.pop_back();
+        // Boolean heads and equality bits carry no counters: resetting the
+        // value is the whole undo, because persistence is derived on read.
     }
-
-    std::sort(dirty_clauses.begin(), dirty_clauses.end());
-    dirty_clauses.erase(
-        std::unique(dirty_clauses.begin(), dirty_clauses.end()),
-        dirty_clauses.end());
-    for (uint32_t ci : dirty_clauses)
-        recompute_derived(frame_clauses_[ci]);
 }
 
 // ============================================================================
 // on_fixed
 // ============================================================================
 
-void FrameAxiomModule::on_fixed(const z3::expr& ast, const z3::expr& value) {
-    // Timed from the top: the role lookup runs for every variable Z3 fixes,
-    // watched or not, and is part of the module's overhead.
-    AccumulatingTimer timer(frame_callback_ms_);
+void FrameAxiomModule::update_counters(uint32_t instance, const Explainer& x,
+                                         int8_t old_action, int8_t new_action,
+                                         int8_t old_cond,   int8_t new_cond) {
+    const bool conditional = (x.cond_literal != kUnconditional);
 
-    auto it = frame_var_to_roles_.find(ast.id());
-    if (it == frame_var_to_roles_.end()) return;
+    const bool was_can  = can_explain(conditional, old_action, old_cond);
+    const bool was_dead = ruled_out(conditional, old_action, old_cond);
+    const bool now_can  = can_explain(conditional, new_action, new_cond);
+    const bool now_dead = ruled_out(conditional, new_action, new_cond);
 
-    frame_on_fixed_count_++;
-    const int8_t val_int = value.is_true() ? 1 : 0;
+    ClauseCounters& counters = clause_counters_[instance];
+    if (now_dead != was_dead) counters.num_ruled_out   += now_dead ? 1 : -1;
+    if (now_can  != was_can)  counters.num_can_explain += now_can  ? 1 : -1;
+}
 
-    for (const VarRole& role : it->second) {
-        auto& clause = frame_clauses_[role.clause_idx];
+void FrameAxiomModule::visit_literal(uint32_t literal, int t,
+                                       int8_t old_value, int8_t new_value,
+                                       bool run_checks) {
+    const uint32_t lo = occurrences_.bucket_start[literal];
+    const uint32_t hi = occurrences_.bucket_start[literal + 1];
 
-        FrameTrailEntry te;
-        te.clause_idx = static_cast<uint32_t>(role.clause_idx);
-        te.kind = role.kind;
-        te.entry_idx = static_cast<uint32_t>(role.entry_idx);
+    for (uint32_t i = lo; i < hi; ++i) {
+        const ExplainerRef& ref = occurrences_.refs[i];
+        const Explainer&    x   = explainers_[ref.explainer];
+        const uint32_t      instance = clause_instance(ref.shape, t);
 
-        switch (role.kind) {
-        case VarRole::FLUENT_T: {
-            te.prev_state = clause.ft_val;
-            clause.ft_val = val_int;
-            if (clause.is_boolean && clause.ft1_val >= 0)
-                clause.eq_state = (clause.ft_val == clause.ft1_val) ? 1 : 0;
-            break;
-        }
-        case VarRole::FLUENT_T1: {
-            te.prev_state = clause.ft1_val;
-            clause.ft1_val = val_int;
-            if (clause.is_boolean && clause.ft_val >= 0)
-                clause.eq_state = (clause.ft_val == clause.ft1_val) ? 1 : 0;
-            break;
-        }
-        case VarRole::EQ_BOOL: {
-            te.prev_state = clause.eq_state;
-            clause.eq_state = val_int;
-            break;
-        }
-        case VarRole::ACTION: {
-            auto& entry = clause.entries[role.entry_idx];
-            te.prev_state = entry.action_state;
-            update_epc_entry(clause, entry, entry.action_state, val_int);
-            break;
-        }
-        case VarRole::CONDITION: {
-            auto& entry = clause.entries[role.entry_idx];
-            te.prev_state = entry.cond_state;
-            update_epc_entry(clause, entry, entry.cond_state, val_int);
-            break;
-        }
+        if (literal == x.action_literal) {
+            const int8_t cond = condition_value(x, t);
+            update_counters(instance, x, old_value, new_value, cond, cond);
+        } else {
+            const int8_t action = action_value(x, t);
+            update_counters(instance, x, action, action, old_value, new_value);
         }
 
-        frame_trail_.push_back(te);
-
-        if (host_->conflict_raised()) return;
-        check_frame_clause(clause, role.clause_idx);
-        if (host_->conflict_raised()) return;
+        // ATOMICITY: the loop must finish updating counters for the whole
+        // occurrence list even after a conflict, or the reverse replay in
+        // on_pop would undo updates that were never applied.  Only the check
+        // is suppressed.
+        if (run_checks && !host_->conflict_raised())
+            check_clause(ref.shape, t);
     }
 }
 
-// ============================================================================
-// on_final
-// ============================================================================
-
-void FrameAxiomModule::on_final() {
+void FrameAxiomModule::on_fixed(const z3::expr& ast, const z3::expr& value) {
+    // Timed from the top: the slot lookup runs for every variable Z3 fixes,
+    // watched or not, and is part of the module's overhead.
     AccumulatingTimer timer(frame_callback_ms_);
-    frame_on_final_count_++;
 
-    for (size_t ci = 0; ci < frame_clauses_.size(); ++ci) {
-        auto& clause = frame_clauses_[ci];
+    auto it = ast_to_slot_.find(ast.id());
+    if (it == ast_to_slot_.end()) return;
 
-        if (clause.eq_state == 1) continue;
-        if (clause.owned()) continue;
-        // After owned() check: num_can_explain == 0
+    frame_on_fixed_count_++;
 
-        if (clause.eq_state == 0) {
-            frame_final_conflict_count_++;
-            report_frame_conflict(clause, ci);
-            return;
+    const uint32_t slot      = it->second;
+    const int8_t   new_value = value.is_true() ? 1 : 0;
+    const int8_t   old_value = slot_value_[slot];
+    slot_value_[slot] = new_value;
+
+    // Below the first push nothing can be undone, so base-level assignments
+    // are permanent and deliberately not trailed.
+    if (!level_marks_.empty()) {
+        fixed_slots_.push_back(slot);
+        fixed_slots_peak_ = std::max(fixed_slots_peak_, fixed_slots_.size());
+    }
+
+    const int      t = static_cast<int>(slot / slots_per_timestep_);
+    const uint32_t r = slot % slots_per_timestep_;
+
+    if (r < num_boolean_shapes_) {
+        // A boolean head is the "after" side of transition t-1 and the
+        // "before" side of transition t.  Contiguous registration means t-1
+        // was registered first, so this order is registration order.
+        const uint32_t shape = r;
+        if (is_registered(t - 1)) {
+            check_clause(shape, t - 1);
+            if (host_->conflict_raised()) return;
         }
+        if (is_registered(t)) check_clause(shape, t);
 
-        if (clause.eq_state == -1) {
-            frame_final_propagation_count_++;
-            propagate_fluent_preservation(clause, ci);
-            return;
-        }
+    } else if (r < num_boolean_shapes_ + num_literals_) {
+        visit_literal(r - num_boolean_shapes_, t, old_value, new_value,
+                      /*run_checks=*/true);
+
+    } else {
+        const uint32_t shape =
+            num_boolean_shapes_ + (r - num_boolean_shapes_ - num_literals_);
+        check_clause(shape, t);
     }
 }
 
@@ -155,259 +391,184 @@ void FrameAxiomModule::on_final() {
 // Frame axiom core logic
 // ============================================================================
 
-void FrameAxiomModule::check_frame_clause(FrameClause& clause, size_t clause_idx) {
-    int n = static_cast<int>(clause.entries.size());
+int8_t FrameAxiomModule::persistence_state(uint32_t shape, int t) const {
+    if (!is_boolean_shape(shape))
+        return slot_value_[equality_bit_slot(shape, t)];
 
-    if (clause.eq_state == 1) return;
-    if (clause.owned()) return;
-    // After owned() check: num_can_explain == 0
+    const int8_t before = slot_value_[boolean_head_slot(shape, t)];
+    const int8_t after  = slot_value_[boolean_head_slot(shape, t + 1)];
+    if (before < 0 || after < 0) return -1;
+    return before == after ? 1 : 0;
+}
 
-    if (clause.num_cant_explain == n) {
-        if (clause.eq_state == 0) {
-            report_frame_conflict(clause, clause_idx);
-        } else {
-            propagate_fluent_preservation(clause, clause_idx);
-        }
+void FrameAxiomModule::check_clause(uint32_t shape, int t) {
+    const ClauseShape&    s        = clause_shapes_[shape];
+    const ClauseCounters& counters = clause_counters_[clause_instance(shape, t)];
+    const int             n        = static_cast<int>(s.num_explainers);
+
+    const int8_t persisted = persistence_state(shape, t);
+
+    if (persisted == 1) return;                 // fluent unchanged: axiom vacuous
+    if (counters.num_can_explain > 0) return;   // some explainer already fires
+    // After this point: num_can_explain == 0.
+
+    if (counters.num_ruled_out == n) {
+        if (persisted == 0) report_conflict(shape, t);
+        else                propagate_persistence(shape, t);
         return;
     }
 
-    if (clause.eq_state == 0 && clause.num_cant_explain == n - 1) {
-        propagate_last_entry(clause, clause_idx);
-    }
+    if (persisted == 0 && counters.num_ruled_out == n - 1)
+        propagate_last_explainer(shape, t);
 }
 
 // ============================================================================
 // Conflict & propagation
 // ============================================================================
 
-void FrameAxiomModule::mark_materialized(size_t clause_idx) {
-    auto& clause = frame_clauses_[clause_idx];
-    if (clause.materialized) return;
-    clause.materialized = true;
+void FrameAxiomModule::mark_fired(uint32_t instance) {
+    if (ever_fired_[instance]) return;
+    ever_fired_[instance] = 1;
     frame_clauses_materialized_++;
 }
 
-void FrameAxiomModule::build_frame_fixed(
-        z3::expr_vector& fixed,
-        const FrameClause& clause, size_t clause_idx,
-        bool include_change, int skip_idx) {
+void FrameAxiomModule::build_reason(z3::expr_vector& reason,
+                                      uint32_t shape, int t,
+                                      bool include_change, int64_t skip_explainer) {
+    const ClauseShape& s = clause_shapes_[shape];
+
     if (include_change) {
-        if (clause.is_boolean) {
-            fixed.push_back(frame_fluent_ft_[clause_idx]);
-            fixed.push_back(frame_fluent_ft1_[clause_idx]);
+        if (is_boolean_shape(shape)) {
+            reason.push_back(slot_expr_[boolean_head_slot(shape, t)]);
+            reason.push_back(slot_expr_[boolean_head_slot(shape, t + 1)]);
         } else {
-            fixed.push_back(frame_eq_bool_[clause_idx]);
+            reason.push_back(slot_expr_[equality_bit_slot(shape, t)]);
         }
     }
 
-    const auto& actions = frame_action_expr_[clause_idx];
-    const auto& conds = frame_cond_expr_[clause_idx];
+    for (uint32_t e = s.first_explainer;
+         e < s.first_explainer + s.num_explainers; ++e) {
+        if (static_cast<int64_t>(e) == skip_explainer) continue;
+        const Explainer& x = explainers_[e];
 
-    for (size_t i = 0; i < clause.entries.size(); ++i) {
-        if (static_cast<int>(i) == skip_idx) continue;
-        const auto& entry = clause.entries[i];
-        if (entry.action_state == 0) {
-            fixed.push_back(actions[i]);
-        } else if (entry.is_conditional && entry.cond_state == 0) {
-            // The condition alone rules out this entry — the action's value
-            // is irrelevant (if action is true, the entry still can't explain
-            // because the condition is false; if false, it can't explain
-            // either).  Omitting the action produces a tighter reason that
+        if (action_value(x, t) == 0) {
+            reason.push_back(slot_expr_[literal_slot(x.action_literal, t)]);
+        } else if (x.cond_literal != kUnconditional && condition_value(x, t) == 0) {
+            // The condition alone rules out this explainer — the action's
+            // value is irrelevant.  Omitting it gives a tighter reason that
             // matches one of the eager encoding's CNF clauses.
-            fixed.push_back(conds[i]);
+            reason.push_back(slot_expr_[literal_slot(x.cond_literal, t)]);
         }
     }
 }
 
-void FrameAxiomModule::report_frame_conflict(const FrameClause& clause, size_t clause_idx) {
-    z3::expr_vector fixed(host_->z3_ctx());
-    build_frame_fixed(fixed, clause, clause_idx, true);
+void FrameAxiomModule::report_conflict(uint32_t shape, int t) {
+    z3::expr_vector reason(host_->z3_ctx());
+    build_reason(reason, shape, t, /*include_change=*/true, /*skip=*/-1);
     frame_conflict_count_++;
-    mark_materialized(clause_idx);
-    host_->module_conflict(fixed);
+    mark_fired(clause_instance(shape, t));
+    host_->module_conflict(reason);
 }
 
-void FrameAxiomModule::propagate_fluent_preservation(const FrameClause& clause, size_t clause_idx) {
-    z3::expr_vector fixed(host_->z3_ctx());
-    build_frame_fixed(fixed, clause, clause_idx, false);
+void FrameAxiomModule::propagate_persistence(uint32_t shape, int t) {
+    z3::expr_vector reason(host_->z3_ctx());
+    build_reason(reason, shape, t, /*include_change=*/false, /*skip=*/-1);
 
     frame_persistence_prop_count_++;
-    mark_materialized(clause_idx);
-    if (clause.is_boolean) {
-        host_->module_propagate(fixed, frame_fluent_ft1_[clause_idx] == frame_fluent_ft_[clause_idx]);
+    mark_fired(clause_instance(shape, t));
+
+    if (is_boolean_shape(shape)) {
+        const z3::expr& before = slot_expr_[boolean_head_slot(shape, t)];
+        const z3::expr& after  = slot_expr_[boolean_head_slot(shape, t + 1)];
+        host_->module_propagate(reason, after == before);
     } else {
-        host_->module_propagate(fixed, frame_eq_bool_[clause_idx]);
+        host_->module_propagate(reason, slot_expr_[equality_bit_slot(shape, t)]);
     }
 }
 
-void FrameAxiomModule::propagate_last_entry(const FrameClause& clause, size_t clause_idx) {
-    size_t idx = 0;
-    for (size_t i = 0; i < clause.entries.size(); ++i) {
-        if (!clause.entries[i].cant_explain() && !clause.entries[i].can_explain()) {
-            idx = i;
+void FrameAxiomModule::propagate_last_explainer(uint32_t shape, int t) {
+    const ClauseShape& s = clause_shapes_[shape];
+
+    // The call site guarantees num_can_explain == 0 and num_ruled_out == n-1,
+    // so exactly one explainer is pending.  The not-found return is defensive:
+    // without it, a caller that skipped the num_can_explain guard would emit a
+    // lemma about an arbitrary explainer.
+    bool     found = false;
+    uint32_t index = 0;
+    for (uint32_t e = s.first_explainer;
+         e < s.first_explainer + s.num_explainers; ++e) {
+        const Explainer& x = explainers_[e];
+        const bool   conditional = (x.cond_literal != kUnconditional);
+        const int8_t action      = action_value(x, t);
+        const int8_t cond        = condition_value(x, t);
+        if (!ruled_out(conditional, action, cond) &&
+            !can_explain(conditional, action, cond)) {
+            found = true;
+            index = e;
             break;
         }
     }
-    const auto& entry = clause.entries[idx];
+    if (!found) return;
 
-    z3::expr_vector fixed(host_->z3_ctx());
-    build_frame_fixed(fixed, clause, clause_idx, true, static_cast<int>(idx));
+    const Explainer& x      = explainers_[index];
+    const int8_t     action = action_value(x, t);
+    const int8_t     cond   = condition_value(x, t);
+    const uint32_t   instance = clause_instance(shape, t);
 
-    if (entry.action_state == -1) {
+    z3::expr_vector reason(host_->z3_ctx());
+    build_reason(reason, shape, t, /*include_change=*/true,
+                 static_cast<int64_t>(index));
+
+    if (action == -1) {
         frame_unit_prop_count_++;
-        mark_materialized(clause_idx);
-        host_->module_propagate(fixed, frame_action_expr_[clause_idx][idx]);
-    } else if (entry.is_conditional && entry.action_state == 1 && entry.cond_state == -1) {
-        fixed.push_back(frame_action_expr_[clause_idx][idx]);
+        mark_fired(instance);
+        host_->module_propagate(reason,
+                                slot_expr_[literal_slot(x.action_literal, t)]);
+    } else if (x.cond_literal != kUnconditional && action == 1 && cond == -1) {
+        reason.push_back(slot_expr_[literal_slot(x.action_literal, t)]);
         frame_unit_prop_count_++;
-        mark_materialized(clause_idx);
-        host_->module_propagate(fixed, frame_cond_expr_[clause_idx][idx]);
+        mark_fired(instance);
+        host_->module_propagate(reason,
+                                slot_expr_[literal_slot(x.cond_literal, t)]);
     }
 }
 
 // ============================================================================
-// Variable registration
+// on_final — the completeness net
 // ============================================================================
 
-void FrameAxiomModule::register_timestep_variables(int timestep) {
-    if (timestep > 0)
-        register_frame_variables(timestep - 1);
-}
+void FrameAxiomModule::on_final() {
+    AccumulatingTimer timer(frame_callback_ms_);
+    frame_on_final_count_++;
 
-void FrameAxiomModule::register_frame_variables(int t) {
-    auto* grounded = dynamic_cast<GroundedEncoder*>(shared_->encoder);
-    if (!grounded) return;
+    // Note the missing `num_ruled_out == n` test, which check_clause() does
+    // require.  It is redundant here, not forgotten: Z3 calls final() only
+    // once every registered atom is fixed, so no explainer can still be
+    // pending, and the invariant
+    //     num_can_explain + num_ruled_out + #pending == n
+    // collapses to num_ruled_out == n as soon as the num_can_explain guard
+    // below has passed.  
+    for (int t = 0; t < num_transitions_; ++t) {
+        for (uint32_t shape = 0; shape < clause_shapes_.size(); ++shape) {
+            const int8_t persisted = persistence_state(shape, t);
+            if (persisted == 1) continue;
+            if (clause_counters_[clause_instance(shape, t)].num_can_explain > 0)
+                continue;
 
-    const auto& epc_index = grounded->get_epc_index();
-    const Z3VariableFactory& vf = *shared_->variable_factory;
-    z3::context& ctx = host_->z3_ctx();
-
-    for (ExprID eid : shared_->problem->grounded_fluents()) {
-        auto epc_it = epc_index.find(eid);
-        bool has_modifiers = (epc_it != epc_index.end() && !epc_it->second.empty());
-
-        if (!has_modifiers) {
-            z3::expr f_t = grounded->convert_expr_id_to_z3(eid, t);
-            z3::expr f_t1 = grounded->convert_expr_id_to_z3(eid, t + 1);
-            shared_->solver->add(f_t1 == f_t);
-            frame_static_persistence_++;
-            continue;
-        }
-
-        const auto& action_effects = epc_it->second;
-
-        // F_eager accounting: encode_frames() would post exactly one axiom for
-        // this (fluent, transition), a disjunction over |action_effects|
-        // explainers.  It short-circuits under lazy frames, so count here.
-        frame_eager_axioms_++;
-        frame_eager_literals_ += static_cast<long long>(action_effects.size());
-
-        bool is_bool = shared_->problem->is_bool_type(eid);
-        size_t clause_idx = frame_clauses_.size();
-
-        z3::expr f_t = grounded->convert_expr_id_to_z3(eid, t);
-        z3::expr f_t1 = grounded->convert_expr_id_to_z3(eid, t + 1);
-
-        frame_clauses_.emplace_back(t, eid, is_bool);
-        auto& clause = frame_clauses_.back();
-
-        frame_fluent_ft_.push_back(f_t);
-        frame_fluent_ft1_.push_back(f_t1);
-
-        if (is_bool) {
-            frame_eq_bool_.push_back(ctx.bool_val(true));
-            host_->module_add(f_t);
-            frame_var_to_roles_[f_t.id()].push_back({VarRole::FLUENT_T, clause_idx, 0});
-            host_->module_add(f_t1);
-            frame_var_to_roles_[f_t1.id()].push_back({VarRole::FLUENT_T1, clause_idx, 0});
-            frame_vars_registered_ += 2;
-        } else {
-            std::string eq_name = "feq_" + std::to_string(clause_idx);
-            z3::expr eq_bool = ctx.bool_const(eq_name.c_str());
-            shared_->solver->add(eq_bool == (f_t == f_t1));
-            frame_eq_bool_.push_back(eq_bool);
-            host_->module_add(eq_bool);
-            frame_var_to_roles_[eq_bool.id()].push_back({VarRole::EQ_BOOL, clause_idx, 0});
-            frame_vars_registered_++;
-        }
-
-        frame_action_expr_.emplace_back();
-        frame_cond_expr_.emplace_back();
-        auto& actions_vec = frame_action_expr_.back();
-        auto& conds_vec = frame_cond_expr_.back();
-
-        for (size_t i = 0; i < action_effects.size(); ++i) {
-            const auto& [action, eff_expr] = action_effects[i];
-
-            EPCEntry entry;
-            entry.is_conditional = eff_expr->is_conditional();
-
-            z3::expr a = vf.get_action_variable(*action, t);
-            actions_vec.push_back(a);
-
-            host_->module_add(a);
-            frame_var_to_roles_[a.id()].push_back({VarRole::ACTION, clause_idx, i});
-            frame_vars_registered_++;
-
-            if (entry.is_conditional) {
-                ExprID cond_id = eff_expr->condition_id();
-                auto cache_key = std::make_pair(cond_id, t);
-                auto cache_it = cond_reification_cache_.find(cache_key);
-                z3::expr cond_reified = (cache_it != cond_reification_cache_.end())
-                    ? cache_it->second
-                    : [&]() {
-                        std::string cname = "fc_" + std::to_string(clause_idx) + "_" + std::to_string(i);
-                        z3::expr cr = ctx.bool_const(cname.c_str());
-                        z3::expr cond_z3 = grounded->convert_expr_id_to_z3(cond_id, t);
-                        shared_->solver->add(cr == cond_z3);
-                        cond_reification_cache_.emplace(cache_key, cr);
-                        return cr;
-                    }();
-                conds_vec.push_back(cond_reified);
-                host_->module_add(cond_reified);
-                frame_var_to_roles_[cond_reified.id()].push_back({VarRole::CONDITION, clause_idx, i});
-                frame_vars_registered_++;
-            } else {
-                conds_vec.push_back(ctx.bool_val(true));
+            if (persisted == 0) {
+                frame_final_conflict_count_++;
+                report_conflict(shape, t);
+                return;
             }
-
-            clause.entries.push_back(entry);
+            frame_final_propagation_count_++;
+            propagate_persistence(shape, t);
+            return;
         }
     }
 }
 
 // ============================================================================
-// Recompute derived counters
-// ============================================================================
-
-void FrameAxiomModule::update_epc_entry(FrameClause& clause, EPCEntry& entry,
-                                        int8_t& field, int8_t new_val) {
-    bool was_cant = entry.cant_explain();
-    bool was_can = entry.can_explain();
-    field = new_val;
-    bool now_cant = entry.cant_explain();
-    bool now_can = entry.can_explain();
-    if (now_cant != was_cant) clause.num_cant_explain += now_cant ? 1 : -1;
-    if (now_can != was_can) clause.num_can_explain += now_can ? 1 : -1;
-}
-
-void FrameAxiomModule::recompute_derived(FrameClause& clause) {
-    if (clause.is_boolean) {
-        if (clause.ft_val >= 0 && clause.ft1_val >= 0)
-            clause.eq_state = (clause.ft_val == clause.ft1_val) ? 1 : 0;
-        else
-            clause.eq_state = -1;
-    }
-    clause.num_cant_explain = 0;
-    clause.num_can_explain = 0;
-    for (const auto& entry : clause.entries) {
-        if (entry.cant_explain()) clause.num_cant_explain++;
-        if (entry.can_explain()) clause.num_can_explain++;
-    }
-}
-
-// ============================================================================
-// Cleanup
+// Cleanup — the frame_prop.* statistics
 // ============================================================================
 
 void FrameAxiomModule::cleanup() {
@@ -417,7 +578,7 @@ void FrameAxiomModule::cleanup() {
     const int final_violations =
         frame_final_conflict_count_ + frame_final_propagation_count_;
 
-    stats.set("frame_prop.clauses_created", static_cast<double>(frame_clauses_.size()));
+    stats.set("frame_prop.clauses_created", static_cast<double>(clause_counters_.size()));
     stats.set("frame_prop.conflicts", static_cast<double>(frame_conflict_count_));
     stats.set("frame_prop.propagations", static_cast<double>(propagations));
     stats.set("frame_prop.persistence_propagations",
@@ -433,13 +594,8 @@ void FrameAxiomModule::cleanup() {
               static_cast<double>(frame_final_propagation_count_));
     stats.set("frame_prop.vars_registered", static_cast<double>(frame_vars_registered_));
     stats.set("frame_prop.callback_ms", frame_callback_ms_);
+    stats.set("frame_prop.pop_ms", frame_pop_ms_);
 
-    // Lazy-vs-eager frame constraint accounting.  F_eager is what the eager
-    // encoding would have posted over all registered transitions.  Two
-    // readings of F_lazy: distinct frame clauses ever materialized (the
-    // measure comparable to the mutex generation ratio, always <= F_eager),
-    // and total lemma emissions, which counts repeated visits to the same
-    // clause across the search and can far exceed F_eager.
     const double f_eager = static_cast<double>(frame_eager_axioms_);
     const double f_lazy_distinct = static_cast<double>(frame_clauses_materialized_);
     const double f_lazy_emissions =
@@ -454,6 +610,16 @@ void FrameAxiomModule::cleanup() {
         stats.set("frame_prop.f_lazy_over_f_eager", f_lazy_distinct / f_eager);
         stats.set("frame_prop.emissions_over_f_eager", f_lazy_emissions / f_eager);
     }
+
+    // Layout counters, so a run can be attributed without a profiler.
+    stats.set("frame_prop.clause_shapes", static_cast<double>(clause_shapes_.size()));
+    stats.set("frame_prop.explainers", static_cast<double>(explainers_.size()));
+    stats.set("frame_prop.occurrence_refs",
+              static_cast<double>(occurrences_.refs.size()));
+    stats.set("frame_prop.slots_per_timestep",
+              static_cast<double>(slots_per_timestep_));
+    stats.set("frame_prop.slots", static_cast<double>(slot_value_.size()));
+    stats.set("frame_prop.trail_peak", static_cast<double>(fixed_slots_peak_));
 }
 
 } // namespace rantanplan

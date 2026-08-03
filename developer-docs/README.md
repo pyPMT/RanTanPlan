@@ -37,6 +37,13 @@ Concepts first, plumbing last — each doc leans only on the ones before it.
 7. [`interference-and-propagators.md`](interference-and-propagators.md) —
    why interference analysis has two interfaces, and how the Z3 user
    propagator is split into composable modules.
+7a. [`frame-propagator.md`](frame-propagator.md) — a from-scratch
+   walkthrough of one propagator module in depth: what a frame axiom is, how
+   the lazy propagator watches it instead of posting it, and the whole design
+   traced on one tiny worked example. Also records how it currently measures
+   against the eager encoding it replaces (`els-fp` vs `els`), which is not
+   yet a win. Read after doc 7; optional unless you're touching the frame
+   propagator.
 8. [`encoders-and-planners.md`](encoders-and-planners.md) — the encoder
    families, the planner backends, optimal/anytime branch-and-bound, and
    how a search mode resolves to a planner.

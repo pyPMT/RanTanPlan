@@ -61,7 +61,9 @@ void StrategyFactory::validate(const StrategySpec& spec,
         (spec.planner == PlannerKind::CGB || uses_double_tail(spec))) {
         throw std::invalid_argument(
             "FrameAxiom propagator module is only validated with the "
-            "Sequential planner (incompatible with CGB and DoubleTail)");
+            "Sequential planner (incompatible with CGB and DoubleTail). "
+            "It registers transitions contiguously by stride arithmetic, "
+            "which those planners violate.");
     }
 
     if (horizon_schedule != "linear" && uses_double_tail(spec)) {
