@@ -107,7 +107,10 @@ void CLIParser::parse(Config& config, int argc, char* argv[]) {
         }
         // Z3 solver options
         else if (arg == "--persist-clauses") {
-            config.global.persist_clauses = true;
+            config.global.persist_clauses = true;   // now the default; kept for compatibility
+        }
+        else if (arg == "--no-persist-clauses") {
+            config.global.persist_clauses = false;
         }
         // Formula export options
         else if (arg == "--export-formula") {

@@ -152,7 +152,10 @@ void FrameAxiomModule::register_timestep_variables(int timestep) {
 
 void FrameAxiomModule::bind_slot(uint32_t slot, const z3::expr& e) {
     slot_expr_[slot] = e;
-    ast_to_slot_[e.id()] = slot;
+    const unsigned id = e.id();
+    if (id >= slot_of_ast_.size())
+        slot_of_ast_.resize(static_cast<size_t>(id) + 1, kNoSlot);
+    slot_of_ast_[id] = slot;
     host_->module_add(e);
     frame_vars_registered_++;
 }
@@ -233,6 +236,7 @@ void FrameAxiomModule::register_transition(int t) {
     const size_t num_shapes = clause_shapes_.size();
     clause_counters_.resize(static_cast<size_t>(t + 1) * num_shapes);
     ever_fired_.resize(clause_counters_.size(), 0);
+    ever_changed_.resize(clause_counters_.size(), 0);
 
     // F_eager accounting: encode_frames() short-circuits under lazy frames, so
     // the size of the encoding this module replaces is tallied here instead.
@@ -331,6 +335,12 @@ void FrameAxiomModule::visit_literal(uint32_t literal, int t,
             update_counters(instance, x, action, action, old_value, new_value);
         }
 
+        // DIAGNOSTIC: one forward examination of this clause.  Counted here
+        // rather than in check_clause so that it counts every visit, including
+        // ones gated by a pending conflict -- that is what makes it comparable
+        // across propagator designs.
+        if (run_checks) frame_clause_visits_++;
+
         // ATOMICITY: the loop must finish updating counters for the whole
         // occurrence list even after a conflict, or the reverse replay in
         // on_pop would undo updates that were never applied.  Only the check
@@ -345,12 +355,13 @@ void FrameAxiomModule::on_fixed(const z3::expr& ast, const z3::expr& value) {
     // watched or not, and is part of the module's overhead.
     AccumulatingTimer timer(frame_callback_ms_);
 
-    auto it = ast_to_slot_.find(ast.id());
-    if (it == ast_to_slot_.end()) return;
+    const unsigned ast_id = ast.id();
+    if (ast_id >= slot_of_ast_.size()) return;
+    const uint32_t slot = slot_of_ast_[ast_id];
+    if (slot == kNoSlot) return;
 
     frame_on_fixed_count_++;
 
-    const uint32_t slot      = it->second;
     const int8_t   new_value = value.is_true() ? 1 : 0;
     const int8_t   old_value = slot_value_[slot];
     slot_value_[slot] = new_value;
@@ -366,23 +377,28 @@ void FrameAxiomModule::on_fixed(const z3::expr& ast, const z3::expr& value) {
     const uint32_t r = slot % slots_per_timestep_;
 
     if (r < num_boolean_shapes_) {
+        frame_fixed_head_++;
         // A boolean head is the "after" side of transition t-1 and the
         // "before" side of transition t.  Contiguous registration means t-1
         // was registered first, so this order is registration order.
         const uint32_t shape = r;
         if (is_registered(t - 1)) {
+            frame_clause_visits_++;
             check_clause(shape, t - 1);
             if (host_->conflict_raised()) return;
         }
-        if (is_registered(t)) check_clause(shape, t);
+        if (is_registered(t)) { frame_clause_visits_++; check_clause(shape, t); }
 
     } else if (r < num_boolean_shapes_ + num_literals_) {
+        frame_fixed_literal_++;
         visit_literal(r - num_boolean_shapes_, t, old_value, new_value,
                       /*run_checks=*/true);
 
     } else {
+        frame_fixed_eqbit_++;
         const uint32_t shape =
             num_boolean_shapes_ + (r - num_boolean_shapes_ - num_literals_);
+        frame_clause_visits_++;
         check_clause(shape, t);
     }
 }
@@ -408,18 +424,29 @@ void FrameAxiomModule::check_clause(uint32_t shape, int t) {
 
     const int8_t persisted = persistence_state(shape, t);
 
+    // DIAGNOSTIC: record that this instance was observed to have changed.  Every
+    // moment a change becomes observable -- the second head being fixed, or an
+    // equality bit going false -- routes through check_clause for exactly this
+    // instance, so nothing is missed.
+    if (persisted == 0) {
+        const uint32_t inst = clause_instance(shape, t);
+        if (!ever_changed_[inst]) { ever_changed_[inst] = 1; frame_changed_instances_++; }
+    }
+
     if (persisted == 1) return;                 // fluent unchanged: axiom vacuous
     if (counters.num_can_explain > 0) return;   // some explainer already fires
     // After this point: num_can_explain == 0.
 
     if (counters.num_ruled_out == n) {
-        if (persisted == 0) report_conflict(shape, t);
-        else                propagate_persistence(shape, t);
+        if (persisted == 0) { frame_reach_conflict_++;     report_conflict(shape, t); }
+        else                { frame_reach_unit_persist_++; propagate_persistence(shape, t); }
         return;
     }
 
-    if (persisted == 0 && counters.num_ruled_out == n - 1)
+    if (persisted == 0 && counters.num_ruled_out == n - 1) {
+        frame_reach_unit_explainer_++;
         propagate_last_explainer(shape, t);
+    }
 }
 
 // ============================================================================
@@ -470,20 +497,59 @@ void FrameAxiomModule::report_conflict(uint32_t shape, int t) {
     host_->module_conflict(reason);
 }
 
-void FrameAxiomModule::propagate_persistence(uint32_t shape, int t) {
+bool FrameAxiomModule::propagate_persistence(uint32_t shape, int t) {
+    if (!is_boolean_shape(shape)) {
+        z3::expr_vector reason(host_->z3_ctx());
+        build_reason(reason, shape, t, /*include_change=*/false, /*skip=*/-1);
+        frame_persistence_prop_count_++;
+        mark_fired(clause_instance(shape, t));
+        host_->module_propagate(reason, slot_expr_[equality_bit_slot(shape, t)]);
+        return true;
+    }
+
+    // A boolean persistence consequence used to be posted as `after == before`.
+    // That expression is BOOLEAN-SORTED, so Z3 internalizes it as an iff node:
+    // one fresh boolean variable plus four gate clauses, manufactured in the
+    // middle of the search at a non-base decision level, with the clause-reinit
+    // churn that implies.  It was the module's only mid-search atom creation.
+    //
+    // Instead, resolve the equality here against whichever head is already
+    // known and propagate the resulting DIRECTED LITERAL, which is an atom the
+    // formula already contains:
+    //
+    //     killers ... , f^t      |-   f^{t+1}   (or its negation)
+    //     killers ... , f^{t+1}  |-   f^t       (or its negation)
+    //
+    // When NEITHER head is assigned there is no literal to force and we emit
+    // nothing.  No inference is lost: both heads are watched slots, and fixing
+    // either one re-enters check_clause for this transition through the boolean
+    // head branch of on_fixed, at which point this function runs again with one
+    // head known.  on_final is the backstop, as before.
+    const uint32_t before_slot = boolean_head_slot(shape, t);
+    const uint32_t after_slot  = boolean_head_slot(shape, t + 1);
+    const int8_t   before      = slot_value_[before_slot];
+    const int8_t   after       = slot_value_[after_slot];
+
+    uint32_t known_slot, target_slot;
+    int8_t   known_value;
+    if (before >= 0) {
+        known_slot = before_slot; target_slot = after_slot;  known_value = before;
+    } else if (after >= 0) {
+        known_slot = after_slot;  target_slot = before_slot; known_value = after;
+    } else {
+        return false;   // both heads unknown: nothing to force yet
+    }
+
     z3::expr_vector reason(host_->z3_ctx());
     build_reason(reason, shape, t, /*include_change=*/false, /*skip=*/-1);
+    reason.push_back(slot_expr_[known_slot]);
 
     frame_persistence_prop_count_++;
     mark_fired(clause_instance(shape, t));
 
-    if (is_boolean_shape(shape)) {
-        const z3::expr& before = slot_expr_[boolean_head_slot(shape, t)];
-        const z3::expr& after  = slot_expr_[boolean_head_slot(shape, t + 1)];
-        host_->module_propagate(reason, after == before);
-    } else {
-        host_->module_propagate(reason, slot_expr_[equality_bit_slot(shape, t)]);
-    }
+    const z3::expr& target = slot_expr_[target_slot];
+    host_->module_propagate(reason, known_value == 1 ? target : !target);
+    return true;
 }
 
 void FrameAxiomModule::propagate_last_explainer(uint32_t shape, int t) {
@@ -560,9 +626,14 @@ void FrameAxiomModule::on_final() {
                 report_conflict(shape, t);
                 return;
             }
-            frame_final_propagation_count_++;
-            propagate_persistence(shape, t);
-            return;
+            if (propagate_persistence(shape, t)) {
+                frame_final_propagation_count_++;
+                return;
+            }
+            // Both boolean heads unassigned even here: there is no literal to
+            // force on this clause, so keep scanning instead of returning
+            // empty-handed.  The axiom is not violated -- an unassigned head
+            // means the solver has not committed to a change.
         }
     }
 }
@@ -595,6 +666,17 @@ void FrameAxiomModule::cleanup() {
     stats.set("frame_prop.vars_registered", static_cast<double>(frame_vars_registered_));
     stats.set("frame_prop.callback_ms", frame_callback_ms_);
     stats.set("frame_prop.pop_ms", frame_pop_ms_);
+    stats.set("frame_prop.clause_visits", static_cast<double>(frame_clause_visits_));
+    stats.set("frame_prop.f_changed", static_cast<double>(frame_changed_instances_));
+    stats.set("frame_prop.fixed_head", static_cast<double>(frame_fixed_head_));
+    stats.set("frame_prop.fixed_literal", static_cast<double>(frame_fixed_literal_));
+    stats.set("frame_prop.fixed_eqbit", static_cast<double>(frame_fixed_eqbit_));
+    stats.set("frame_prop.n_boolean_shapes", static_cast<double>(num_boolean_shapes_));
+    stats.set("frame_prop.n_literals", static_cast<double>(num_literals_));
+    stats.set("frame_prop.n_numeric_shapes", static_cast<double>(num_numeric_shapes_));
+    stats.set("frame_prop.reach_conflict", static_cast<double>(frame_reach_conflict_));
+    stats.set("frame_prop.reach_unit_persist", static_cast<double>(frame_reach_unit_persist_));
+    stats.set("frame_prop.reach_unit_explainer", static_cast<double>(frame_reach_unit_explainer_));
 
     const double f_eager = static_cast<double>(frame_eager_axioms_);
     const double f_lazy_distinct = static_cast<double>(frame_clauses_materialized_);

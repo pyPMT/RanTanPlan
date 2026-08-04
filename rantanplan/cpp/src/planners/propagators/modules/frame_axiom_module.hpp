@@ -157,7 +157,7 @@ namespace rantanplan {
  *
  * A boolean head slot is SHARED: f^{t+1} of transition t and f^t of
  * transition t+1 are the same Z3 AST and the same slot.  That is what keeps
- * ast_to_slot_ a 1:1 map to a bare uint32 rather than to a list of roles, and
+ * slot_of_ast_ a 1:1 map to a bare uint32 rather than to a list of roles, and
  * it is why fixing a head has to check two transitions.
  *
  * ---------------------------------------------------------------------------
@@ -171,8 +171,17 @@ namespace rantanplan {
  *     INVARIANT: num_can_explain + num_ruled_out + #pending == n
  * holds at all times.  check_clause() fires on exactly three situations:
  *     all n ruled out,  fluent changed            -> conflict
- *     all n ruled out,  change unknown            -> propagate f^{t+1} = f^t
+ *     all n ruled out,  change unknown            -> force persistence
  *     n-1 ruled out, none can, fluent changed     -> unit-propagate survivor
+ *
+ * "Force persistence" does NOT post f^{t+1} == f^t for a boolean shape.  That
+ * expression is boolean-sorted, so Z3 would internalize it as an iff node --
+ * a fresh boolean plus four gate clauses, manufactured mid-search at a
+ * non-base level.  Instead the equality is resolved here against whichever
+ * head is already assigned and the resulting DIRECTED LITERAL is propagated,
+ * with that head added to the reason; when neither head is assigned nothing
+ * is emitted, and fixing either one brings us straight back here.  Numeric
+ * shapes still propagate their reified equality bit, which is already an atom.
  * with early exits when the fluent provably persisted (clause vacuous) and
  * when num_can_explain > 0 (clause discharged).  AFTER that second guard,
  * num_can_explain == 0 holds — which is what licenses
@@ -423,7 +432,21 @@ private:
     /// touches a block belonging to a registered transition.
     std::vector<int8_t>   slot_value_;   ///< -1 unknown / 0 false / 1 true
     std::vector<z3::expr> slot_expr_;
-    std::unordered_map<unsigned, uint32_t> ast_to_slot_;  ///< the one hash lookup
+
+    /// AST id -> slot, as a FLAT ARRAY rather than a hash map.
+    ///
+    /// Measured: every variable Z3 fixes in an -fp run is one of ours
+    /// (frame_prop.on_fixed_calls / propagator.fixed_calls = 1.000, p10 0.996),
+    /// so this lookup runs on 100% of callbacks and never misses.  A hash of the
+    /// id plus a modulo plus a bucket chase is pure loss against one indexed
+    /// load, so the map is gone.
+    ///
+    /// Z3 hands out ast ids from a dense counter, so the array stays small
+    /// relative to the formula; ids of REGISTERED expressions cannot be recycled
+    /// underneath us because slot_expr_ holds a live reference to each one.
+    /// Unregistered ids either fall past the end or read kNoSlot.
+    static constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
+    std::vector<uint32_t> slot_of_ast_;
 
     // ======================================================================
     // CLAUSE STATE — two counters per (clause shape, transition), at index
@@ -444,6 +467,13 @@ private:
 
     std::vector<ClauseCounters> clause_counters_;
     std::vector<uint8_t>        ever_fired_;   ///< backs frame_prop.f_lazy; NOT trailed
+    /// One bit per clause instance: was this fluent EVER observed to change
+    /// across its transition?  Backs frame_prop.f_changed.  Not trailed --
+    /// the question is "ever, anywhere in the search", so it is monotone.
+    /// This is the set a change-triggered propagator would have to
+    /// materialise; F_lazy counts persistence firings too, so it is NOT the
+    /// same set and is an overestimate for that purpose.
+    std::vector<uint8_t>        ever_changed_;
     int                         num_transitions_ = 0;  ///< 0..n-1 are registered
 
     // ======================================================================
@@ -489,6 +519,21 @@ private:
     long long frame_eager_literals_ = 0;
     long long frame_static_persistence_ = 0;
     size_t    fixed_slots_peak_ = 0;
+
+    // DIAGNOSTIC: which firing branch check_clause reaches.  Kept because
+    // C12 (see developer-docs/c12-change-triggered-propagator.md) needs the
+    // split to predict what a change-triggered scheme would emit.
+    long long frame_clause_visits_ = 0;         ///< forward clause examinations
+    long long frame_changed_instances_ = 0;     ///< |{(shape,t) ever seen changed}|
+    // DIAGNOSTIC: callbacks split by slot class, to price what watching the
+    // STATE side (heads + equality bits) actually costs against watching only
+    // the ACTION side (action + condition literals).
+    long long frame_fixed_head_ = 0;
+    long long frame_fixed_literal_ = 0;
+    long long frame_fixed_eqbit_ = 0;
+    long long frame_reach_conflict_ = 0;        ///< all n ruled out AND fluent changed
+    long long frame_reach_unit_persist_ = 0;    ///< all n ruled out, change unknown
+    long long frame_reach_unit_explainer_ = 0;  ///< n-1 ruled out AND fluent changed
 
     double frame_callback_ms_ = 0.0;
     double frame_pop_ms_ = 0.0;   ///< split out of callback_ms: replay's cost
@@ -559,7 +604,12 @@ private:
     void build_reason(z3::expr_vector& reason, uint32_t shape, int t,
                       bool include_change, int64_t skip_explainer);
     void report_conflict(uint32_t shape, int t);
-    void propagate_persistence(uint32_t shape, int t);
+    /// Force the fluent to keep its value across t -> t+1.  For a boolean shape
+    /// this resolves the equality against whichever head is already assigned and
+    /// propagates the resulting directed literal; it returns false, having
+    /// emitted nothing, when neither head is assigned yet.  Numeric shapes always
+    /// propagate their equality bit and always return true.
+    bool propagate_persistence(uint32_t shape, int t);
     void propagate_last_explainer(uint32_t shape, int t);
     void mark_fired(uint32_t instance);
 };

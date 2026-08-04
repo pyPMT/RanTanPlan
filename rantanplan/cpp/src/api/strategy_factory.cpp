@@ -199,7 +199,16 @@ std::unique_ptr<PropagatorStrategy> StrategyFactory::create_propagator(
 
     const auto& mods = spec.propagator;
 
-    // Enable lazy frame mode in the encoder if frame axioms are active
+    // Enable lazy frame mode in the encoder if frame axioms are active.
+    //
+    // >>> ANY NEW FRAME-PROPAGATOR MODULE MUST BE ADDED HERE, and to validate()
+    // >>> above, and to the add_module block below.  Omitting this one leaves the
+    // >>> encoder posting eager frame axioms *and* the module enforcing them
+    // >>> lazily: sound, and the tests still pass, but doubly enforced -- and it
+    // >>> silently invalidates every measurement, because the run then solves a
+    // >>> different formula.  It cost a full invalid A/B once already.  The
+    // >>> symptom is frame_prop.conflicts == 0; the check is that
+    // >>> encoder.frame_axioms is ABSENT from the run's stats.
     if (mods.count(PropagatorModuleKind::FrameAxiom)) {
         encoder.set_lazy_frames(true);
     }

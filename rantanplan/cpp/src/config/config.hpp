@@ -24,7 +24,7 @@ public:
         bool debug_mode = false;
         int timeout = 0;              ///< 0 = no timeout (run indefinitely)
         std::string log_level = "INFO";
-        bool persist_clauses = false;  ///< Theory lemmas discarded on backtrack; propagators re-derive eagerly
+        bool persist_clauses = true;   ///< Retain propagator lemmas across backtracking; --no-persist-clauses discards them
         double epsilon = 1e-6;        ///< Numerical tolerance for floating-point comparisons
         bool reachability_grounding = true;  ///< --up-grounding disables this
         bool numeric_grounding = true;       ///< --no-numeric-grounding disables this

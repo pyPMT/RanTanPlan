@@ -67,7 +67,9 @@ Use --list-strategies to see available strategies and their descriptions.
     
     # Additional flags that work with all strategies
     parser.add_argument("--persist-clauses", action="store_true",
-                       help="Enable Z3 clause persistence for user propagator lemmas")
+                       help="Enable Z3 clause persistence for user propagator lemmas (default)")
+    parser.add_argument("--no-persist-clauses", action="store_true",
+                       help="Discard user propagator lemmas on backtracking")
     parser.add_argument("--symmetries", action="store_true",
                        help="Enable symmetry detection and breaking")
     parser.add_argument("--no-cnf-normalization", action="store_true",
@@ -121,7 +123,9 @@ def _build_planner_params(args) -> Dict[str, object]:
         planner_params['max_steps'] = args.max_steps
     if args.stats_file:
         planner_params['stats_file'] = args.stats_file
-    if args.persist_clauses:
+    if args.no_persist_clauses:
+        planner_params['persist_clauses'] = False
+    elif args.persist_clauses:
         planner_params['persist_clauses'] = True
     if args.symmetries:
         planner_params['symmetries'] = True
