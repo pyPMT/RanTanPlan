@@ -30,6 +30,7 @@
 #include "passes/quantifier_expansion_pass.hpp"
 #include "passes/cwa_initial_state_pass.hpp"
 #include "passes/static_fluent_pass.hpp"
+#include "passes/duplicate_effect_pass.hpp"
 #include "passes/cnf_normalization_pass.hpp"
 #include "passes/mutex_analysis_pass.hpp"
 #include "passes/landmark_analysis_pass.hpp"
@@ -164,6 +165,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     rantanplan::GroundingPass grounding_pass;
     rantanplan::CWAInitialStatePass cwa_pass;
     rantanplan::StaticFluentPass static_fluent_pass;
+    rantanplan::DuplicateEffectPass duplicate_effect_pass;
     rantanplan::CnfNormalizationPass cnf_normalization_pass;
     rantanplan::ActionPruningPass action_pruning_pass(options);
     rantanplan::MutexAnalysisPass mutex_analysis_pass;
@@ -212,6 +214,10 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     }
     passes.push_back(&cwa_pass);
     passes.push_back(&static_fluent_pass);
+    // After static-fluent folding, not merely after grounding: folding can in
+    // principle collapse two distinct expressions onto one fluent, which is the
+    // same shape this pass exists to catch.
+    passes.push_back(&duplicate_effect_pass);
     if (options.enable_cnf_normalization) {
         passes.push_back(&cnf_normalization_pass);
     }
