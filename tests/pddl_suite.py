@@ -28,6 +28,7 @@ QUICK_TEST_DIRS = [
     "pddl/test/rover",
     "pddl/test/gripper-round-1-adl",
     "pddl/test/hydropower",
+    "pddl/test/mprime",              # guards the elsc-fp extraction bug (duplicate-effect pass)
     "pddl/test/sdac-simple",
     "pddl/test/sdac-zero-bound",
     "pddl/test/worksworld",
