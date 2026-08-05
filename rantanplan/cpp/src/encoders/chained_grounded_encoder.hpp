@@ -2,6 +2,8 @@
 
 #include "grounded_encoder.hpp"
 
+#include <utility>
+
 namespace rantanplan {
 
 /**
@@ -27,26 +29,26 @@ public:
     z3::expr encode_cumulative_effects(int t) override;
 
 private:
-    // Map from non-Boolean variable (ExprID) to actions that modify it
-    std::unordered_map<ExprID, std::vector<const Action*>> variable_modifiers_;
-    
+    // Map from variable (ExprID) to the writes targeting it, as (action, effect)
+    // pairs — one entry per EFFECT, not per action. An action that writes one
+    // fluent twice (a reflexive grounding of move(?from,?to); the two arms of a
+    // clip-to-capacity idiom) therefore contributes two chain links, and the
+    // chain composes them in effects() order. Deduplicating to one entry per
+    // action, as this index used to, silently dropped every write but the first.
+    std::unordered_map<ExprID, std::vector<std::pair<const Action*, const Effect*>>>
+        variable_modifiers_;
+
     /**
-     * @brief Build index of which actions modify which variables
+     * @brief Build index of which effects write which variables
      */
     void build_variable_modifiers_index();
-    
-    
+
+
     /**
      * @brief Encode chained effects for multi-modified non-Boolean variables
      * Implements equations (7)-(9) from Section 5.2
      */
     z3::expr encode_chained_effects(int t);
-    
-    /**
-     * @brief Get the effect expression for a specific variable from an action
-     */
-    std::optional<const EffectExpression*> get_effect_for_variable(
-        const Action& action, ExprID var_eid) const;
     
     /**
      * @brief Apply an effect to an expression (for chaining)

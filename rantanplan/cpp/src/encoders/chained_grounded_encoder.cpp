@@ -15,23 +15,29 @@ ChainedGroundedEncoder::ChainedGroundedEncoder(const Problem& problem, z3::conte
 void ChainedGroundedEncoder::build_variable_modifiers_index() {
     variable_modifiers_.clear();
 
-    // Collect all variables and their modifying actions
+    // One entry per EFFECT. Actions are visited in problem order and their
+    // effects in declaration order, so each action's writes to one fluent stay
+    // adjacent and in PDDL order — which is the order the chain composes them
+    // in, and the only defensible one when they do not commute (two assigns).
+    //
+    // This list is deliberately NOT deduplicated by action. An action with two
+    // writes to one fluent needs two chain links: with one link it would
+    // contribute only its first write (see the deleted get_effect_for_variable),
+    // so `drink(lamb,lamb)` — (decrease (locale ?from) 1) and (increase (locale
+    // ?to) 1) ground at ?from = ?to — applied -1 where PDDL says 0, and the
+    // clip-to-capacity idiom `(when (<= .. cap) (increase ..)) (when (> .. cap)
+    // (assign .. cap))` lost whichever arm came second.
     for (const Action& action : problem_.actions()) {
         for (const Effect& effect : action.effects()) {
-            variable_modifiers_[effect.effect_expression().fluent_id()].push_back(&action);
+            variable_modifiers_[effect.effect_expression().fluent_id()]
+                .emplace_back(&action, &effect);
         }
-    }
-
-    // Remove duplicates from modifier lists
-    for (auto& [eid, actions] : variable_modifiers_) {
-        std::sort(actions.begin(), actions.end());
-        actions.erase(std::unique(actions.begin(), actions.end()), actions.end());
     }
 
     auto& stats = Stats::instance();
     size_t chained_vars = 0;
-    for (const auto& [eid, actions] : variable_modifiers_) {
-        if (actions.size() > 1 && !problem_.is_bool_type(eid)) {
+    for (const auto& [eid, writes] : variable_modifiers_) {
+        if (writes.size() > 1 && !problem_.is_bool_type(eid)) {
             chained_vars++;
         }
     }
@@ -55,13 +61,17 @@ z3::expr ChainedGroundedEncoder::encode_actions(int t) {
             all_constraints.push_back(z3::implies(action_var, z3_precond));
         }
 
-        // Create effect constraints, filtering out multi-modified non-Boolean variables
+        // Create effect constraints, filtering out multi-written non-Boolean variables
         z3::expr_vector filtered_effects(ctx_);
 
         for (const Effect& effect : action.effects()) {
             ExprID var_eid = effect.effect_expression().fluent_id();
 
-            // Check if this variable needs chained encoding
+            // Check if this variable needs chained encoding. Counting WRITES
+            // rather than actions also routes a variable written twice by a
+            // single action into the chain: the standard path below would emit
+            // both equalities into one conjunction (f' = f-1 AND f' = f+1),
+            // making the action unselectable.
             auto mod_it = variable_modifiers_.find(var_eid);
             bool needs_chaining = (mod_it != variable_modifiers_.end() &&
                                  mod_it->second.size() > 1 &&
@@ -101,9 +111,9 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
     // Creates chain variables ζ^t_{n,i} to handle cumulative effects from parallel actions
     // Key insight: conditions are evaluated using current chain position (input),
     // while effects produce the next chain position (output)
-    for (const auto& [var_eid, modifying_actions] : variable_modifiers_) {
+    for (const auto& [var_eid, writes] : variable_modifiers_) {
         // Skip variables that don't need chaining
-        if (modifying_actions.size() <= 1 || problem_.is_bool_type(var_eid)) {
+        if (writes.size() <= 1 || problem_.is_bool_type(var_eid)) {
             continue;
         }
 
@@ -117,9 +127,12 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
         z3::expr var_t = convert_expr_id_to_z3(var_eid, t);
         chain_vars.push_back(var_t);
 
-        // Create chain variables and constraints for each modifying action
-        for (size_t i = 0; i < modifying_actions.size(); ++i) {
-            const Action* action = modifying_actions[i];
+        // Create chain variables and constraints for each write. Two writes by
+        // the SAME action share one action variable, so they either both apply
+        // or both pass through — which is what composes them correctly.
+        for (size_t i = 0; i < writes.size(); ++i) {
+            const Action* action = writes[i].first;
+            const Effect* full_effect = writes[i].second;
             z3::expr action_var = variable_factory_.get_action_variable(*action, t);
 
             // Create next chain variable ζ^t_{n,i+1}
@@ -128,25 +141,17 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
             z3::expr chain_var_next = variable_factory_.create_symbol_variable(chain_var_name, var_type);
             chain_vars.push_back(chain_var_next);
 
-            // Get the effect for this variable from this action
-            auto effect_opt = get_effect_for_variable(*action, var_eid);
-            assert(effect_opt && "Action expected to modify variable but no effect found?");
-
-            // Equation (8): Apply effect conditionally based on action execution
+            // Equation (8): Apply effect conditionally based on action execution.
+            // The effect VALUE is converted at timestep t (the pre-state) while
+            // the operator is applied to the running chain value, so additive
+            // deltas accumulate while their expressions read the pre-state —
+            // which is what PDDL 2.1 specifies.
             z3::expr chain_prev = chain_vars[i];
-            z3::expr effect_applied = apply_effect_to_expression(**effect_opt, chain_prev, t);
-
-            // Handle conditional effects by finding the full Effect object
-            const Effect* full_effect = nullptr;
-            for (const Effect& eff : action->effects()) {
-                if (eff.effect_expression().fluent_id() == var_eid) {
-                    full_effect = &eff;
-                    break;
-                }
-            }
+            z3::expr effect_applied =
+                apply_effect_to_expression(full_effect->effect_expression(), chain_prev, t);
 
             z3::expr chain_constraint = ctx_.bool_val(true);
-            if (full_effect && full_effect->is_conditional()) {
+            if (full_effect->is_conditional()) {
                 // For conditional effects: (action^t ∧ condition^t) → ζ^t_{n,i+1} = eff(ζ^t_{n,i})
                 //                          ¬(action^t ∧ condition^t) → ζ^t_{n,i+1} = ζ^t_{n,i}
                 // This ensures chain variable passes through unchanged when condition is false
@@ -178,24 +183,6 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
     }
 
     return z3::mk_and(constraints);
-}
-
-std::optional<const EffectExpression*> ChainedGroundedEncoder::get_effect_for_variable(
-    const Action& action, ExprID var_eid) const {
-
-    // CONTRACT: at most one effect per (action, variable) may reach this
-    // encoder — the first match is taken and any further same-target effect
-    // is silently ignored. Lowering passes must respect this: a rewrite that
-    // would emit several same-target conditional effects inside one action
-    // (e.g. per-value expansion of a computed write) has to instance-split
-    // or fold into a single expression-valued assign instead (see the
-    // same-cell collision handling in array_lowering.cpp).
-    for (const Effect& effect : action.effects()) {
-        if (effect.effect_expression().fluent_id() == var_eid) {
-            return &effect.effect_expression();
-        }
-    }
-    return std::nullopt;
 }
 
 z3::expr ChainedGroundedEncoder::apply_effect_to_expression(

@@ -67,6 +67,15 @@ public:
     {}
 
     /// Construct a ground effect expression directly (used by the grounder).
+    ///
+    /// has_condition_ normalises a guard that is the CONSTANT TRUE to
+    /// unconditional, exactly as the lifted constructor above does.  Without
+    /// that test this constructor reports is_conditional() == true forever for
+    /// an effect whose guard a simplification pass has just folded away —
+    /// StaticFluentPass rebuilds effects through here (static_fluent_pass.cpp
+    /// :283-289), so a tautological guard would survive as a "conditional"
+    /// effect and silently exempt the action from every downstream check that
+    /// keys on conditionality.
     EffectExpression(Kind kind, ExprID fluent_id, ExprID value_id,
                      ExprID condition_id, const ExprPool* pool)
         : kind_(kind)
@@ -74,7 +83,8 @@ public:
         , fluent_id_(fluent_id)
         , value_id_(value_id)
         , condition_id_(condition_id)
-        , has_condition_(condition_id != EXPR_NULL)
+        , has_condition_(condition_id != EXPR_NULL &&
+                         !(pool && pool->is_true_constant(condition_id)))
         , pool_(pool)
     {}
 

@@ -42,6 +42,33 @@ std::string ExprNode::canonical_key() const {
     return key;
 }
 
+std::string ExprPool::state_variable_signature(const ExprNode& node) const {
+    if (static_cast<ExprKind>(node.kind) != ExprKind::STATE_VARIABLE) return {};
+    if (node.children.empty()) return {};
+
+    // GROUND atoms only: children[0] a fluent symbol, children[1..] all object
+    // CONSTANTs. A lifted node (PARAMETER or VARIABLE arguments) is excluded
+    // deliberately — it never becomes a Z3 variable, since grounding replaces it
+    // first, so it cannot participate in the id-vs-name mismatch this guards
+    // against. Without that restriction the signature also over-merges: a schema
+    // `next(?t1, ?t2)` and the ground `next(t1, t2)` have identical payloads and
+    // would be reported as aliases of each other, which is noise, not a hazard.
+    if (static_cast<ExprKind>(nodes_[node.children[0].id].kind) != ExprKind::FLUENT_SYMBOL) {
+        return {};
+    }
+    std::string signature;
+    for (size_t i = 0; i < node.children.size(); ++i) {
+        ExprID child = node.children[i];
+        if (!child.valid() || static_cast<size_t>(child.id) >= nodes_.size()) return {};
+        const ExprNode& arg = nodes_[child.id];
+        if (i > 0 && static_cast<ExprKind>(arg.kind) != ExprKind::CONSTANT) return {};
+        if (!std::holds_alternative<std::string>(arg.payload)) return {};
+        signature += std::get<std::string>(arg.payload);
+        signature += '\0';  // unambiguous separator: object names cannot contain it
+    }
+    return signature;
+}
+
 ExprID ExprPool::intern(ExprNode node) {
     std::string key = node.canonical_key();
     auto it = intern_.find(key);
@@ -49,6 +76,25 @@ ExprID ExprPool::intern(ExprNode node) {
         return it->second;
     }
     ExprID new_id{static_cast<int32_t>(nodes_.size())};
+
+    // Record which ground atom this node denotes, before the node is moved from.
+    // Done here rather than in a cache built later because passes keep interning
+    // throughout preprocessing, so anything built once would go stale.
+    std::string signature = state_variable_signature(node);
+    canonical_sv_.resize(static_cast<size_t>(new_id.id) + 1, EXPR_NULL);
+    if (!signature.empty()) {
+        auto sig_it = sv_signature_.find(signature);
+        if (sig_it == sv_signature_.end()) {
+            sv_signature_.emplace(std::move(signature), new_id);  // first of its kind
+        } else {
+            // Same ground atom, different node — differing only in a type_id
+            // somewhere. Point at the first one; see ExprPool's "Ground-atom
+            // identity" comment for who depends on this.
+            canonical_sv_[new_id.id] = sig_it->second;
+            ++aliased_sv_count_;
+        }
+    }
+
     nodes_.push_back(std::move(node));
     intern_[std::move(key)] = new_id;
     return new_id;

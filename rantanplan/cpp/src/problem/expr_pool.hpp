@@ -107,6 +107,48 @@ public:
     /// identical node already exists, otherwise appends and returns new ID.
     ExprID intern(ExprNode node);
 
+    // ========================================================================
+    // Ground-atom identity
+    // ========================================================================
+    //
+    // Interning distinguishes nodes by kind:op:TYPE_ID and children, but the
+    // Z3 variable a state variable becomes is named from PAYLOAD STRINGS ONLY
+    // — GroundedEncodingVisitor reads the head symbol's payload and each
+    // argument's payload, and Z3VariableFactory::get_fluent_var_name uses only
+    // those. So interning is FINER than the identity the solver sees: two ids
+    // for `at(truck1, depot)` that differ only in an argument's type_id both
+    // become the variable `at_truck1_depot`.
+    //
+    // Anything that groups by fluent ExprID therefore silently assumes one
+    // ground atom has one id. That assumption is pervasive and was never
+    // enforced — SemanticInterferencePredicate's effects_by_fluent,
+    // ChainedGroundedEncoder's variable_modifiers_, DuplicateEffectPass's write
+    // counting, NumericRelaxedPlanningGraph's reachability/bounds tables, and
+    // the footprint filter in action_footprint.hpp all key on it. If it ever
+    // broke, each would mis-group rather than fail loudly.
+    //
+    // Rather than collapse the interning key (set_lowering_pass.cpp:147 and
+    // array_lowering.cpp deliberately rely on type_id keeping nodes distinct),
+    // this maps every state variable onto a representative sharing its payload
+    // signature. Callers that mean "the same ground atom" use the
+    // representative; callers that mean "the same node" keep using the id.
+    // Maintained incrementally in intern() because passes keep interning
+    // throughout preprocessing — a cache built once would go stale.
+
+    /// Representative id for a ground state variable: the first one interned
+    /// with the same head symbol and argument payloads. Identity on any other
+    /// kind, and on an invalid id.
+    ExprID canonical_state_variable(ExprID id) const {
+        if (!id.valid() || static_cast<size_t>(id.id) >= canonical_sv_.size()) return id;
+        ExprID rep = canonical_sv_[id.id];
+        return rep.valid() ? rep : id;
+    }
+
+    /// State variables that are not their own representative. ZERO means every
+    /// ground atom has exactly one id and the assumption above holds; a nonzero
+    /// value means it does not, and every consumer listed above is affected.
+    size_t aliased_state_variable_count() const { return aliased_sv_count_; }
+
     /// Access a node by ID.
     const ExprNode& get(ExprID id) const {
         assert(id.valid() && static_cast<size_t>(id.id) < nodes_.size());
@@ -323,8 +365,20 @@ public:
     }
 
 private:
+    /// Payload signature of a state variable — head symbol payload plus each
+    /// argument payload, which is exactly what the Z3 variable name is built
+    /// from. Empty if the node is not a state variable with string payloads
+    /// throughout (nested fluent arguments have no name and are rejected by the
+    /// encoding visitor anyway), which disables aliasing for it.
+    std::string state_variable_signature(const ExprNode& node) const;
+
     std::vector<ExprNode> nodes_;
     std::unordered_map<std::string, ExprID> intern_;
+
+    // See "Ground-atom identity" above.
+    std::vector<ExprID> canonical_sv_;                     // indexed by ExprID
+    std::unordered_map<std::string, ExprID> sv_signature_;
+    size_t aliased_sv_count_ = 0;
 };
 
 } // namespace rantanplan

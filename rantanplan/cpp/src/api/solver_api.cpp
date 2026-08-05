@@ -248,6 +248,34 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     rantanplan::Stats::instance().set("pipeline.final_actions",
                                       static_cast<double>(pipeline_result.problem.actions().size()));
 
+    // How many state variables share a ground atom with an earlier node. ZERO is
+    // the expected and healthy value: it means every ground atom has exactly one
+    // ExprID, which everything that groups by fluent id silently assumes — the
+    // chained encoder's chain links, DuplicateEffectPass's write counts, the RPG
+    // tables, the interference footprints. A nonzero value is not a failure (the
+    // footprint filter is keyed by representative and copes) but it means those
+    // other consumers are mis-grouping. See ExprPool's "Ground-atom identity".
+    const size_t aliased_sv =
+        pipeline_result.problem.pool().aliased_state_variable_count();
+    rantanplan::Stats::instance().set("pool.aliased_state_variables",
+                                      static_cast<double>(aliased_sv));
+    if (aliased_sv > 0) {
+        // Loud, because everything below fails SILENTLY when this happens: the
+        // chained encoder builds one chain link per id, so one fluent gets two
+        // and the second overwrites the first; DuplicateEffectPass counts one
+        // write as two and may drop a legitimate action; the RPG keeps two
+        // reachability entries for one atom. Only the interference footprint
+        // copes, because it keys on canonical_state_variable(). Measured as 0
+        // across all 66 pddl/test domains when this check was added, so a
+        // nonzero value means something upstream changed.
+        rantanplan::Logger::instance().info(
+            "WARNING: " + std::to_string(aliased_sv) + " ground state variable(s) "
+            "have more than one ExprID — the same atom interned twice, differing "
+            "only in a type_id. Everything that groups by fluent id (chained "
+            "encoder, duplicate-effect pass, RPG tables) will mis-group these. "
+            "See ExprPool's \"Ground-atom identity\" comment.");
+    }
+
     // Debug: dump problem info after pipeline
     if (rantanplan::Logger::instance().should_print(rantanplan::VerbosityLevel::DEBUG)) {
         const auto& prob = pipeline_result.problem;

@@ -1,5 +1,4 @@
 #include "frame_axiom_module.hpp"
-#include "../../../util/scoped_timer.hpp"
 #include "../../../util/stats.hpp"
 #include "../../../encoders/grounded_encoder.hpp"
 #include <algorithm>
@@ -235,15 +234,13 @@ void FrameAxiomModule::register_transition(int t) {
 
     const size_t num_shapes = clause_shapes_.size();
     clause_counters_.resize(static_cast<size_t>(t + 1) * num_shapes);
-    ever_fired_.resize(clause_counters_.size(), 0);
-    ever_changed_.resize(clause_counters_.size(), 0);
 
     // F_eager accounting: encode_frames() short-circuits under lazy frames, so
     // the size of the encoding this module replaces is tallied here instead.
-    for (const ClauseShape& shape : clause_shapes_) {
-        frame_eager_axioms_++;
-        frame_eager_literals_ += static_cast<long long>(shape.num_explainers);
-    }
+    // Every transition registers every shape, and explainers_ is the gapless
+    // concatenation of all shapes' slices, so this is exact — no loop needed.
+    frame_eager_axioms_   += static_cast<long long>(clause_shapes_.size());
+    frame_eager_literals_ += static_cast<long long>(explainers_.size());
 
     for (ExprID eid : unmodifiable_fluents_) {
         z3::expr f_t  = grounded_->convert_expr_id_to_z3(eid, t);
@@ -264,9 +261,6 @@ void FrameAxiomModule::on_push() {
 }
 
 void FrameAxiomModule::on_pop(unsigned num_scopes) {
-    AccumulatingTimer timer(frame_callback_ms_);
-    AccumulatingTimer pop_timer(frame_pop_ms_);
-
     unsigned effective = std::min(num_scopes,
                                   static_cast<unsigned>(level_marks_.size()));
     assert(effective == num_scopes && "pop without matching push");
@@ -335,12 +329,6 @@ void FrameAxiomModule::visit_literal(uint32_t literal, int t,
             update_counters(instance, x, action, action, old_value, new_value);
         }
 
-        // DIAGNOSTIC: one forward examination of this clause.  Counted here
-        // rather than in check_clause so that it counts every visit, including
-        // ones gated by a pending conflict -- that is what makes it comparable
-        // across propagator designs.
-        if (run_checks) frame_clause_visits_++;
-
         // ATOMICITY: the loop must finish updating counters for the whole
         // occurrence list even after a conflict, or the reverse replay in
         // on_pop would undo updates that were never applied.  Only the check
@@ -353,8 +341,6 @@ void FrameAxiomModule::visit_literal(uint32_t literal, int t,
 void FrameAxiomModule::on_fixed(const z3::expr& ast, const z3::expr& value) {
     // Timed from the top: the slot lookup runs for every variable Z3 fixes,
     // watched or not, and is part of the module's overhead.
-    AccumulatingTimer timer(frame_callback_ms_);
-
     const unsigned ast_id = ast.id();
     if (ast_id >= slot_of_ast_.size()) return;
     const uint32_t slot = slot_of_ast_[ast_id];
@@ -377,28 +363,23 @@ void FrameAxiomModule::on_fixed(const z3::expr& ast, const z3::expr& value) {
     const uint32_t r = slot % slots_per_timestep_;
 
     if (r < num_boolean_shapes_) {
-        frame_fixed_head_++;
         // A boolean head is the "after" side of transition t-1 and the
         // "before" side of transition t.  Contiguous registration means t-1
         // was registered first, so this order is registration order.
         const uint32_t shape = r;
         if (is_registered(t - 1)) {
-            frame_clause_visits_++;
             check_clause(shape, t - 1);
             if (host_->conflict_raised()) return;
         }
-        if (is_registered(t)) { frame_clause_visits_++; check_clause(shape, t); }
+        if (is_registered(t)) check_clause(shape, t);
 
     } else if (r < num_boolean_shapes_ + num_literals_) {
-        frame_fixed_literal_++;
         visit_literal(r - num_boolean_shapes_, t, old_value, new_value,
                       /*run_checks=*/true);
 
     } else {
-        frame_fixed_eqbit_++;
         const uint32_t shape =
             num_boolean_shapes_ + (r - num_boolean_shapes_ - num_literals_);
-        frame_clause_visits_++;
         check_clause(shape, t);
     }
 }
@@ -424,40 +405,23 @@ void FrameAxiomModule::check_clause(uint32_t shape, int t) {
 
     const int8_t persisted = persistence_state(shape, t);
 
-    // DIAGNOSTIC: record that this instance was observed to have changed.  Every
-    // moment a change becomes observable -- the second head being fixed, or an
-    // equality bit going false -- routes through check_clause for exactly this
-    // instance, so nothing is missed.
-    if (persisted == 0) {
-        const uint32_t inst = clause_instance(shape, t);
-        if (!ever_changed_[inst]) { ever_changed_[inst] = 1; frame_changed_instances_++; }
-    }
-
     if (persisted == 1) return;                 // fluent unchanged: axiom vacuous
     if (counters.num_can_explain > 0) return;   // some explainer already fires
     // After this point: num_can_explain == 0.
 
     if (counters.num_ruled_out == n) {
-        if (persisted == 0) { frame_reach_conflict_++;     report_conflict(shape, t); }
-        else                { frame_reach_unit_persist_++; propagate_persistence(shape, t); }
+        if (persisted == 0) report_conflict(shape, t);
+        else                propagate_persistence(shape, t);
         return;
     }
 
-    if (persisted == 0 && counters.num_ruled_out == n - 1) {
-        frame_reach_unit_explainer_++;
+    if (persisted == 0 && counters.num_ruled_out == n - 1)
         propagate_last_explainer(shape, t);
-    }
 }
 
 // ============================================================================
 // Conflict & propagation
 // ============================================================================
-
-void FrameAxiomModule::mark_fired(uint32_t instance) {
-    if (ever_fired_[instance]) return;
-    ever_fired_[instance] = 1;
-    frame_clauses_materialized_++;
-}
 
 void FrameAxiomModule::build_reason(z3::expr_vector& reason,
                                       uint32_t shape, int t,
@@ -493,7 +457,6 @@ void FrameAxiomModule::report_conflict(uint32_t shape, int t) {
     z3::expr_vector reason(host_->z3_ctx());
     build_reason(reason, shape, t, /*include_change=*/true, /*skip=*/-1);
     frame_conflict_count_++;
-    mark_fired(clause_instance(shape, t));
     host_->module_conflict(reason);
 }
 
@@ -502,7 +465,6 @@ bool FrameAxiomModule::propagate_persistence(uint32_t shape, int t) {
         z3::expr_vector reason(host_->z3_ctx());
         build_reason(reason, shape, t, /*include_change=*/false, /*skip=*/-1);
         frame_persistence_prop_count_++;
-        mark_fired(clause_instance(shape, t));
         host_->module_propagate(reason, slot_expr_[equality_bit_slot(shape, t)]);
         return true;
     }
@@ -545,7 +507,6 @@ bool FrameAxiomModule::propagate_persistence(uint32_t shape, int t) {
     reason.push_back(slot_expr_[known_slot]);
 
     frame_persistence_prop_count_++;
-    mark_fired(clause_instance(shape, t));
 
     const z3::expr& target = slot_expr_[target_slot];
     host_->module_propagate(reason, known_value == 1 ? target : !target);
@@ -587,13 +548,11 @@ void FrameAxiomModule::propagate_last_explainer(uint32_t shape, int t) {
 
     if (action == -1) {
         frame_unit_prop_count_++;
-        mark_fired(instance);
         host_->module_propagate(reason,
                                 slot_expr_[literal_slot(x.action_literal, t)]);
     } else if (x.cond_literal != kUnconditional && action == 1 && cond == -1) {
         reason.push_back(slot_expr_[literal_slot(x.action_literal, t)]);
         frame_unit_prop_count_++;
-        mark_fired(instance);
         host_->module_propagate(reason,
                                 slot_expr_[literal_slot(x.cond_literal, t)]);
     }
@@ -604,7 +563,6 @@ void FrameAxiomModule::propagate_last_explainer(uint32_t shape, int t) {
 // ============================================================================
 
 void FrameAxiomModule::on_final() {
-    AccumulatingTimer timer(frame_callback_ms_);
     frame_on_final_count_++;
 
     // Note the missing `num_ruled_out == n` test, which check_clause() does
@@ -664,32 +622,18 @@ void FrameAxiomModule::cleanup() {
     stats.set("frame_prop.final_propagations",
               static_cast<double>(frame_final_propagation_count_));
     stats.set("frame_prop.vars_registered", static_cast<double>(frame_vars_registered_));
-    stats.set("frame_prop.callback_ms", frame_callback_ms_);
-    stats.set("frame_prop.pop_ms", frame_pop_ms_);
-    stats.set("frame_prop.clause_visits", static_cast<double>(frame_clause_visits_));
-    stats.set("frame_prop.f_changed", static_cast<double>(frame_changed_instances_));
-    stats.set("frame_prop.fixed_head", static_cast<double>(frame_fixed_head_));
-    stats.set("frame_prop.fixed_literal", static_cast<double>(frame_fixed_literal_));
-    stats.set("frame_prop.fixed_eqbit", static_cast<double>(frame_fixed_eqbit_));
     stats.set("frame_prop.n_boolean_shapes", static_cast<double>(num_boolean_shapes_));
     stats.set("frame_prop.n_literals", static_cast<double>(num_literals_));
     stats.set("frame_prop.n_numeric_shapes", static_cast<double>(num_numeric_shapes_));
-    stats.set("frame_prop.reach_conflict", static_cast<double>(frame_reach_conflict_));
-    stats.set("frame_prop.reach_unit_persist", static_cast<double>(frame_reach_unit_persist_));
-    stats.set("frame_prop.reach_unit_explainer", static_cast<double>(frame_reach_unit_explainer_));
 
     const double f_eager = static_cast<double>(frame_eager_axioms_);
-    const double f_lazy_distinct = static_cast<double>(frame_clauses_materialized_);
     const double f_lazy_emissions =
         static_cast<double>(propagations + frame_conflict_count_);
     stats.set("frame_prop.f_eager_axioms", f_eager);
     stats.set("frame_prop.f_eager_literals", static_cast<double>(frame_eager_literals_));
     stats.set("frame_prop.static_persistence", static_cast<double>(frame_static_persistence_));
-    stats.set("frame_prop.clauses_materialized", f_lazy_distinct);
-    stats.set("frame_prop.f_lazy", f_lazy_distinct);
     stats.set("frame_prop.f_lazy_emissions", f_lazy_emissions);
     if (f_eager > 0.0) {
-        stats.set("frame_prop.f_lazy_over_f_eager", f_lazy_distinct / f_eager);
         stats.set("frame_prop.emissions_over_f_eager", f_lazy_emissions / f_eager);
     }
 

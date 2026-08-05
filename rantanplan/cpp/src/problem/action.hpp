@@ -53,7 +53,14 @@ public:
     void add_parameter(const Parameter& param);
     void set_parameters(const std::vector<Parameter>& parameters);
     void add_effect(const Effect& effect) { effects_.push_back(effect); }
-    void set_precondition_id(ExprID id) { precondition_id_ = id; has_precondition_ = (id != EXPR_NULL); }
+    /// Mirrors the constructor: a precondition that is the CONSTANT TRUE counts
+    /// as no precondition, so a simplification pass that folds one away cannot
+    /// leave the action claiming it still has one.
+    void set_precondition_id(ExprID id) {
+        precondition_id_ = id;
+        has_precondition_ = (id != EXPR_NULL) &&
+                            !(pool_ && pool_->is_true_constant(id));
+    }
     void set_pool(const ExprPool* pool) { pool_ = pool; }
 
     // String representation

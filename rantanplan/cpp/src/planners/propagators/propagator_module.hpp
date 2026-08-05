@@ -5,7 +5,7 @@
 #include "../../encoders/base_encoder.hpp"
 #include "../../encoders/grounded_encoder.hpp"
 #include "../../analysis/interference_analysis.hpp"
-#include "../../problem/visitors/fluent_collector.hpp"
+#include "../../analysis/action_footprint.hpp"
 #include <z3++.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -54,17 +54,15 @@ struct PropagatorSharedState {
         if (footprint_index_built) return;
         footprint_index_built = true;
 
+        // compute_action_footprint is the single definition of "touches", shared
+        // with SemanticInterferencePredicate's filter — see action_footprint.hpp
+        // for why it must include effect right-hand sides and conditional guards
+        // and not just writes and preconditions.
         std::unordered_map<ExprID, std::vector<int>> fluent_to_actions;
         for (const Action& action : problem->actions()) {
             int aid = action.id();
-            for (const auto& effect : action.effects())
-                fluent_to_actions[effect.effect_expression().fluent_id()].push_back(aid);
-            if (action.has_precondition()) {
-                FluentCollector collector(*problem);
-                collector.collect_from_id(action.precondition_id());
-                for (ExprID fid : collector.get_fluents())
-                    fluent_to_actions[fid].push_back(aid);
-            }
+            for (ExprID fid : compute_action_footprint(*problem, action))
+                fluent_to_actions[fid].push_back(aid);
         }
         for (const auto& [fid, aids] : fluent_to_actions)
             for (size_t i = 0; i < aids.size(); ++i)

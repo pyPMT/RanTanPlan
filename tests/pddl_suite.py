@@ -161,6 +161,20 @@ def run_test(name, domain, problem, strategy, verbose=False, up_grounding=False,
         with OneshotPlanner(name=engine_name, params=params) as planner:
             result = planner.solve(prob, timeout=TIMEOUT)
 
+        # Corpus-wide invariant: one ground atom has exactly one ExprID.
+        # Everything that groups by fluent id assumes it — the chained encoder's
+        # chain links, DuplicateEffectPass's write counts, the RPG tables — and
+        # every one of them MIS-GROUPS SILENTLY if it breaks, so nothing else
+        # here would fail. Measured 0 across all 66 pddl/test domains when this
+        # was added. Checked before the status check on purpose: the stat is
+        # emitted after preprocessing, so it is meaningful even on instances that
+        # come back UNSOLVABLE_PROVEN and would otherwise return early.
+        # See ExprPool's "Ground-atom identity" comment.
+        if result.metrics:
+            aliased = result.metrics.get("pool.aliased_state_variables")
+            if aliased and float(aliased) > 0:
+                return False, f"ALIASED_STATE_VARS={aliased}"
+
         if result.status not in (PlanGenerationResultStatus.SOLVED_SATISFICING,
                                   PlanGenerationResultStatus.SOLVED_OPTIMALLY):
             return False, result.status.name

@@ -173,6 +173,10 @@ namespace rantanplan {
  *     all n ruled out,  fluent changed            -> conflict
  *     all n ruled out,  change unknown            -> force persistence
  *     n-1 ruled out, none can, fluent changed     -> unit-propagate survivor
+ * with early exits when the fluent provably persisted (clause vacuous) and
+ * when num_can_explain > 0 (clause discharged).  AFTER that second guard,
+ * num_can_explain == 0 holds — which is what licenses
+ * propagate_last_explainer() to take the first pending explainer it finds.
  *
  * "Force persistence" does NOT post f^{t+1} == f^t for a boolean shape.  That
  * expression is boolean-sorted, so Z3 would internalize it as an iff node --
@@ -182,10 +186,6 @@ namespace rantanplan {
  * with that head added to the reason; when neither head is assigned nothing
  * is emitted, and fixing either one brings us straight back here.  Numeric
  * shapes still propagate their reified equality bit, which is already an atom.
- * with early exits when the fluent provably persisted (clause vacuous) and
- * when num_can_explain > 0 (clause discharged).  AFTER that second guard,
- * num_can_explain == 0 holds — which is what licenses
- * propagate_last_explainer() to take the first pending explainer it finds.
  *
  * Reasons match the eager encoding's CNF: when a condition alone rules out an
  * explainer, the action literal is deliberately omitted (see build_reason).
@@ -232,23 +232,36 @@ namespace rantanplan {
  * ---------------------------------------------------------------------------
  * MEASUREMENT
  * ---------------------------------------------------------------------------
- * cleanup() reports frame_prop.*, including the lazy-versus-eager accounting
- * this module exists to support: F_eager (what encode_frames() would have
- * posted, tallied at registration because it short-circuits) against F_lazy
- * (distinct clauses that ever produced a lemma, via ever_fired_).  Preserve
- * those keys — an active study consumes them.
+ * cleanup() reports frame_prop.*, still including F_eager (what encode_frames()
+ * would have posted, tallied at registration because it short-circuits) and the
+ * emission counts, so the size of the encoding this module replaces and the
+ * number of lemmas it produces instead remain attributable.
+ *
+ * >>> THE MODULE NO LONGER MEASURES ITSELF.  The study that needed it is closed
+ * >>> (see developer-docs/frame-propagator-optimisation-plan.md), and the
+ * >>> instrumentation was not free: the diagnostic counters cost ~9% of runtime
+ * >>> (measured, n=36, median 0.910) and are gone, and so are the module's own
+ * >>> AccumulatingTimers, which took two clock reads on EVERY Z3 fixed()
+ * >>> callback ahead of the slot lookup.  Consequently `frame_prop.callback_ms`
+ * >>> no longer exists, and neither do `f_lazy` / `clauses_materialized` /
+ * >>> `f_lazy_over_f_eager`, which were backed by a horizon-sized `ever_fired_`
+ * >>> byte array plus a branch on every propagation.
+ * >>>
+ * >>> To re-measure, re-add them deliberately and temporarily.  Note the trap
+ * >>> PropagatorStrategy already avoids and this module never did: its host
+ * >>> gates timing behind timing_enabled() so it does not measure the
+ * >>> measurement, whereas the module's timers were unconditional.  What
+ * >>> survives is `propagator.callback_ms` on the host, which brackets the whole
+ * >>> fixed() callback for every module.
  *
  * Compare against the eager encoding, not just against another lazy run: the
  * `-fp` strategies each mirror a non-`fp` counterpart (els-fp <-> els, and so
  * on) that differs only in that encode_frames() actually emits its axioms.
  *
- * Beware wall-clock: this module's reified bits change Z3's term ids and so
- * its search path, and solve time tracks the number of propagator callbacks
- * far more closely than it tracks this module's own cost.  The attributable
- * number is cost per callback,
- *     frame_prop.callback_ms * 1e6 / propagator.fixed_calls   (nanoseconds)
- * which is stable where wall-clock is not.  See developer-docs/
- * frame-propagator.md §8.
+ * Beware wall-clock: this module's reified bits change Z3's term ids and so its
+ * search path, and solve time tracks the number of propagator callbacks far
+ * more closely than it tracks this module's own cost.  See developer-docs/
+ * frame-propagator.md §8 for how that was handled while the counters existed.
  */
 class FrameAxiomModule : public PropagatorModule {
 public:
@@ -466,14 +479,6 @@ private:
     };
 
     std::vector<ClauseCounters> clause_counters_;
-    std::vector<uint8_t>        ever_fired_;   ///< backs frame_prop.f_lazy; NOT trailed
-    /// One bit per clause instance: was this fluent EVER observed to change
-    /// across its transition?  Backs frame_prop.f_changed.  Not trailed --
-    /// the question is "ever, anywhere in the search", so it is monotone.
-    /// This is the set a change-triggered propagator would have to
-    /// materialise; F_lazy counts persistence firings too, so it is NOT the
-    /// same set and is an overestimate for that purpose.
-    std::vector<uint8_t>        ever_changed_;
     int                         num_transitions_ = 0;  ///< 0..n-1 are registered
 
     // ======================================================================
@@ -514,29 +519,10 @@ private:
     int frame_final_propagation_count_ = 0;
     int frame_vars_registered_ = 0;
 
-    long long frame_clauses_materialized_ = 0;
     long long frame_eager_axioms_ = 0;
     long long frame_eager_literals_ = 0;
     long long frame_static_persistence_ = 0;
     size_t    fixed_slots_peak_ = 0;
-
-    // DIAGNOSTIC: which firing branch check_clause reaches.  Kept because
-    // C12 (see developer-docs/c12-change-triggered-propagator.md) needs the
-    // split to predict what a change-triggered scheme would emit.
-    long long frame_clause_visits_ = 0;         ///< forward clause examinations
-    long long frame_changed_instances_ = 0;     ///< |{(shape,t) ever seen changed}|
-    // DIAGNOSTIC: callbacks split by slot class, to price what watching the
-    // STATE side (heads + equality bits) actually costs against watching only
-    // the ACTION side (action + condition literals).
-    long long frame_fixed_head_ = 0;
-    long long frame_fixed_literal_ = 0;
-    long long frame_fixed_eqbit_ = 0;
-    long long frame_reach_conflict_ = 0;        ///< all n ruled out AND fluent changed
-    long long frame_reach_unit_persist_ = 0;    ///< all n ruled out, change unknown
-    long long frame_reach_unit_explainer_ = 0;  ///< n-1 ruled out AND fluent changed
-
-    double frame_callback_ms_ = 0.0;
-    double frame_pop_ms_ = 0.0;   ///< split out of callback_ms: replay's cost
 
     // ======================================================================
     // Helpers
@@ -611,7 +597,6 @@ private:
     /// propagate their equality bit and always return true.
     bool propagate_persistence(uint32_t shape, int t);
     void propagate_last_explainer(uint32_t shape, int t);
-    void mark_fired(uint32_t instance);
 };
 
 } // namespace rantanplan
