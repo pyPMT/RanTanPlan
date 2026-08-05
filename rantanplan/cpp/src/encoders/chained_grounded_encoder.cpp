@@ -35,13 +35,17 @@ void ChainedGroundedEncoder::build_variable_modifiers_index() {
     }
 
     auto& stats = Stats::instance();
-    size_t chained_vars = 0;
+    size_t chained_vars = 0, cumulative_vars = 0;
     for (const auto& [eid, writes] : variable_modifiers_) {
-        if (writes.size() > 1 && !problem_.is_bool_type(eid)) {
-            chained_vars++;
-        }
+        if (!is_chained(eid)) continue;
+        chained_vars++;
+        // The subset that genuinely needs the chain for cumulative semantics.
+        // The rest are single-writer fluents chained only so that they, too,
+        // need no frame axiom; tracking both keeps that cost visible.
+        if (writes.size() > 1) cumulative_vars++;
     }
     stats.set("encoder.chained_variables", chained_vars);
+    stats.set("encoder.cumulative_variables", cumulative_vars);
 }
 
 
@@ -65,24 +69,12 @@ z3::expr ChainedGroundedEncoder::encode_actions(int t) {
         z3::expr_vector filtered_effects(ctx_);
 
         for (const Effect& effect : action.effects()) {
-            ExprID var_eid = effect.effect_expression().fluent_id();
-
-            // Check if this variable needs chained encoding. Counting WRITES
-            // rather than actions also routes a variable written twice by a
-            // single action into the chain: the standard path below would emit
-            // both equalities into one conjunction (f' = f-1 AND f' = f+1),
-            // making the action unselectable.
-            auto mod_it = variable_modifiers_.find(var_eid);
-            bool needs_chaining = (mod_it != variable_modifiers_.end() &&
-                                 mod_it->second.size() > 1 &&
-                                 !problem_.is_bool_type(var_eid));
-
-            if (!needs_chaining) {
-                // Use standard effect constraint for Boolean vars or single-modified vars
+            if (!is_chained(effect.effect_expression().fluent_id())) {
+                // Boolean fluents only: every modified numeric one is chained.
                 z3::expr z3_effect = convert_effect_to_z3(effect.effect_expression(), t);
                 filtered_effects.push_back(z3_effect);
             }
-            // Multi-modified non-Boolean variables are handled by chained encoding
+            // Chained variables are handled by encode_chained_effects
         }
 
         // Add filtered effect constraints for this action
@@ -107,73 +99,66 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
     z3::expr_vector constraints(ctx_);
     auto& stats = Stats::instance();
 
-    // Implement Section 5.2 chained encoding for multi-modified variables
-    // Creates chain variables ζ^t_{n,i} to handle cumulative effects from parallel actions
+    // Section 5.2 chained encoding, applied to EVERY modified numeric variable
+    // rather than only the multi-written ones (see is_chained for why).
     // Key insight: conditions are evaluated using current chain position (input),
-    // while effects produce the next chain position (output)
+    // while effects produce the next chain position (output).
+    //
+    // Equations (7) and (9) are fused into the loop: the chain runs
+    //     n^t = ζ_0  ->  ζ_1  ->  ...  ->  ζ_{k-1}  ->  n^{t+1}
+    // with the LAST link writing n^{t+1} directly instead of minting a final ζ
+    // and equating it.  So k writes cost k-1 chain variables, and the common
+    // single-write case costs none at all — it collapses to the one constraint
+    //     n^{t+1} = ite(a [AND c], eff(n^t), n^t)
+    // which is exactly what the old effect implication plus its frame axiom
+    // said between them.
     for (const auto& [var_eid, writes] : variable_modifiers_) {
-        // Skip variables that don't need chaining
-        if (writes.size() <= 1 || problem_.is_bool_type(var_eid)) {
-            continue;
-        }
+        if (!is_chained(var_eid)) continue;
 
         const std::string var_str = problem_.pool().to_string(var_eid);
         const Type* var_type = problem_.type_for_id(var_eid);
 
-        // Create intermediate chain variables ζ^t_{n,i}
-        std::vector<z3::expr> chain_vars;
+        z3::expr chain_prev = convert_expr_id_to_z3(var_eid, t);   // ζ_0 = n^t
 
-        // Equation (7): n^t = ζ^t_{n,0}
-        z3::expr var_t = convert_expr_id_to_z3(var_eid, t);
-        chain_vars.push_back(var_t);
-
-        // Create chain variables and constraints for each write. Two writes by
-        // the SAME action share one action variable, so they either both apply
-        // or both pass through — which is what composes them correctly.
+        // Walk the writes in order. Two writes by the SAME action share one
+        // action variable, so they either both apply or both pass through —
+        // which is what composes them correctly.
         for (size_t i = 0; i < writes.size(); ++i) {
             const Action* action = writes[i].first;
             const Effect* full_effect = writes[i].second;
             z3::expr action_var = variable_factory_.get_action_variable(*action, t);
 
-            // Create next chain variable ζ^t_{n,i+1}
-            std::string chain_var_name = "zeta_" + var_str + "_t" +
-                                       std::to_string(t) + "_i" + std::to_string(i + 1);
-            z3::expr chain_var_next = variable_factory_.create_symbol_variable(chain_var_name, var_type);
-            chain_vars.push_back(chain_var_next);
+            const bool is_last = (i + 1 == writes.size());
+            z3::expr chain_next =
+                is_last ? convert_expr_id_to_z3(var_eid, t + 1)
+                        : variable_factory_.create_symbol_variable(
+                              "zeta_" + var_str + "_t" + std::to_string(t) +
+                                  "_i" + std::to_string(i + 1),
+                              var_type);
 
             // Equation (8): Apply effect conditionally based on action execution.
             // The effect VALUE is converted at timestep t (the pre-state) while
             // the operator is applied to the running chain value, so additive
             // deltas accumulate while their expressions read the pre-state —
             // which is what PDDL 2.1 specifies.
-            z3::expr chain_prev = chain_vars[i];
             z3::expr effect_applied =
                 apply_effect_to_expression(full_effect->effect_expression(), chain_prev, t);
 
-            z3::expr chain_constraint = ctx_.bool_val(true);
+            // Unconditional:  action^t          -> next = eff(prev), else next = prev
+            // Conditional:   (action^t AND c^t) -> next = eff(prev), else next = prev
+            // The else-branch is what makes the successor TOTAL, and hence what
+            // licenses effects_determine_successor to drop the frame axiom.
+            z3::expr apply_effect = action_var;
             if (full_effect->is_conditional()) {
-                // For conditional effects: (action^t ∧ condition^t) → ζ^t_{n,i+1} = eff(ζ^t_{n,i})
-                //                          ¬(action^t ∧ condition^t) → ζ^t_{n,i+1} = ζ^t_{n,i}
-                // This ensures chain variable passes through unchanged when condition is false
-                z3::expr condition_z3 = convert_expr_id_to_z3(full_effect->effect_expression().condition_id(), t);
-                z3::expr apply_effect = action_var && condition_z3;
-                chain_constraint = z3::ite(apply_effect,
-                                         chain_var_next == effect_applied,
-                                         chain_var_next == chain_prev);
-            } else {
-                // For unconditional effects: action^t → ζ^t_{n,i+1} = eff(ζ^t_{n,i})
-                //                            ¬action^t → ζ^t_{n,i+1} = ζ^t_{n,i}
-                chain_constraint = z3::ite(action_var,
-                                         chain_var_next == effect_applied,
-                                         chain_var_next == chain_prev);
+                apply_effect = action_var &&
+                    convert_expr_id_to_z3(full_effect->effect_expression().condition_id(), t);
             }
+            constraints.push_back(z3::ite(apply_effect,
+                                          chain_next == effect_applied,
+                                          chain_next == chain_prev));
 
-            constraints.push_back(chain_constraint);
+            chain_prev = chain_next;
         }
-
-        // Equation (9): n^{t+1} = ζ^t_{n,|A_n|}
-        z3::expr var_t_plus_1 = convert_expr_id_to_z3(var_eid, t + 1);
-        constraints.push_back(var_t_plus_1 == chain_vars.back());
     }
 
     stats.add("encoder.chained_constraints", constraints.size());
@@ -220,12 +205,7 @@ std::optional<z3::expr> ChainedGroundedEncoder::encode_non_cumulative_effects(
     // handled by encode_chained_timestep_effects (chain variables ζ).
     z3::expr_vector filtered_effects(ctx_);
     for (const Effect& effect : action.effects()) {
-        ExprID var_eid = effect.effect_expression().fluent_id();
-        auto mod_it = variable_modifiers_.find(var_eid);
-        bool needs_chaining = (mod_it != variable_modifiers_.end() &&
-                               mod_it->second.size() > 1 &&
-                               !problem_.is_bool_type(var_eid));
-        if (!needs_chaining) {
+        if (!is_chained(effect.effect_expression().fluent_id())) {
             filtered_effects.push_back(convert_effect_to_z3(effect.effect_expression(), t));
         }
     }

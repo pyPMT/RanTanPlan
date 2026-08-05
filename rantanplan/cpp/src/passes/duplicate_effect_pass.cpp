@@ -30,7 +30,22 @@ void DuplicateEffectPass::apply(PreprocessedProblem& result) const {
     const std::vector<Action>& actions = result.problem.actions();
 
     std::vector<size_t> offending;
-    std::vector<std::string> report;
+    // Two report streams, kept separate because the two cases mean different
+    // things. A drop whose duplicated fluents are ALL BOOLEAN is an atom
+    // asserted both true and false by one action: no sensible reading, no
+    // encoder ever handled it, and nothing is lost by dropping it. A drop
+    // involving a NUMERIC fluent may have had a real net effect, so it is a
+    // genuine completeness risk (see "WHAT IT COSTS" in the header) and the two
+    // counts should never be read as one number.
+    //
+    // Either way the per-action names are DEBUG-only. Reflexive groundings
+    // produce these wholesale — a Zenotravel instance drops one fly-slow(p,c,c)
+    // per plane x city — and at default verbosity the list buries the summary
+    // that actually tells you something.
+    std::vector<std::string> report;       // numeric  — counted at INFO, listed at -vv
+    std::vector<std::string> bool_report;  // boolean  — counted at INFO, listed at -vv
+    std::string bool_example;              // first label of each kind, shown in its
+    std::string num_example;               // count line so the shape is recognisable
     std::vector<AssignCandidate> assign_candidates;
     size_t kept_conditional = 0;
 
@@ -74,6 +89,7 @@ void DuplicateEffectPass::apply(PreprocessedProblem& result) const {
         //                     > capacity -> clip).  The standard clip-to-capacity
         //                     idiom; exactly one arm ever applies.
         int duplicated = 0;
+        int duplicated_bool = 0;
         for (const auto& [fid, n] : writes) {
             (void)n;
             if (unconditional[fid] < 2) continue;
@@ -98,6 +114,7 @@ void DuplicateEffectPass::apply(PreprocessedProblem& result) const {
             }
             if (all_identical_assign) continue;
             duplicated++;
+            if (result.problem.is_bool_type(fid)) duplicated_bool++;
         }
         if (duplicated == 0) {
             for (const auto& [fid, n] : writes)
@@ -134,8 +151,19 @@ void DuplicateEffectPass::apply(PreprocessedProblem& result) const {
         // label(), not name(): name() is the LIFTED name, so every grounding of
         // drink would log identically and the ?from = ?to collapse this pass
         // exists to catch would be invisible.
-        report.push_back(actions[i].label() + " (" + std::to_string(duplicated) +
-                         " fluent(s) written more than once, unconditionally)");
+        std::string line = actions[i].label() + " (" + std::to_string(duplicated) +
+                           " fluent(s) written more than once, unconditionally)";
+        // ALL duplicated fluents boolean -> the atom is asserted both true and
+        // false. Undefined in PDDL, unsatisfiable on every encoder (booleans
+        // never chain), nothing lost by dropping it. A MIXED action counts as
+        // numeric: one of its duplicates can still have had a real net effect.
+        if (duplicated_bool == duplicated) {
+            if (bool_example.empty()) bool_example = actions[i].label();
+            bool_report.push_back(std::move(line));
+        } else {
+            if (num_example.empty()) num_example = actions[i].label();
+            report.push_back(std::move(line));
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -208,10 +236,20 @@ void DuplicateEffectPass::apply(PreprocessedProblem& result) const {
 
                 ++assign_conflicts;
                 offending.push_back(cand.action_idx);
-                report.push_back(
+                std::string line =
                     action.label() + " (two assignments to '" +
                     result.problem.pool().to_string(cand.fluent_id) +
-                    "' can apply together)");
+                    "' can apply together)";
+                // Same split as phase 1: a boolean fluent assigned true and
+                // false under guards that can both hold is the conditional form
+                // of the same degenerate shape, and costs nothing to drop.
+                if (result.problem.is_bool_type(cand.fluent_id)) {
+                    if (bool_example.empty()) bool_example = action.label();
+                    bool_report.push_back(std::move(line));
+                } else {
+                    if (num_example.empty()) num_example = action.label();
+                    report.push_back(std::move(line));
+                }
             }
         }
     }
@@ -224,6 +262,8 @@ void DuplicateEffectPass::apply(PreprocessedProblem& result) const {
                           static_cast<double>(assign_conflicts));
     Stats::instance().set("duplicate_effect.actions_dropped",
                           static_cast<double>(offending.size()));
+    Stats::instance().set("duplicate_effect.actions_dropped_boolean",
+                          static_cast<double>(bool_report.size()));
     // The number that matters for the invariant is the one NOT dropped: an action
     // with a duplicated fluent that survives because a conditional write is
     // involved still poisons are_simply_commuting, which is conditionality-blind.
@@ -248,8 +288,28 @@ void DuplicateEffectPass::apply(PreprocessedProblem& result) const {
         "expression have no canonical composition, and the chained encoders "
         "would silently pick the last one. Dropping is sound but may lose plans "
         "where the writes would have cancelled.");
+    // One counted line per kind at INFO, every name at DEBUG. The split is the
+    // point: the boolean count is reassurance (those actions were unusable
+    // anyway), the numeric count is the one to worry about.
+    if (!bool_report.empty()) {
+        Logger::instance().info(
+            "  dropped: " + std::to_string(bool_report.size()) +
+            " on BOOLEAN fluents only (one atom asserted both true and false, "
+            "e.g. " + bool_example + ") — degenerate on every encoder, so "
+            "nothing is lost.");
+    }
+    if (!report.empty()) {
+        Logger::instance().info(
+            "  dropped: " + std::to_string(report.size()) +
+            " involving a NUMERIC fluent (e.g. " + num_example + ") — these had "
+            "a real net effect under the chained encoders, so a plan may be "
+            "lost.");
+    }
+    Logger::instance().info("  (-vv names every dropped action)");
+    for (const std::string& line : bool_report)
+        Logger::instance().debug("  dropped: " + line);
     for (const std::string& line : report)
-        Logger::instance().info("  dropped: " + line);
+        Logger::instance().debug("  dropped: " + line);
 
     result.problem = result.problem.without_actions(offending);
 }

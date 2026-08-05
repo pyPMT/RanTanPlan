@@ -90,6 +90,13 @@ void FrameAxiomModule::build_clause_shapes() {
     for (ExprID eid : problem.grounded_fluents()) {
         const auto* effects = modifiers_of(eid);
         if (!effects || problem.is_bool_type(eid)) continue;
+        // Same redundancy the eager encode_frames skips, and for the same
+        // reason — asked in the same words so the two cannot drift.  Worth
+        // more here than there: a numeric shape also costs a reified
+        // feq_<shape>_<t> bit plus its posted biconditional per transition.
+        // Under the chained encoder this drops EVERY numeric shape, leaving
+        // the module purely boolean.
+        if (grounded_->effects_determine_successor(eid)) continue;
         emit_clause_shape(eid, *effects, literal_of_action, position_of_condition);
     }
     num_numeric_shapes_ =

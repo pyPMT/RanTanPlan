@@ -28,7 +28,36 @@ public:
     std::optional<z3::expr> encode_non_cumulative_effects(const Action& action, int t) override;
     z3::expr encode_cumulative_effects(int t) override;
 
+    /// The chain defines f^{t+1} totally for exactly the fluents it covers, so
+    /// this is is_chained().  See GroundedEncoder for what the caller does with
+    /// it, and encode_chained_effects for why the definition is total.
+    bool effects_determine_successor(ExprID fluent) const override {
+        return is_chained(fluent);
+    }
+
 private:
+    /// Whether this fluent's successor is built by the chain rather than by
+    /// per-action effect implications.  THE definition, consulted by every site
+    /// that has to agree on the split — the effect filters, the chain builder,
+    /// and the frame-axiom hook.  They must not drift: a fluent the filters
+    /// exclude but the chain skips would lose its effects entirely.
+    ///
+    /// Every modified non-Boolean fluent qualifies, including single-writer
+    /// ones.  A single write needs no chain to be CORRECT (one implication plus
+    /// a frame axiom says the same thing), but chaining it anyway is what lets
+    /// numeric fluents drop out of encode_frames uniformly, and it trades the
+    /// frame axiom's `f^t != f^{t+1}` — an arithmetic atom the theory solver
+    /// has to decide — for an ite term that states the same thing directly.
+    ///
+    /// Booleans stay out: their frame axioms are cheap (no theory atom) and the
+    /// chain's ite would be boolean-sorted, which Z3 internalizes as an iff
+    /// node — a fresh literal plus four gate clauses per write.
+    bool is_chained(ExprID fluent) const {
+        auto it = variable_modifiers_.find(fluent);
+        return it != variable_modifiers_.end() && !it->second.empty() &&
+               !problem_.is_bool_type(fluent);
+    }
+
     // Map from variable (ExprID) to the writes targeting it, as (action, effect)
     // pairs — one entry per EFFECT, not per action. An action that writes one
     // fluent twice (a reflexive grounding of move(?from,?to); the two arms of a

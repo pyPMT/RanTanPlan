@@ -59,6 +59,24 @@ public:
     // Together with encode_non_cumulative_effects, these compose encode_actions.
     virtual z3::expr encode_cumulative_effects(int t);
 
+    /// Whether the effect encoding already pins f^{t+1} as a TOTAL function of
+    /// f^t and the action literals, which makes a frame axiom for f entailed.
+    ///
+    /// The frame axiom says (f^t != f^{t+1}) -> OR_i (a_i [AND c_i]).  When the
+    /// successor is total, every a_i false forces f^{t+1} = f^t, so the
+    /// antecedent is unsatisfiable exactly where the consequent is — the axiom
+    /// adds nothing and encode_frames skips the fluent.
+    ///
+    /// False for every fluent here: the base encoding states effects as
+    /// implications (a -> f^{t+1} = eff(f^t)) and says nothing about f^{t+1}
+    /// when a is false, so the frame axiom is what supplies persistence.
+    /// ChainedGroundedEncoder overrides it for the fluents its chain covers.
+    ///
+    /// This must stay in sync with which fluents encode_cumulative_effects
+    /// actually chains — skipping the frame axiom for a fluent the chain does
+    /// NOT define leaves f^{t+1} unconstrained whenever no action writes it.
+    virtual bool effects_determine_successor(ExprID /*fluent*/) const { return false; }
+
     // Create action variables for all actions at timestep t without encoding constraints.
     void ensure_action_variables(int t);
 

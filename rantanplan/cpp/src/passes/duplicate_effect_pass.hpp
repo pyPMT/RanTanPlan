@@ -180,7 +180,23 @@ namespace rantanplan {
  * encoded CORRECTLY, so for a numeric fluent this pass is a pure loss there and
  * the right next step is to scope the drop to the cases that are still broken:
  * boolean duplicates, and every duplicate under a non-chained encoder. The
- * WARNING is deliberately loud for that reason, and names every action it drops.
+ * WARNING is deliberately loud for that reason.
+ *
+ * It reports the two kinds SEPARATELY, because only one of them is a loss:
+ *
+ *   BOOLEAN-only drops are free. The action asserts one atom both true and
+ *   false, which is undefined in PDDL and unsatisfiable on every encoder
+ *   (booleans never chain), so it was unusable before this pass touched it.
+ *   Reflexive groundings emit them wholesale — Zenotravel drops a
+ *   fly-slow(p,c,c) for every plane x city.
+ *
+ *   NUMERIC drops are the ones that can cost a plan, per the paragraph above.
+ *   An action counts as numeric as soon as ONE duplicated fluent is.
+ *
+ * Each kind gets a count and one example at INFO and is counted separately in
+ * duplicate_effect.actions_dropped{,_boolean}. The per-action names are DEBUG
+ * (-vv) for both kinds: on a reflexively-grounded domain the list is hundreds
+ * of lines long and buries the summary.
  *
  * ---------------------------------------------------------------------------
  * WHAT THIS SHOULD BECOME

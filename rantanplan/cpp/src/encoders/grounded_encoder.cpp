@@ -176,6 +176,12 @@ z3::expr GroundedEncoder::encode_frames(int t) {
     for (ExprID eid : problem_.grounded_fluents()) {
         auto epc_it = epc_index_.find(eid);
         if (epc_it == epc_index_.end()) continue;
+        // Redundant when the effect encoding already defines f^{t+1} totally
+        // (the chained encoder's numeric variables).  Note this SKIPS the
+        // fluent rather than treating it as unmodified: an empty epc entry
+        // below means "nothing can touch f" and emits f^t == f^{t+1}, which
+        // would pin the very variable the chain exists to update.
+        if (effects_determine_successor(eid)) continue;
         const auto& action_effects = epc_it->second;
 
         // Get fluent variables at timesteps t and t+1
