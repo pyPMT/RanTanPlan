@@ -35,7 +35,7 @@ six names for one plan. That factor is what we want back.
 flowchart LR
     subgraph preprocess
         SNAP["SymmetrySnapshotPass\n(canonicalized, lifted)"] --> DET
-        DET["detect_all_object_swaps\nZ3: init+goal invariant\nunder p_i ↔ p_j?"] --> SWAPS["ObjectSwap list\n(the orbit, as pairs)"]
+        DET["detect_all_object_swaps\nSMT: init+goal invariant\nunder p_i ↔ p_j?"] --> SWAPS["ObjectSwap list\n(the orbit, as pairs)"]
         SWAPS --> COMP["compute_symmetry_pairs\n(grounded problem):\nvariable + action pairs"]
         COMP --> ART["PreprocessedProblem\n.symmetry_data"]
     end
@@ -78,7 +78,7 @@ chains — was considered and deliberately deferred. It is written up in full
 in **"The deferred alternative"** below, together with the corpus evidence
 that no current instance justifies building it.)
 
-## Detection: init + goal invariance, checked with Z3
+## Detection: init + goal invariance, checked with SMT
 
 Why is it enough to look at the initial state and the goals — what about
 the actions? Because the *dynamics* cannot tell same-typed objects apart by
@@ -98,7 +98,7 @@ pair `(p1, p2)` it builds the formula
       ∧  in(p1)@1 ∧  in(p2)@1 ∧  in(p3)@1        (goals, step 1)
 ```
 
-applies the Z3 substitution `p1 ↔ p2` to get `φσ`, and asks the solver
+applies the SMT substitution `p1 ↔ p2` to get `φσ`, and asks the solver
 whether `¬(φ ↔ φσ)` is satisfiable. Here `φσ` is literally the same
 conjunction with two conjuncts swapped in place, so no interpretation can
 distinguish them: **UNSAT → symmetric**.
@@ -127,9 +127,9 @@ captured mid-pipeline by `SymmetrySnapshotPass` (`api/solver_api.cpp`),
 after the canonicalize lowerings and before grounding, because three
 constraints pull in different directions:
 
-- *after* `TermResolution`/`ArrayLowering`/`SetLowering`, so the Z3
+- *after* `TermResolution`/`ArrayLowering`/`SetLowering`, so the SMT
   formula builder meets only scalar shapes. Taking the snapshot on the raw
-  problem used to crash on set problems (`SET_CONSTANT` has no Z3
+  problem used to crash on set problems (`SET_CONSTANT` has no SMT
   translation) — and it is precisely the lowered membership cells
   (`pat(p_i, l1)`) that make `dump_trucks`' package symmetry visible as
   ordinary swappable atoms;

@@ -18,13 +18,16 @@ three — the problem crosses the boundary as an in-memory struct, and a
 long-running solve can be interrupted or can call back into Python
 mid-search without any IPC machinery.
 
-The one hazard this introduces: **exactly one copy of libz3 may be loaded
-per process.** The extension module must link the same `libz3` the
-`z3-solver` Python package loads — two copies in one process is undefined
-behavior. This is why `pip install -e . --no-build-isolation` is mandatory
-(see the root `CLAUDE.md`): build isolation would let the module link a
-different, temporarily-fetched z3 than the one `import z3` resolves at
-runtime.
+The constraint this introduces is about *where the solver comes from*: the
+module links the shared `libcvc5` in a local cvc5 **fork's** build tree
+(`CVC5_SOURCE_DIR`, default `$HOME/git/cvc5`), found at runtime through an
+`INSTALL_RPATH` pointing at `${CVC5_BUILD_DIR}/src`. There is no solver pip
+package in the picture, so no two-copies-in-one-process hazard — but the fork
+is not optional: it carries `THEORY_PLAN` and the `Solver::interrupt()` patch,
+so a stock cvc5 will not build this. `pip install -e . --no-build-isolation`
+is still mandatory (see the root `CLAUDE.md`), for a different reason: the
+build dependencies (`scikit-build-core`, `nanobind`) live in the venv, and
+build isolation would not see them.
 
 ## `ProblemIR`: the contract
 
@@ -209,21 +212,21 @@ log line actually fires.
 
 `Preprocessed.interrupt()` cancels a solve running on that handle, from any
 thread. It's implemented without any GIL involvement at all: `preprocess()`
-publishes the running solve's `z3::context*` into an `InterruptSlot` on the
-handle (`ScopedContextPublisher`, RAII, mutex-guarded to close a
-publish/use-after-free race), and `interrupt()` just flips Z3's own
-interrupt flag on that context. The interrupted solve's next `solver.check()`
-returns `unknown`, which the planner's timeout-handling path turns into a
-`TIMEOUT` result — the same path a wall-clock timeout takes. Only the
-search itself is interruptible this way; preprocessing and other non-Z3
-phases ignore `interrupt()`.
+publishes the running solve's `cvc5::Solver&` into an `InterruptSlot` on the
+handle (`ScopedSolverPublisher`, RAII, mutex-guarded to close a
+publish/use-after-free race), and `interrupt()` calls
+`cvc5::Solver::interrupt()` on it — one of the two patches the fork carries.
+The interrupted solve's next `checkSat()` returns `unknown`, which the
+planner's timeout-handling path turns into a `TIMEOUT` result — the same path
+a wall-clock timeout takes. Only the search itself is interruptible this way;
+preprocessing, encoder and planner construction ignore `interrupt()`.
 
 ## Logging and stats
 
 `set_log_sink(callback)` redirects the C++ `Logger` singleton's output to a
 Python callable instead of stdout/stderr; `None` restores the default. Like
 the plan callback, it runs on the solver thread with the GIL re-acquired.
-Stats (Z3 solver statistics, timing breakdowns) travel back as
+Stats (solver statistics, timing breakdowns) travel back as
 `ResultIR.stats`, a flat list of `(key, value)` pairs — the C++ side no
 longer writes a stats file itself; `planner_wrapper.py`'s `_write_stats_file`
 does, if `--stats-file` was requested.
@@ -243,18 +246,7 @@ is validated against the *original* (pre-compilation) problem before being retur
 
 ## Try it
 
-The libz3 hazard from the first section, made checkable — the module and
-the `z3` package must report the same version, because they must be the
-same shared library:
-
-```python
-from rantanplan import _rantanplan
-import z3
-print(_rantanplan.z3_version())   # e.g. 4.16.0.0 — what the module linked
-print(z3.get_version_string())    # e.g. 4.16.0   — what `import z3` loaded
-```
-
 To see the raw boundary in action — `preprocess()`, `solve()`, and a
 cross-thread `interrupt()` called directly on the module, no UP engine
 wrapper — run the "Try it" snippet at the end of
-[`z3-control-and-interruption.md`](z3-control-and-interruption.md).
+[`solver-control-and-interruption.md`](solver-control-and-interruption.md).

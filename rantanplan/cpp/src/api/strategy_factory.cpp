@@ -58,7 +58,9 @@ void StrategyFactory::validate(const StrategySpec& spec,
         (spec.planner == PlannerKind::CGB || uses_double_tail(spec))) {
         throw std::invalid_argument(
             "FrameAxiom propagator module is only validated with the "
-            "Sequential planner (incompatible with CGB and DoubleTail)");
+            "Sequential planner (incompatible with CGB and DoubleTail). "
+            "It registers transitions contiguously by stride arithmetic, "
+            "which those planners violate.");
     }
 
     if (horizon_schedule != "linear" && uses_double_tail(spec)) {
@@ -188,11 +190,84 @@ std::unique_ptr<BaseEncoder> StrategyFactory::create_encoder(
     return encoder;
 }
 
-// create_propagator is gone for M4: PropagatorStrategy and its four modules
-// are out of the build while they are reimplemented as THEORY_PLAN reasoning
-// (migration-plan.md §7.8). The M4 registry only lists strategies with an empty
-// propagator list, so nothing calls it. It comes back in M5-M7 as a TheoryPlan
-// module-list builder rather than a PropagatorStrategy builder.
+// create_propagator is gone for M4, and so is everything it built:
+// src/planners/propagators/ was DELETED rather than kept as unbuilt z3 code,
+// because THEORY_PLAN reasoning replaces it wholesale (migration-plan.md §7.8).
+// The z3 implementation is recoverable from git history (origin/main @ c8518db)
+// if the port wants it as reference. The M4 registry only lists strategies with
+// an empty propagator list, so nothing calls this. It comes back in M5-M7 as a
+// TheoryPlan module-list builder rather than a PropagatorStrategy builder.
+//
+// PropagatorModuleKind and PropagatorFlags survive in config/strategy_spec.hpp:
+// they are the spec vocabulary validate() below still reasons about, not the
+// implementation.
+//
+// CARRY THIS FORWARD WHEN IT COMES BACK (inherited from the z3 create_propagator
+// this replaced; it cost a full invalid A/B once already). Whoever posts frame
+// axioms must be exactly one party:
+//   - Every frame-reasoning module has to flip the encoder into lazy-frame mode
+//     (the old code's encoder.set_lazy_frames(true)) AND appear in validate()
+//     AND in the module-list builder. Miss the first and the encoder posts eager
+//     frame axioms *while* the module enforces them lazily: still sound, tests
+//     still pass, but the run solves a different formula, so every measurement
+//     taken against it is void. Symptom: frame_prop.conflicts == 0. Check:
+//     encoder.frame_axioms is ABSENT from the run's stats.
+//   - There is now a SECOND party skipping frame axioms, independent of any
+//     propagator: GroundedEncoder::encode_frames consults
+//     effects_determine_successor(), so the chained encoder already omits frames
+//     for its chained fluents. A frame module must not assume it is the only
+//     reason a fluent has no eager frame axiom.
+//
+// ─── WHAT THE FORK ALREADY GIVES US, AND WHAT IT STILL NEEDS ────────────────
+// State of THEORY_PLAN in the cvc5 fork (branch `empty-theory`, src/theory/plan/,
+// include/cvc5/cvc5_plan.h) as of this merge. Two of the three deleted modules
+// are already covered there; the third is not, and one of them needs nothing
+// from us at all:
+//
+//   ExistsCycleModule  -> DONE. TheoryPlan::findInterferenceCycle, selected by
+//                         PlanSemantics::ExistsStep. Same directional relation,
+//                         same "cycle is the conflict" argument.
+//   ForallMutexModule  -> DONE. TheoryPlan::findInterferingPartner, selected by
+//                         PlanSemantics::ForallStep. Only pairs involving the
+//                         newly-asserted action are examined, which is complete
+//                         because earlier pairs were checked when their later
+//                         member arrived.
+//   FrameAxiomModule   -> NOT STARTED. theory_plan.h names lazy frame axioms as
+//                         a goal, but theory_plan.cpp has no frame or fluent
+//                         handling whatsoever: preNotifyFact reacts only to
+//                         POSITIVE PLAN_DOES, and d_activeActions tracks actions
+//                         only. Nothing observes PLAN_FLUENT.
+//
+// So the wiring this file will need is narrow: build a PlanInterferenceOracle
+// over our SemanticInterferencePredicate (one virtual, `interferes(a, b)`,
+// directional -- our predicate is already exactly that shape, and its footprint
+// prefilter belongs on our side of the boundary since the theory asks per
+// ordered pair) and call Solver::configurePlanTheory(semantics, oracle). Atom
+// identity already matches: PLAN_DOES(action.id(), t), PLAN_FLUENT(ground
+// fluent id, t), both over the problem's own dense ids.
+//
+// TWO CONSTRAINTS THE ORACLE IMPOSES ON US, both from cvc5_plan.h:
+//   - The verdict must be ASSIGNMENT INDEPENDENT. Ours is: interference is a
+//     property of an action pair, not of a state. Do not "improve" it with
+//     anything that reads the current assignment.
+//   - The oracle MUST NOT call back into the asking solver. Our predicate runs
+//     its own TermManager/Solver, so this holds today -- keep it that way.
+//
+// FOR FRAMES SPECIFICALLY, the open design question is what the theory can see.
+// A lazy frame axiom has to notice f^t != f^{t+1} and name the actions that
+// could explain it, so the theory must observe fluent VALUES:
+//   - Bool-sorted PLAN_FLUENT is a literal owned by THEORY_PLAN, so it does
+//     reach preNotifyFact. Boolean frames are therefore implementable with the
+//     machinery already there, plus an EPC index handed over like the oracle.
+//   - Non-Bool PLAN_FLUENT is a TERM, not a literal. Its value lives in
+//     THEORY_ARITH, and TheoryPlan::needsEqualityEngine() returns false, so
+//     nothing delivers it. Numeric frames need either an equality engine, arith
+//     coupling, or a different formulation.
+// Note how well that lines up with the chained encoder: is_chained() already
+// removes the eager frame axiom for every modified NUMERIC fluent, so what a
+// lazy frame module would be left to enforce is predominantly the BOOLEAN case
+// -- exactly the case the theory can observe as-is. Worth confirming before
+// investing in arith coupling.
 
 std::unique_ptr<BasePlanner> StrategyFactory::create_planner(
     const StrategySpec& spec, PreprocessedProblem& pre,

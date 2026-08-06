@@ -17,16 +17,16 @@
   conservation laws, object-fluent domains, mutex groups), symmetry data,
   disjunctive action landmarks, and a pre-built achiever analysis.
 
-The header has one hard rule: **it must compile with no Z3 include path.**
-Artifact types that use Z3 internally (`AchieversAnalysis`,
+The header has one hard rule: **it must compile with no cvc5 include path.**
+Artifact types that use the solver internally (`AchieversAnalysis`,
 `NumericRelaxedPlanningGraph`) appear only as forward-declared classes
 behind `unique_ptr` members, with the constructors/destructor/move
 operations defined out-of-line in the `.cpp` so the header never needs the
-type complete. This isn't about hiding Z3 for its own sake — it's what makes
+type complete. This isn't about hiding cvc5 for its own sake — it's what makes
 the "GBFS test" in
 [`architecture-overview.md`](architecture-overview.md) (see "Design philosophy")
-true: a consumer of `PreprocessedProblem` that never wants to touch Z3 can
-include this header without pulling Z3 in transitively.
+true: a consumer of `PreprocessedProblem` that never wants to touch the solver
+can include this header without pulling cvc5 in transitively.
 
 Artifacts are also **single-consumer**: `BasePlanner::consume_artifacts()`
 *moves* what a planner needs (achievers for CGB, SDAC cost bounds for
@@ -273,14 +273,14 @@ Transition Systems"*, ICAPS 2003): two objects of the same type are
 initial state and the goals logically equivalent — nothing distinguishes
 them, so any plan using one has a mirror plan using the other, and the
 solver shouldn't explore both. `SMTSymmetryChecker`
-(`symmetries/smt_symmetry_checker.cpp`) proves equivalence with Z3,
+(`symmetries/smt_symmetry_checker.cpp`) proves equivalence with SMT,
 building the initial state and goals over *uninterpreted fluent functions*
-(`z3core`'s `LiftedEncodingVisitor` — this is that visitor's only
+(`smtcore`'s `LiftedEncodingVisitor` — this is that visitor's only
 consumer) and checking the swap by substitution. The pass runs in two
 steps:
 
 1. **Detect** on the original pre-grounding problem (smaller initial
-   state, cheaper Z3 queries): which object pairs are swappable.
+   state, cheaper SMT queries): which object pairs are swappable.
 2. **Complete** on the grounded problem: for each swap, collect the
    related variable pairs (`at(rob1, room-a)` ↔ `at(rob2, room-a)`) and
    action pairs (`move(rob1, …)` ↔ `move(rob2, …)`) — the `SymmetryInfo`
@@ -364,8 +364,8 @@ after construction. Planners declare what preprocessing artifacts they need
 via `BasePlanner::consume_artifacts()` rather than the caller
 `dynamic_cast`-ing to find out (an earlier version of this code did exactly
 that before being cleaned up). The one
-ordering Z3 itself imposes — the propagator must attach to the planner's
-solver, so the propagator is created after the planner — is the caller's
+ordering the solver itself imposes — in-search reasoning must attach to the
+planner's solver, so it is configured after the planner — is the caller's
 (`api::solve`'s) responsibility, not the factory's.
 
 ### Example: unpacking one strategy
@@ -385,7 +385,7 @@ field by field, and what `StrategyFactory` turns each one into:
 |---|---|---|
 | `encoder` | `EncoderFamily::Chained` | a `ChainedGroundedEncoder` |
 | `semantics` | `SemanticsKind::Exists` | an `ExistsSemantics` parallelism strategy, constructor-injected into the encoder |
-| `interference` | `InterferenceKind::LazySemantic` | a `SemanticInterferenceAnalysis` (see [`interference-and-propagators.md`](interference-and-propagators.md) for the eager/lazy × syntactic/semantic matrix), constructor-injected into the parallelism strategy |
+| `interference` | `InterferenceKind::LazySemantic` | a `SemanticInterferenceAnalysis` (see [`interference.md`](interference.md) for the eager/lazy × syntactic/semantic matrix), constructor-injected into the parallelism strategy |
 | `propagator` | `{PropagatorModuleKind::ExistsCycle}` | one `ExistsCycleModule`, added to the `PropagatorStrategy` |
 | `planner` | `PlannerKind::Sequential` | resolved (via `resolve_planner_kind`, satisficing mode) to an `IncrementalHorizonPlanner` — note this enum value names a *strategy role* ("use the strategy's normal single-ended search"), not the `IncrementalHorizonPlanner` class, which used to be named `SequentialPlanner` before a rename (see [`encoders-and-planners.md`](encoders-and-planners.md)) |
 
@@ -411,7 +411,7 @@ strategy is double-tail or CGB, which cannot run under those modes at all
 | encoder | subclass `BaseEncoder`, one case in `StrategyFactory` |
 | planner | subclass `BasePlanner`, one case in `StrategyFactory` |
 | strategy (combination of existing pieces) | one entry in `strategy_registry.cpp` (see the `elsc` breakdown above) |
-| non-SAT planner | a new consumer of `PreprocessedProblem` — no encoder or Z3 header required |
+| non-SAT planner | a new consumer of `PreprocessedProblem` — no encoder or solver header required |
 
 The sketches below are illustrative shape, not complete compiling code —
 `BaseEncoder` in particular has more pure virtuals than shown (see
@@ -446,14 +446,14 @@ pruning, so it reports the post-pruning count).
 // encoders/my_encoder.hpp
 class MyEncoder : public BaseEncoder {
 public:
-    MyEncoder(const Problem& problem, z3::context& ctx,
+    MyEncoder(const Problem& problem, cvc5::TermManager& ctx,
               std::unique_ptr<ParallelismStrategy> parallelism);
 
-    z3::expr encode_initial_state() override;  // assert each initial_state() assignment
-    z3::expr encode_actions(int t) override;   // one implication per ground action: a@t -> pre@t /\ eff@(t+1)
-    z3::expr encode_frames(int t) override;    // unmentioned fluents persist t -> t+1
-    z3::expr encode_goal(int t) override;      // conjunction of goal ExprIDs, evaluated at t
-    z3::expr encode_parallelism(int t) override { return parallelism_->encode(t); }
+    Term encode_initial_state() override;  // assert each initial_state() assignment
+    Term encode_actions(int t) override;   // one implication per ground action: a@t -> pre@t /\ eff@(t+1)
+    Term encode_frames(int t) override;    // unmentioned fluents persist t -> t+1
+    Term encode_goal(int t) override;      // conjunction of goal ExprIDs, evaluated at t
+    Term encode_parallelism(int t) override { return parallelism_->encode(t); }
     // ... encode_symmetries, encode_state_constraints, extract_plan, etc.
 };
 ```
@@ -475,10 +475,10 @@ public:
         init_deadline();
         for (int h = 0; h <= Config::instance().planner.max_steps; ++h) {
             if (!apply_solver_timeout(solver_)) break;
-            add_timestep_constraints(solver_, encoder_, *propagator_strategy_, h);
-            if (solver_.check() == z3::sat) {
+            add_timestep_constraints(solver_, encoder_, h);
+            if (solver_.checkSat().isSat()) {
                 solution_found_ = true;
-                return encoder_.extract_plan(solver_.get_model(), h);
+                return encoder_.extract_plan(solver_, h);
             }
         }
         return {};
@@ -495,8 +495,7 @@ for `Config::instance()` or a `dynamic_cast`.
 
 The "GBFS test" from
 [`architecture-overview.md`](architecture-overview.md) made concrete — a
-consumer that never touches `BaseEncoder`, `PropagatorStrategy`, or any Z3
-header:
+consumer that never touches `BaseEncoder` or any solver header:
 
 ```cpp
 class GreedyBestFirstPlanner {
@@ -511,7 +510,7 @@ public:
         // Heuristic fuel and pruning come from PreprocessedProblem's
         // strategy-independent artifacts: constraints_.bounds (tightened
         // numeric bounds), constraints_.mutexes, pre.landmark_data
-        // (distance estimates) — no Z3 query needed for any of it.
+        // (distance estimates) — no SMT query needed for any of it.
         ...
     }
 

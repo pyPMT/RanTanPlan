@@ -5,7 +5,7 @@ elsewhere: which SAT encoder builds the formula, and which planner backend
 drives the search over it. See
 [`preprocessing-and-strategy.md`](preprocessing-and-strategy.md) for how
 these fit into `StrategySpec`/`StrategyFactory`, and
-[`interference-and-propagators.md`](interference-and-propagators.md) for the
+[`interference.md`](interference.md) for the
 interference/propagator axes.
 
 ## Encoder families
@@ -14,7 +14,7 @@ interference/propagator axes.
 strategy implements: `encode_initial_state()`, `encode_actions(t)`,
 `encode_frames(t)`, `encode_goal(t)`, `encode_parallelism(t)`,
 `encode_symmetries(t)`, `encode_state_constraints(t)`, plus
-`extract_plan()` to turn a Z3 model back into a `Plan`. Three families exist
+`extract_plan()` to turn a solver model back into a `Plan`. Three families exist
 (`EncoderFamily` in `config/strategy_spec.hpp`):
 
 - **Grounded** (`grounded_encoder.{hpp,cpp}`) — the baseline: the eight
@@ -38,7 +38,7 @@ strategy implements: `encode_initial_state()`, `encode_actions(t)`,
 
 Under parallel semantics, the baseline encoding breaks on numeric fluents
 with more than one writer. Take the commuting pair from
-[`interference-and-propagators.md`](interference-and-propagators.md) —
+[`interference.md`](interference.md) —
 `refuel_a` (`fuel += 5`) and `refuel_b` (`fuel += 3`), which semantic
 interference happily allows in the same timestep. Grounded's per-action
 effect equalities
@@ -107,8 +107,8 @@ uniform "front" to chain.
 ## Planner backends
 
 `BasePlanner` (`planners/base_planner.hpp`) owns what every planner shares:
-the Z3 solver, deadline/timeout handling (`init_deadline`,
-`apply_solver_timeout`, `handle_unknown_result` — a `z3::unknown` result is
+the cvc5 solver, deadline/timeout handling (`init_deadline`,
+`apply_solver_timeout`, `handle_unknown_result` — an `unknown` result is
 disambiguated into "genuinely timed out" vs. other causes), the horizon
 schedule, and the intermediate-plan callback used for anytime results (see
 [`python-cpp-boundary.md`](python-cpp-boundary.md)). Concrete planners:
@@ -140,12 +140,13 @@ schedule, and the intermediate-plan callback used for anytime results (see
   enforces this) and cannot run under optimal/anytime search modes
   (`resolve_planner_kind` raises if you try).
 - **`BranchAndBoundPlanner`** — the cost-optimal (and anytime) planner.
-  Notably, it does **not** use `z3::optimize` — that API is incompatible
-  with Z3 user propagators, which every forall/exists/lazy strategy
-  depends on. Instead it reformulates cost minimization as a sequence of
-  plain `z3::solver` feasibility checks with progressively tighter cost
-  bounds, preserving full propagator compatibility. The full algorithm is
-  the "Optimal and anytime" section below.
+  Notably, it uses **no dedicated optimization API**: it reformulates cost
+  minimization as a sequence of plain `cvc5::Solver` feasibility checks with
+  progressively tighter cost bounds. That formulation is what keeps it
+  compatible with the lazy/parallel strategies, whose reasoning has to sit
+  inside the same search — a constraint any future switch to a solver-side
+  optimizer would have to honour. The full algorithm is the "Optimal and
+  anytime" section below.
 - **CGB** (`CGBPlanner`) — core-guided lazy activation under ∃-step
   semantics (successor to the removed PDLA family, which it dominated on
   both benchmark suites): every ground action starts dormant behind a
@@ -246,7 +247,7 @@ The inner loop keeps re-checking with the same assumption-gated bound
 improving plans before the search moves on. The push/pop discipline —
 concrete transitions permanent and outside the scope, suffix constraints
 inside it — is the `push()`/`pop()` usage described in
-[`z3-control-and-interruption.md`](z3-control-and-interruption.md).
+[`solver-control-and-interruption.md`](solver-control-and-interruption.md).
 
 Exit statuses map directly onto how the loop ends: `SOLVED_OPTIMALLY`
 (the UNSAT-with-saved-plan branch — optimality *proven*),

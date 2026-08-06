@@ -13,11 +13,14 @@ using K = PlannerKind;
 const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
     static const std::map<std::string, StrategyEntry> registry = {
         // ── M4 (cvc5 swap): reduced registry ────────────────────────────────
-        // PropagatorStrategy and its four modules are temporarily out of the
-        // build while they are reimplemented as THEORY_PLAN reasoning, so only
-        // strategies that need NO propagator are registered. test.py discovers
-        // strategies from here, so the quick suite shrinks and stays green
-        // rather than going red. Restoration schedule: migration-plan.md §7.8
+        // PropagatorStrategy and its four modules are GONE FROM THE TREE, not
+        // merely out of the build: src/planners/propagators/ was deleted rather
+        // than carried along as unbuilt z3 code, since THEORY_PLAN reasoning
+        // replaces it wholesale. The z3 implementation is recoverable from git
+        // history (origin/main @ c8518db) if the port wants it as reference.
+        // Only strategies that need NO propagator are registered. test.py
+        // discovers strategies from here, so the quick suite shrinks and stays
+        // green rather than going red. Restoration schedule: migration-plan.md §7.8
         //   M5 (ExistsCycle): + e, el, els, elsc, egsc, and the -dt variants
         //   M6 (ForallMutex): + f-p, fl, fls, flsc, fgsc, and the -dt variants
         //   M7 (FrameAxiom):  + elsc-fp, cgb -- full registry restored

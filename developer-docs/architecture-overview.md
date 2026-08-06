@@ -7,7 +7,7 @@ RantanPlan is a SAT/SMT-based automated planner: given a PDDL (or
 searches for a sequence — or partially-ordered set — of actions that
 transforms the initial state into a goal state. Instead of a heuristic
 forward search over states, it uses **planning as satisfiability**: encode
-"does a plan of length *k* exist?" as a formula and hand it to Z3. If the
+"does a plan of length *k* exist?" as a formula and hand it to cvc5. If the
 formula is satisfiable, the model *is* a plan; if not, grow *k* and try
 again (or use branch-and-bound over cost, for optimal planning).
 
@@ -46,7 +46,7 @@ This is a genuine expressiveness/cost tradeoff, not a strictly-better
 option, which is why all three are first-class and selectable per strategy
 — see [`preprocessing-and-strategy.md`](preprocessing-and-strategy.md) for
 how a semantics choice becomes a `StrategySpec`, and
-[`interference-and-propagators.md`](interference-and-propagators.md) for how
+[`interference.md`](interference.md) for how
 interference is actually computed under each.
 
 ## The two-layer split
@@ -273,7 +273,7 @@ initial state: (at rob1 room-a)
    (`at(rob1, room-a)` true at *t=0*), the frame axioms and action clauses
    for *t=0*, and a goal literal for *t=1* implying `at(rob1, room-b)` —
    the complete formula for exactly this problem is written out in
-   [`the-encoding.md`](the-encoding.md). Z3
+   [`the-encoding.md`](the-encoding.md). cvc5
    finds the model: `move(rob1, room-a, room-b)` fires at *t=0*.
 
 5. **Plan extraction and mapping back.** `extract_plan()` reads which action
@@ -288,7 +288,7 @@ initial state: (at rob1 room-a)
 This example is intentionally too small to show parallelism, propagators, or
 numeric reasoning — see
 [`preprocessing-and-strategy.md`](preprocessing-and-strategy.md),
-[`interference-and-propagators.md`](interference-and-propagators.md), and
+[`interference.md`](interference.md), and
 [`encoders-and-planners.md`](encoders-and-planners.md) for those.
 
 ## Design philosophy
@@ -322,18 +322,18 @@ need whole-graph access declare it in their *type* (they take an
 `InterferenceGraphAnalysis&`, not an `InterferenceOracle&`), so passing a
 lazy analyzer where a graph is required is a compile error instead of a
 runtime throw. See
-[`interference-and-propagators.md`](interference-and-propagators.md).
+[`interference.md`](interference.md).
 
 **A non-SAT consumer of the preprocessor should be conceivable, even if
 none exists yet.** `PreprocessedProblem` never mentions an encoder, a
-propagator, or Z3 in its public contract (Z3-using artifacts are
+propagator, or cvc5 in its public contract (solver-using artifacts are
 forward-declared behind `unique_ptr`s). The internal sanity check the
 codebase uses for this is "the GBFS test": could a greedy best-first-search
 planner be written against `PreprocessedProblem` alone — states/actions/
 goals via `Problem`/`ExprPool`, pruning via the tightened bounds, heuristic
 fuel via the fixpoint RPG/achievers — without including any encoder header
-or calling any Z3 API? Today, yes. Keeping that true is why interference
-analysis (which needs `SemanticsKind` and feeds propagators) is built in
+or calling any solver API? Today, yes. Keeping that true is why interference
+analysis (which needs `SemanticsKind`) is built in
 `api::solve`, not in the preprocessor.
 
 ## Try it

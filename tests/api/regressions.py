@@ -3,14 +3,49 @@ resurface. Unlike the other modules here, these are not a *feature* — each cas
 reproduces one historical bug in the smallest form that fails without the fix.
 They live in the API suite so they run on every invocation, including
 ``--quick`` (the full PDDL sweep that also covers them is skipped there).
+
+KNOWN RED AT M4 — three cases below fail on this branch, by design, and are
+expected to go green untouched when M5 restores the registry. They ask for
+strategies built on ``EncoderFamily::Chained``:
+
+    test_chained_encoder_composes_every_write_to_one_fluent   elsc, flsc, elsc-fp
+    test_duplicate_writes_do_not_fabricate_interference       egsc
+    test_ground_atoms_have_exactly_one_expr_id                elsc
+
+No registered strategy currently uses ``E::Chained`` — grep it in
+``config/strategy_registry.cpp`` and see the M4 comment there for why: the
+chained variants all pair with a propagator module, and PropagatorStrategy is out
+of the build while it is reimplemented as THEORY_PLAN reasoning. So these three
+report ``INTERNAL_ERROR`` with "Unknown strategy", not a wrong answer.
+
+They were left failing rather than skipped on purpose: the chained encoder and
+its frame-axiom removal (``ChainedGroundedEncoder::is_chained`` /
+``effects_determine_successor``) are UNREACHABLE at M4, so a green suite here
+would claim coverage that does not exist. Treat these three as the marker for
+that gap. Do not "fix" them by relaxing the assertions.
+
+Note the shape they guard is still broken on the encoders that ARE reachable:
+``egs`` on ``_two_writes_to_one_fluent_problem`` returns UNSOLVABLE_INCOMPLETELY,
+because the non-chained encoder emits ``g' = g+1 AND g' = g+2``. That is a known
+gap, documented in DuplicateEffectPass's header, not a regression.
 """
 from unified_planning.shortcuts import (
     Fluent, InstantaneousAction, Problem, BoolType, IntType, UserType, Object,
-    Equals,
+    Equals, GE, Not,
 )
 from unified_planning.engines import PlanGenerationResultStatus
 
 from ..harness import solve, assert_valid
+
+
+def _metric(result, key):
+    """A stats value off a PlanGenerationResult, as float, or None. Every stat
+    reaches result.metrics (stringified) on every solve — no --stats-file
+    needed — so these are assertable without touching the filesystem."""
+    if not result.metrics:
+        return None
+    raw = result.metrics.get(key)
+    return None if raw is None else float(raw)
 
 
 def _conditional_effect_delivery_problem():
@@ -360,8 +395,180 @@ def test_object_fluent_assign_from_fluent_reachability():
         assert_valid(p, r.plan)
 
 
+def _two_writes_to_one_fluent_problem():
+    """One action writing ONE fluent twice, both writes guarded by the same
+    (satisfiable) condition, so both must fire and their deltas must accumulate.
+
+        both : WHEN flag: g += 1
+               WHEN flag: g += 2
+               done := true
+        clear: PRE done   effect flag := false      (keeps `flag` dynamic)
+        init  flag, g = 0;  goal  done AND g = 3
+
+    `g = 3` is reachable only if BOTH writes are applied. The guard reads a
+    fluent another action writes so neither StaticFluentPass nor the numeric
+    bounds analysis can fold it to a constant — a folded guard becomes
+    unconditional and changes which code path is exercised.
+    """
+    flag = Fluent("flag", BoolType())
+    done = Fluent("done", BoolType())
+    g = Fluent("g", IntType())
+
+    both = InstantaneousAction("both")
+    both.add_precondition(Not(done()))
+    both.add_increase_effect(g(), 1, condition=flag())
+    both.add_increase_effect(g(), 2, condition=flag())
+    both.add_effect(done(), True)
+
+    clear = InstantaneousAction("clear")
+    clear.add_precondition(done())
+    clear.add_effect(flag(), False)
+
+    p = Problem("two_writes_one_fluent")
+    # Declared False and set True: a boolean default of True is rejected (it
+    # inverts the closed-world assumption).
+    p.add_fluent(flag, default_initial_value=False)
+    p.set_initial_value(flag(), True)
+    p.add_fluent(done, default_initial_value=False)
+    p.add_fluent(g, default_initial_value=0)
+    p.add_action(both)
+    p.add_action(clear)
+    p.add_goal(done())
+    p.add_goal(Equals(g(), 3))
+    return p
+
+
+def test_chained_encoder_composes_every_write_to_one_fluent():
+    """ChainedGroundedEncoder must give each EFFECT its own chain link.
+
+    It used to index writes per ACTION and take the first matching effect,
+    silently ignoring the rest (the deleted get_effect_for_variable). With one
+    action writing `g` twice, the per-action index also collapsed to size 1, so
+    the variable did not look multi-modified and fell through to the plain
+    conjoined-equalities path — which emits `g' = g+1 AND g' = g+2`, an
+    unsatisfiable constraint that makes the action unselectable and the goal
+    unreachable.
+
+    Chained encoders only: under the non-chained GroundedEncoder this shape is
+    still encoded as that unsatisfiable conjunction, which is a separate known
+    gap (see DuplicateEffectPass's header).
+    """
+    for strategy in ("elsc", "flsc", "elsc-fp"):
+        p = _two_writes_to_one_fluent_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: expected SOLVED, got {r.status} — a duplicate write " \
+            f"to one fluent is being dropped or made unsatisfiable again"
+        assert_valid(p, r.plan)
+
+
+def test_duplicate_writes_do_not_fabricate_interference():
+    """Writing one fluent twice must not make an action interfere with
+    everything.
+
+    are_simply_commuting used to return "not commuting" the moment it saw a
+    repeated fluent, before it had looked at the second action at all — so one
+    action's internal shape became a verdict about every pair it appeared in,
+    including actions it shares no fluent with. Those edges were invisible to
+    the search (which only asks about pairs sharing a fluent) but visible to
+    plan extraction (which asks about all n^2), and being symmetric they formed
+    2-cycles that Graph::topological_sort silently emitted in the wrong order.
+
+    `both` writes only `g`/`done`; `p_act` and `q_act` touch neither, nor each
+    other. The eager semantic graph must therefore be empty.
+    """
+    p = _two_writes_to_one_fluent_problem()
+    h = Fluent("h", IntType())
+    k = Fluent("k", IntType())
+    p.add_fluent(h, default_initial_value=0)
+    p.add_fluent(k, default_initial_value=0)
+    for name, fluent in (("p_act", h), ("q_act", k)):
+        act = InstantaneousAction(name)
+        act.add_increase_effect(fluent(), 1)
+        p.add_action(act)
+
+    # egsc, not egs: the eager graph is built the same way either side, but the
+    # non-chained encoder still turns this action's two writes into an
+    # unsatisfiable conjunction, so only the chained variant reaches a plan.
+    r = solve(p, strategy="egsc")
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+        f"expected SOLVED, got {r.status}"
+    edges = _metric(r, "interference.semantic.edges")
+    assert edges is not None, "interference.semantic.edges not reported"
+    assert edges == 0, \
+        f"expected an empty interference graph, got {edges} edge(s) — a unary " \
+        f"property is being reported as a verdict about a pair again"
+
+
+def test_effect_rhs_read_is_not_hidden_from_interference():
+    """A fluent read only on an effect's RIGHT-HAND SIDE is part of the
+    footprint.
+
+    compute_action_footprint feeds both the search prefilter
+    (potential_interferers) and the oracle's own early-out. It used to collect
+    written fluents and PRECONDITION fluents only, so this pair looked disjoint:
+
+        accelerate : v += 1
+        move       : x += v          <- reads v, but only in the effect value
+
+    They genuinely interfere (CHECK2_HAPPEN: the parallel happening evaluates
+    `v` at the pre-state, a serialisation lets accelerate's write flow into
+    move's delta), and a debug assertion found the same shape in five
+    pddl/test domains. Narrowing the footprint again makes the oracle answer
+    NONE here and empties the graph.
+    """
+    v = Fluent("v", IntType())
+    x = Fluent("x", IntType())
+
+    accelerate = InstantaneousAction("accelerate")
+    accelerate.add_increase_effect(v(), 1)
+    move = InstantaneousAction("move")
+    move.add_increase_effect(x(), v())
+
+    p = Problem("effect_rhs_read")
+    p.add_fluent(v, default_initial_value=1)
+    p.add_fluent(x, default_initial_value=0)
+    p.add_action(accelerate)
+    p.add_action(move)
+    p.add_goal(GE(x(), 1))
+    p.add_goal(GE(v(), 2))
+
+    r = solve(p, strategy="egs")
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+        f"expected SOLVED, got {r.status}"
+    edges = _metric(r, "interference.semantic.edges")
+    assert edges is not None, "interference.semantic.edges not reported"
+    assert edges > 0, \
+        "accelerate and move must interfere: move reads `v` on its effect's " \
+        "right-hand side and accelerate writes it. An empty graph means the " \
+        "footprint no longer collects effect-RHS reads, which lets the search " \
+        "co-schedule them"
+
+
+def test_ground_atoms_have_exactly_one_expr_id():
+    """One ground atom, one ExprID.
+
+    Interning distinguishes nodes by type_id; the Z3 variable name is built from
+    payload strings only. So two ids can denote one atom, and everything that
+    groups by fluent id then mis-groups SILENTLY — the chained encoder builds two
+    chain links for one fluent, DuplicateEffectPass counts one write as two, the
+    RPG keeps two reachability entries. Measured 0 across all 66 pddl/test
+    domains; the PDDL suite asserts this per instance, this covers the API path.
+    """
+    p = _two_writes_to_one_fluent_problem()
+    r = solve(p, strategy="elsc")
+    aliased = _metric(r, "pool.aliased_state_variables")
+    assert aliased is not None, "pool.aliased_state_variables not reported"
+    assert aliased == 0, \
+        f"{aliased} ground state variable(s) have more than one ExprID"
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
+    test_chained_encoder_composes_every_write_to_one_fluent,
+    test_duplicate_writes_do_not_fabricate_interference,
+    test_effect_rhs_read_is_not_hidden_from_interference,
+    test_ground_atoms_have_exactly_one_expr_id,
     test_goal_relevance_numeric_value_chaining,
     test_goal_relevance_numeric_rhs_chaining,
     test_boolean_assign_from_fluent,

@@ -14,7 +14,7 @@ Concepts first, plumbing last — each doc leans only on the ones before it.
    is, why it's built as two layers (Python frontend / C++ core, and within
    the core, preprocessor / backend), and the philosophy that shapes
    everything else here.
-2. [`the-encoding.md`](the-encoding.md) — the formula itself: which Z3
+2. [`the-encoding.md`](the-encoding.md) — the formula itself: which solver
    variables exist, the clause schemas every encoder emits (actions, frame
    axioms, parallelism, goals), and the complete formula for a two-room
    robot problem. Everything after this doc exists to build or exploit
@@ -30,19 +30,20 @@ Concepts first, plumbing last — each doc leans only on the ones before it.
    layer-by-layer reachability graph `ActionPruningPass` builds for
    tightened bounds, goal-relevance pruning, and cost lower bounds.
 6. [`symmetries.md`](symmetries.md) — interchangeable objects and their
-   orbits: how object swaps are detected by a Z3 init+goal invariance
+   orbits: how object swaps are detected by an SMT init+goal invariance
    check, and how the encoder breaks them with state-conditional
    lexicographic constraints. Example-led (one three-package problem
    traced through detection, completion, and encoding).
-7. [`interference-and-propagators.md`](interference-and-propagators.md) —
-   why interference analysis has two interfaces, and how the Z3 user
-   propagator is split into composable modules.
+7. [`interference.md`](interference.md) — why interference analysis has two
+   interfaces, what the semantic definition actually checks, and where
+   in-search parallelism reasoning now lives (cvc5's `THEORY_PLAN`, replacing
+   the deleted external propagator).
 8. [`encoders-and-planners.md`](encoders-and-planners.md) — the encoder
    families, the planner backends, optimal/anytime branch-and-bound, and
    how a search mode resolves to a planner.
-9. [`z3-control-and-interruption.md`](z3-control-and-interruption.md) — how
-   the Z3 solver is driven incrementally, timeout budgeting, and cross-thread
-   cancellation.
+9. [`solver-control-and-interruption.md`](solver-control-and-interruption.md)
+   — how the cvc5 solver is driven incrementally, timeout budgeting, and
+   cross-thread cancellation.
 10. [`python-cpp-boundary.md`](python-cpp-boundary.md) — the in-process
     nanobind contract: `ProblemIR`, the GIL, the anytime callback,
     cancellation from Python. Plumbing — nothing conceptual depends on it,
@@ -91,10 +92,10 @@ for when you meet one out of order.
   (`move(rob1, room-a, room-b)`). Grounding is the step from one to the
   other ([`grounding.md`](grounding.md)).
 - **Horizon** — the plan length the current formula can express: "is there
-  a plan of at most *h* steps?" Search grows the horizon until Z3 says sat.
+  a plan of at most *h* steps?" Search grows the horizon until the solver says sat.
 - **Interference** — directional relation between actions: A interferes
   with B if executing A alongside B could corrupt what B reads or writes
-  ([`interference-and-propagators.md`](interference-and-propagators.md)).
+  ([`interference.md`](interference.md)).
 - **Mutex / invariant / conservation law** — facts provably true in every
   reachable state: at most one of a fluent group holds (mutex), a numeric
   bound always holds, a sum of fluents stays constant (conservation law).
@@ -107,10 +108,11 @@ for when you meet one out of order.
   a connected component of the swap graph. k interchangeable objects mean
   up to k! mirror plans, which symmetry breaking prunes to one
   representative ([`symmetries.md`](symmetries.md)).
-- **Propagator (user propagator)** — Z3's extension point for injecting
-  custom reasoning *during* search via callbacks; RantanPlan hosts one and
-  dispatches to composable modules
-  ([`interference-and-propagators.md`](interference-and-propagators.md)).
+- **In-search parallelism reasoning** — deciding whether co-scheduled actions
+  may share a timestep *during* the search rather than up front. Now a cvc5
+  theory (`THEORY_PLAN`) consulting an interference oracle; the external
+  callback-based propagator it replaces was deleted
+  ([`interference.md`](interference.md)).
 - **RPG (relaxed planning graph)** — layer-by-layer reachability under
   delete relaxation; source of horizon lower bounds, pruning, and bounds
   ([`relaxed-planning-graph.md`](relaxed-planning-graph.md)).

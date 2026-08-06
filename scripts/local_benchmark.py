@@ -519,7 +519,7 @@ def main():
         nargs=argparse.REMAINDER,
         default=[],
         help="Extra arguments passed through to the planner verbatim "
-             "(e.g. --extra-args --no-persist-clauses --symmetries)"
+             "(e.g. --extra-args --symmetries --no-cnf-normalization)"
     )
 
     args = parser.parse_args()

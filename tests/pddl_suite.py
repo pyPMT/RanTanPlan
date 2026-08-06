@@ -28,6 +28,7 @@ QUICK_TEST_DIRS = [
     "pddl/test/rover",
     "pddl/test/gripper-round-1-adl",
     "pddl/test/hydropower",
+    "pddl/test/mprime",              # guards the elsc-fp extraction bug (duplicate-effect pass)
     "pddl/test/sdac-simple",
     "pddl/test/sdac-zero-bound",
     "pddl/test/worksworld",
@@ -68,6 +69,24 @@ QUICK_OPTIMAL_MODE_STRATEGIES = [
 # instance/strategy would otherwise be filtered out), so a reintroduction is
 # caught in the fast dev loop. In full mode they are already part of the sweep
 # and are de-duplicated. Each plan is validated like any other test.
+# (instance, strategies) pairs excluded from the sweep because they do not fit
+# in TIMEOUT — a property of the instance, not a defect the suite should report.
+# Keep these SPECIFIC: the strategies listed here are skipped for that instance
+# only, so every other strategy still covers it.
+#
+# A skip must be justified by a measurement, not by "it was red". Timings below
+# are single runs on an unloaded box; under the suite's default -j 4 both tip
+# over well before their solo time, which is why they surfaced as flaky rather
+# than as consistent failures.
+SKIP_CONFIGS = {
+    # 2026-08-05: seq 46s, seq-dt 61s against TIMEOUT=60. Pre-existing and
+    # unrelated to any encoder work — the seq family is E::Grounded, so it never
+    # reaches the chained encoder. Raising TIMEOUT for everyone would cost more
+    # wall-clock across 2571 tests than this coverage is worth. Skipping the
+    # strategy, not the domain: obj-logistics still runs under all the others.
+    "obj-logistics": {"seq", "seq-dt"},
+}
+
 REGRESSION_CONFIGS = [
     # Exists-step *semantic* interference must catch numeric read/write hazards;
     # fo-sailing previously produced a plan UP rejects on these encoders.
@@ -160,6 +179,20 @@ def run_test(name, domain, problem, strategy, verbose=False, up_grounding=False,
         with OneshotPlanner(name=engine_name, params=params) as planner:
             result = planner.solve(prob, timeout=TIMEOUT)
 
+        # Corpus-wide invariant: one ground atom has exactly one ExprID.
+        # Everything that groups by fluent id assumes it — the chained encoder's
+        # chain links, DuplicateEffectPass's write counts, the RPG tables — and
+        # every one of them MIS-GROUPS SILENTLY if it breaks, so nothing else
+        # here would fail. Measured 0 across all 66 pddl/test domains when this
+        # was added. Checked before the status check on purpose: the stat is
+        # emitted after preprocessing, so it is meaningful even on instances that
+        # come back UNSOLVABLE_PROVEN and would otherwise return early.
+        # See ExprPool's "Ground-atom identity" comment.
+        if result.metrics:
+            aliased = result.metrics.get("pool.aliased_state_variables")
+            if aliased and float(aliased) > 0:
+                return False, f"ALIASED_STATE_VARS={aliased}"
+
         if result.status not in (PlanGenerationResultStatus.SOLVED_SATISFICING,
                                   PlanGenerationResultStatus.SOLVED_OPTIMALLY):
             return False, result.status.name
@@ -249,9 +282,15 @@ def run(quick=False, verbose=False, up_grounding=False, jobs=4):
 
     work_items = []
     seen_labels = set()
+    skipped = []
     for name, domain, problem_file in problems:
         for strategy, mode, label in configs:
             test_label = f"{name} / {label}"
+            # Skips are keyed by STRATEGY, so a --mode optimal config is covered
+            # by the same entry as its plain counterpart.
+            if strategy in SKIP_CONFIGS.get(name, ()):
+                skipped.append(test_label)
+                continue
             seen_labels.add(test_label)
             work_items.append((test_label, name, domain, problem_file, strategy,
                                verbose, up_grounding, mode))
@@ -278,7 +317,12 @@ def run(quick=False, verbose=False, up_grounding=False, jobs=4):
     total = len(work_items)
     extra = f" (+{regression_count} regression)" if regression_count else ""
     print(f"{C.BOLD}PDDL suite{C.END}: {len(problems)} domains x {len(configs)} "
-          f"configs = {total} tests{extra} (jobs: {jobs})\n")
+          f"configs = {total} tests{extra} (jobs: {jobs})")
+    # Never skip silently: a suite that quietly drops configs reads as green
+    # when it is really narrower than it looks.
+    if skipped:
+        print(f"  {C.YELLOW}skipped{C.END} (SKIP_CONFIGS): {', '.join(sorted(skipped))}")
+    print()
 
     if jobs == 1 or verbose:
         # Sequential: verbose needs sequential for readable output.

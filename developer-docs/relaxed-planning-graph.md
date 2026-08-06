@@ -59,14 +59,14 @@ mean anything at layer 0, where they come directly from the initial state
 assignment; nothing in the transition table can produce `TRUE_ONLY` from
 `FALSE_ONLY`, only `BOTH`.
 
-## Numeric bounds: interval arithmetic, not Z3, for propagation
+## Numeric bounds: interval arithmetic, not SMT, for propagation
 
 For each numeric fluent, the next layer's bound is the **convex union**
 of every branch that could produce a value: the fluent simply persisting
 unchanged, *and* the result of every applicable effect that touches it —
 exactly mirroring `NumericBoundsIndex`'s persistence-plus-effects
 accumulation in the grounder, just recomputed per layer instead of
-incrementally. No Z3 call is needed for this — it's pure interval
+incrementally. No SMT call is needed for this — it's pure interval
 arithmetic (`Interval + Interval`, `Interval - Interval`, ...).
 
 Left unchecked, some effects (a percentage increase, a fluent that
@@ -110,7 +110,7 @@ layer 2, where the goal `at(truck1, siteB)` first reaches `BOTH`. So
 the goal first became achievable, matching the pipeline-walkthrough example
 in [`architecture-overview.md`](architecture-overview.md).
 
-## Checking a formula against a layer: interval, or Z3 when asked
+## Checking a formula against a layer: interval, or SMT when asked
 
 Two ways to answer "is this precondition/goal satisfied at layer *k*,"
 selected by `--smt-rpg-checker`:
@@ -121,7 +121,7 @@ selected by `--smt-rpg-checker`:
   (provably can't hold — safe to prune), or `UNKNOWN` (might hold for some
   point in the box, treated as "assume satisfiable," the sound
   over-approximation direction). Fast — no solver call.
-- **Z3 (`--smt-rpg-checker`)** — one SAT query per action, asserting the
+- **SMT (`--smt-rpg-checker`)** — one SAT query per action, asserting the
   layer's box constraints plus the precondition. Needed when several
   numeric variables are correlated in ways per-fluent boxes can't capture.
 
@@ -133,7 +133,7 @@ example is a chain like `c17 >= c16+1 >= ... >= c0+17`, individually
 satisfiable per-condition two layers earlier than the whole conjunction
 actually is. `get_minimum_steps_lower_bound()` therefore binary-searches
 for a candidate layer using the cheap interval check, then scans forward
-from there re-checking with one **joint** Z3 query per layer (all goal
+from there re-checking with one **joint** SMT query per layer (all goal
 conditions asserted together against that layer's box constraints) until
 it finds the layer the joint check actually agrees is achievable.
 
