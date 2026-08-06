@@ -18,9 +18,6 @@
 #include "../planners/branch_and_bound_planner.hpp"
 #include "../planners/cgb_planner.hpp"
 
-#include "../planners/propagators/modules/exists_cycle_module.hpp"
-#include "../planners/propagators/modules/forall_mutex_module.hpp"
-#include "../planners/propagators/modules/frame_axiom_module.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
 
@@ -162,7 +159,7 @@ static std::unique_ptr<ParallelismStrategy> create_parallelism(
 }
 
 std::unique_ptr<BaseEncoder> StrategyFactory::create_encoder(
-    const StrategySpec& spec, const Problem& problem, z3::context& ctx) {
+    const StrategySpec& spec, const Problem& problem, cvc5::TermManager& ctx) {
     // Eager interference variants pay their analysis cost here (backend
     // setup), tracked separately from the pipeline as backend.interference_ms.
     CreatedInterference interference;
@@ -184,52 +181,22 @@ std::unique_ptr<BaseEncoder> StrategyFactory::create_encoder(
 }
 
 std::unique_ptr<BaseEncoder> StrategyFactory::create_encoder(
-    const StrategySpec& spec, PreprocessedProblem& pre, z3::context& ctx) {
+    const StrategySpec& spec, PreprocessedProblem& pre, cvc5::TermManager& ctx) {
     auto encoder = create_encoder(spec, pre.problem, ctx);
     encoder->set_symmetry_data(pre.symmetry_data);
     encoder->set_state_constraints(std::move(pre.state_constraints));
     return encoder;
 }
 
-std::unique_ptr<PropagatorStrategy> StrategyFactory::create_propagator(
-    const StrategySpec& spec, z3::solver& solver,
-    const Problem& problem, BaseEncoder& encoder) {
-
-    const auto& mods = spec.propagator;
-
-    // Enable lazy frame mode in the encoder if frame axioms are active
-    if (mods.count(PropagatorModuleKind::FrameAxiom)) {
-        encoder.set_lazy_frames(true);
-    }
-
-    auto composite = std::make_unique<PropagatorStrategy>(solver, problem, encoder);
-
-    // Parallelism modules (order: first, cheapest conflict source).
-    if (mods.count(PropagatorModuleKind::ForallEager)) {
-        const InterferenceGraphAnalysis* graph =
-            encoder.get_parallelism_strategy()->get_interference_graph_analysis();
-        if (!graph) {
-            throw std::invalid_argument(
-                "ForallEager propagator module requires an eager "
-                "(graph-bearing) interference analyzer");
-        }
-        composite->add_module(std::make_unique<ForallMutexModule>(*graph));
-    }
-    if (mods.count(PropagatorModuleKind::ForallLazy))
-        composite->add_module(std::make_unique<LazyForallMutexModule>());
-    if (mods.count(PropagatorModuleKind::ExistsCycle))
-        composite->add_module(std::make_unique<ExistsCycleModule>());
-
-    // Frame axiom module (after parallelism — more expensive, skipped on conflict)
-    if (mods.count(PropagatorModuleKind::FrameAxiom))
-        composite->add_module(std::make_unique<FrameAxiomModule>());
-
-    return composite;
-}
+// create_propagator is gone for M4: PropagatorStrategy and its four modules
+// are out of the build while they are reimplemented as THEORY_PLAN reasoning
+// (migration-plan.md §7.8). The M4 registry only lists strategies with an empty
+// propagator list, so nothing calls it. It comes back in M5-M7 as a TheoryPlan
+// module-list builder rather than a PropagatorStrategy builder.
 
 std::unique_ptr<BasePlanner> StrategyFactory::create_planner(
     const StrategySpec& spec, PreprocessedProblem& pre,
-    BaseEncoder& encoder, z3::context& ctx) {
+    BaseEncoder& encoder, cvc5::TermManager& ctx) {
     const Problem& problem = pre.problem;
     const InterferenceOracle* interference =
         encoder.get_parallelism_strategy()->get_interference_analyzer();
@@ -257,6 +224,9 @@ std::unique_ptr<BasePlanner> StrategyFactory::create_planner(
     // Route preprocessing artifacts: profile for all planners, then
     // planner-declared consumption (achievers for CGB, SDAC bounds for B&B).
     planner->set_arithmetic_profile(pre.arithmetic_profile);
+    // Options (seed, logic) must be set before the first assertFormula; the
+    // planner asserts nothing until search(), so here is the last safe point.
+    planner->configure_solver();
     planner->consume_artifacts(pre);
     return planner;
 }

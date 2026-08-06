@@ -2,10 +2,11 @@
 
 #include "../problem/problem.hpp"
 #include "base_encoder.hpp"
-#include "../z3core/grounded_encoding_visitor.hpp"
-#include "../z3core/z3_variable_factory.hpp"
+#include "../smtcore/grounded_encoding_visitor.hpp"
+#include "../smtcore/smt_types.hpp"
+#include "../smtcore/smt_variable_factory.hpp"
+#include "../smtcore/term_builder.hpp"
 #include "parallelism/parallelism_strategy.hpp"
-#include <z3++.h>
 
 #include <optional>
 #include <vector>
@@ -19,64 +20,70 @@ namespace rantanplan {
 class GroundedEncoder : public BaseEncoder {
 public:
     // Constructor — the parallelism strategy is mandatory and injected here.
-    GroundedEncoder(const Problem& problem, z3::context& ctx,
+    GroundedEncoder(const Problem& problem, cvc5::TermManager& ctx,
                     std::unique_ptr<ParallelismStrategy> parallelism);
 
     // Encoding steps
-    z3::expr encode_initial_state() override;
-    z3::expr encode_actions(int t) override; // Encodes actions layer_idx 
-    z3::expr encode_frames(int t) override; // Encodes frame axioms for layer_idx to layer_idx+1
-    z3::expr encode_goal(int t) override;    // Encodes goal conditions at layer_idx
-    z3::expr encode_parallelism(int t) override; // Encodes parallelism semantics
-    z3::expr encode_symmetries(int t) override;
-    z3::expr encode_state_constraints(int t) override;
-    z3::expr encode_prefix_monotone(int t) override; // Front-loading symmetry breaking
-    
+    Term encode_initial_state() override;
+    Term encode_actions(int t) override; // Encodes actions layer_idx
+    Term encode_frames(int t) override; // Encodes frame axioms for layer_idx to layer_idx+1
+    Term encode_goal(int t) override;    // Encodes goal conditions at layer_idx
+    Term encode_parallelism(int t) override; // Encodes parallelism semantics
+    Term encode_symmetries(int t) override;
+    Term encode_state_constraints(int t) override;
+    Term encode_prefix_monotone(int t) override; // Front-loading symmetry breaking
+
     // Strategy management
     std::string get_parallelism_strategy_name() const override;
-    
+
     // Access to variable factory for plan extraction
-    Z3VariableFactory& get_variable_factory() override { return variable_factory_; }
-    const Z3VariableFactory& get_variable_factory() const override { return variable_factory_; }
-    
+    SmtVariableFactory& get_variable_factory() override { return variable_factory_; }
+    const SmtVariableFactory& get_variable_factory() const override { return variable_factory_; }
+
     // Get access to parallelism strategy for plan extraction
     const ParallelismStrategy* get_parallelism_strategy() const override { return parallelism_strategy_.get(); }
-    
+
     // Encode precondition + effect constraints for a single action at timestep t.
     // Returns nullopt if the action has no effects (nothing to encode).
-    std::optional<z3::expr> encode_single_action(const Action& action, int t);
+    std::optional<Term> encode_single_action(const Action& action, int t);
 
     // Per-action effect constraints (action → effects), without preconditions.
     // ChainedGroundedEncoder overrides to exclude cumulative effects (those
     // require joint encoding across actions via encode_cumulative_effects).
     // Together with encode_cumulative_effects, these compose encode_actions.
-    virtual std::optional<z3::expr> encode_non_cumulative_effects(const Action& action, int t);
+    virtual std::optional<Term> encode_non_cumulative_effects(const Action& action, int t);
 
     // Per-timestep joint effect constraints across multiple actions.
     // Base: no-op.  ChainedGroundedEncoder: chain variables (ζ) that link
     // actions modifying the same numeric variable for correct cumulative
     // semantics under exists-step.
     // Together with encode_non_cumulative_effects, these compose encode_actions.
-    virtual z3::expr encode_cumulative_effects(int t);
+    virtual Term encode_cumulative_effects(int t);
 
     // Create action variables for all actions at timestep t without encoding constraints.
     void ensure_action_variables(int t);
 
-    Plan extract_plan(const z3::model& model, int max_timestep) const override;
-    
-    // Helper functions to convert expressions/effects to Z3 using visitor (implementing base interface)
-    z3::expr convert_expr_id_to_z3(ExprID id, int timestep = -1) override;
-    z3::expr convert_effect_to_z3(const EffectExpression& effect, int timestep) override;
-    
+    Plan extract_plan(const cvc5::Solver& solver, int max_timestep) const override;
+
+    // Helper functions to convert expressions/effects to terms using the visitor (implementing base interface)
+    Term convert_expr_id_to_z3(ExprID id, int timestep = -1) override;
+    Term convert_effect_to_z3(const EffectExpression& effect, int timestep) override;
+
 protected:
-    
+
     // Helper function to print EPC index for debugging
     void print_epc_index(const std::string& context) const;
-    
+
+    /// cvc5 has no operator overloading: every connective, comparison and
+    /// arithmetic node is built through the factory's TermBuilder. Read through
+    /// the factory so the Int-vs-Real policy (set with set_problem) is always
+    /// the current one.
+    const TermBuilder& tb() const { return variable_factory_.builder(); }
+
     // Member variables accessible to derived classes
     const Problem& problem_; // The planning problem instance
-    z3::context& ctx_;       // Z3 context (shared)
-    Z3VariableFactory variable_factory_; // Factory for creating and managing Z3 variables
+    cvc5::TermManager& ctx_; // cvc5 TermManager (shared)
+    SmtVariableFactory variable_factory_; // Factory for creating and managing SMT variables
 
     GroundedEncodingVisitor grounded_visitor_; // Grounded encoding visitor for individual variables
 
@@ -96,8 +103,8 @@ public:
     const auto& get_epc_index() const { return epc_index_; }
     void set_lazy_frames(bool enabled) override { lazy_frames_enabled_ = enabled; }
 
-    /// Extract true action variables at a timestep from a Z3 model.
-    std::vector<const Action*> extract_parallel_actions_at_timestep(const z3::model& model, int timestep) const;
+    /// Extract true action variables at a timestep from the solver's model.
+    std::vector<const Action*> extract_parallel_actions_at_timestep(const cvc5::Solver& solver, int timestep) const;
 
 protected:
 

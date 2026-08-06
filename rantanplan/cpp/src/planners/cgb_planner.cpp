@@ -16,9 +16,13 @@ namespace rantanplan {
 // Construction
 // ---------------------------------------------------------------------------
 
-CGBPlanner::CGBPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx)
-    : BasePlanner(problem, encoder, ctx),
-      goal_assumption_(ctx.bool_val(true)) {
+CGBPlanner::CGBPlanner(const Problem& problem, BaseEncoder& encoder, cvc5::TermManager& tm)
+    : BasePlanner(problem, encoder, tm),
+      goal_assumption_(tm.mkTrue()) {
+    // The core loop reads the failed assumptions after every UNSAT, and cvc5
+    // only tracks them when this option is set — which it only accepts before
+    // the first assertion, so it has to happen here in the constructor.
+    solver_.setOption("produce-unsat-assumptions", "true");
 }
 
 GroundedEncoder& CGBPlanner::grounded_encoder() {
@@ -169,28 +173,27 @@ void CGBPlanner::encode_action_at(const Action* action, int timestep) {
     encoded.insert(timestep);
 
     auto effects = grounded_encoder().encode_non_cumulative_effects(*action, timestep);
-    if (effects) solver_.add(*effects);
+    if (effects) solver_.assertFormula(*effects);
 
     if (action->has_precondition()) {
         auto& vf = encoder_.get_variable_factory();
-        const z3::expr& action_var = vf.get_action_variable(*action, timestep);
-        z3::expr prec_z3 = encoder_.convert_expr_id_to_z3(action->precondition_id(), timestep);
-        solver_.add(z3::implies(action_var, prec_z3));
+        const Term& action_var = vf.get_action_variable(*action, timestep);
+        Term prec_z3 = encoder_.convert_expr_id_to_z3(action->precondition_id(), timestep);
+        solver_.assertFormula(tb_.mk_implies(action_var, prec_z3));
     }
 }
 
 void CGBPlanner::add_timestep(int t) {
     grounded_encoder().ensure_action_variables(t);
-    solver_.add(encoder_.encode_frames(t));
-    solver_.add(encoder_.encode_symmetries(t));
-    solver_.add(encoder_.encode_state_constraints(t));
-    solver_.add(grounded_encoder().encode_cumulative_effects(t));
-    propagator_strategy_->register_timestep_variables(t + 1);
+    solver_.assertFormula(encoder_.encode_frames(t));
+    solver_.assertFormula(encoder_.encode_symmetries(t));
+    solver_.assertFormula(encoder_.encode_state_constraints(t));
+    solver_.assertFormula(grounded_encoder().encode_cumulative_effects(t));
 
     auto& vf = encoder_.get_variable_factory();
     for (const Action* a : blocked_) {
-        const z3::expr& action_var = vf.get_action_variable(*a, t);
-        solver_.add(z3::implies(block_lit_.at(a), !action_var));
+        const Term& action_var = vf.get_action_variable(*a, t);
+        solver_.assertFormula(tb_.mk_implies(block_lit_.at(a), tb_.mk_not(action_var)));
     }
     for (const Action* a : activated_) {
         encode_action_at(a, t);
@@ -200,8 +203,8 @@ void CGBPlanner::add_timestep(int t) {
 
 void CGBPlanner::refresh_goal(int t) {
     int version = next_goal_version_++;
-    goal_assumption_ = ctx_.bool_const(("goal_v" + std::to_string(version)).c_str());
-    solver_.add(z3::implies(goal_assumption_, encoder_.encode_goal(t)));
+    goal_assumption_ = tm_.mkConst(tm_.getBooleanSort(), "goal_v" + std::to_string(version));
+    solver_.assertFormula(tb_.mk_implies(goal_assumption_, encoder_.encode_goal(t)));
 
     // Landmark clauses over presence literals (the paper's form): some
     // achiever of every landmark must be available, i.e. not blocked.
@@ -219,21 +222,21 @@ void CGBPlanner::refresh_goal(int t) {
             if (!blocked_.count(a)) { has_active = true; break; }
         }
         if (has_active) continue;
-        z3::expr available = ctx_.bool_val(false);
+        Term available = tb_.bool_val(false);
         for (const Action* a : achievers) {
-            available = available || !block_lit_.at(a);
+            available = tb_.mk_or({available, tb_.mk_not(block_lit_.at(a))});
         }
-        solver_.add(z3::implies(goal_assumption_, available));
+        solver_.assertFormula(tb_.mk_implies(goal_assumption_, available));
     }
 
     assert_deficit_budgets(t);
 }
 
 namespace {
-z3::expr real_const(z3::context& ctx, double v) {
+Term real_const(cvc5::TermManager& tm, double v) {
     char buf[32];
     std::snprintf(buf, sizeof buf, "%.12g", v);
-    return ctx.real_val(buf);
+    return tm.mkReal(std::string(buf));
 }
 } // namespace
 
@@ -273,13 +276,13 @@ void CGBPlanner::assert_deficit_budgets(int t) {
         }
         if (active_mass >= info.residual) continue;  // already slack
 
-        z3::expr mass = real_const(ctx_, active_mass);
+        Term mass = real_const(tm_, active_mass);
         for (const auto& [action, cap] : dormant) {
-            mass = mass + z3::ite(block_lit_.at(action),
-                                  real_const(ctx_, 0.0), real_const(ctx_, cap));
+            mass = tb_.add(mass, tb_.mk_ite(block_lit_.at(action),
+                                            real_const(tm_, 0.0), real_const(tm_, cap)));
         }
-        solver_.add(z3::implies(goal_assumption_,
-                                mass >= real_const(ctx_, info.residual)));
+        solver_.assertFormula(tb_.mk_implies(
+            goal_assumption_, tb_.geq(mass, real_const(tm_, info.residual))));
         asserted++;
     }
     if (asserted > 0) {
@@ -320,14 +323,14 @@ void CGBPlanner::activate_action(const Action* action) {
     if (!blocked_.count(action)) return;
     blocked_.erase(action);
     activated_.insert(action);
-    blk_id_to_action_.erase(block_lit_.at(action).id());
+    blk_id_to_action_.erase(block_lit_.at(action).getId());
     for (int t = 0; t <= current_horizon_; t++) {
         encode_action_at(action, t);
     }
 }
 
-z3::expr_vector CGBPlanner::build_assumptions() {
-    z3::expr_vector assumptions(ctx_);
+TermVec CGBPlanner::build_assumptions() {
+    TermVec assumptions;
     for (const Action* a : blocked_) {
         assumptions.push_back(block_lit_.at(a));
     }
@@ -335,8 +338,12 @@ z3::expr_vector CGBPlanner::build_assumptions() {
     return assumptions;
 }
 
-Plan CGBPlanner::extract_plan(const z3::model& model) {
-    return encoder_.extract_plan(model, current_horizon_ + 1);
+// PORT-QUESTION: cvc5 has no model object — values are read with
+// solver.getValue(). This assumes BaseEncoder::extract_plan is re-typed to
+// take the Solver in place of the z3::model (encoders layer, ported
+// separately).
+Plan CGBPlanner::extract_plan(const cvc5::Solver& solver) {
+    return encoder_.extract_plan(solver, current_horizon_ + 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -355,16 +362,15 @@ Plan CGBPlanner::search() {
 
     // 1. Existence guards: every ground action starts dormant
     for (const Action& a : problem_.actions()) {
-        z3::expr blk = ctx_.bool_const(("blk_a" + std::to_string(a.id())).c_str());
+        Term blk = tm_.mkConst(tm_.getBooleanSort(), "blk_a" + std::to_string(a.id()));
         const Action* ptr = &a;
         block_lit_.insert({ptr, blk});
         blocked_.insert(ptr);
-        blk_id_to_action_[blk.id()] = ptr;
+        blk_id_to_action_[blk.getId()] = ptr;
     }
 
     // 2. Encode initial state
-    solver_.add(encoder_.encode_initial_state());
-    propagator_strategy_->register_timestep_variables(0);
+    solver_.assertFormula(encoder_.encode_initial_state());
 
     // 3. Relaxed-plan seeding, landmarks, pre-extension to the RPG lower bound
     initialize_achievers();
@@ -395,10 +401,10 @@ Plan CGBPlanner::search() {
     while (true) {
         if (!apply_solver_timeout(solver_)) break;
 
-        z3::expr_vector assumptions = build_assumptions();
+        TermVec assumptions = build_assumptions();
 
         auto solve_start = std::chrono::high_resolution_clock::now();
-        z3::check_result result = solver_.check(assumptions);
+        cvc5::Result result = solver_.checkSatAssuming(assumptions);
         auto solve_end = std::chrono::high_resolution_clock::now();
         double solve_time = std::chrono::duration<double>(solve_end - solve_start).count();
         total_time = std::chrono::duration<double>(solve_end - start_time).count();
@@ -421,10 +427,9 @@ Plan CGBPlanner::search() {
             Logger::instance().timestep_solving(VerbosityLevel::INFO, round, fields, "R");
         }
 
-        if (result == z3::sat) {
-            z3::model model = solver_.get_model();
+        if (result.isSat()) {
             solution_found_ = true;
-            Plan plan = extract_plan(model);
+            Plan plan = extract_plan(solver_);
 
             Logger::instance().info("\n*** PLAN FOUND: " +
                 std::to_string(plan.length()) + " actions, " +
@@ -448,17 +453,19 @@ Plan CGBPlanner::search() {
             notify_intermediate_plan(plan);
 
             collect_statistics();
-            propagator_strategy_->cleanup();
             return plan;
 
-        } else if (result == z3::unsat) {
-            z3::expr_vector core = solver_.unsat_core();
+        } else if (result.isUnsat()) {
+            // The failed assumptions are cvc5's counterpart of Z3's unsat core
+            // over assumption literals (enabled by produce-unsat-assumptions in
+            // the constructor).
+            TermVec core = solver_.getUnsatAssumptions();
             stats.add("planner.total_core_size", static_cast<double>(core.size()));
             stats.add("planner.core_count");
 
             std::vector<const Action*> named;
-            for (unsigned i = 0; i < core.size(); ++i) {
-                auto it = blk_id_to_action_.find(core[i].id());
+            for (size_t i = 0; i < core.size(); ++i) {
+                auto it = blk_id_to_action_.find(core[i].getId());
                 if (it != blk_id_to_action_.end()) {
                     named.push_back(it->second);
                 }
@@ -500,7 +507,7 @@ Plan CGBPlanner::search() {
             }
 
         } else {
-            if (handle_unknown_result(solver_, "round " + std::to_string(round))) break;
+            if (handle_unknown_result(result, "round " + std::to_string(round))) break;
         }
 
         round++;
@@ -513,7 +520,6 @@ Plan CGBPlanner::search() {
     }
 
     collect_statistics();
-    propagator_strategy_->cleanup();
     return Plan();
 }
 

@@ -1,6 +1,6 @@
 # RantanPlan
 
-A SAT/SMT-based automated planner with parallel action semantics. Combines a Python frontend with a high-performance C++ backend using Z3.
+A SAT/SMT-based automated planner with parallel action semantics. Combines a Python frontend with a high-performance C++ backend using a forked cvc5, in which planning-specific reasoning lives as a first-class SMT theory (`THEORY_PLAN`).
 
 ## Key Features
 
@@ -9,7 +9,7 @@ A SAT/SMT-based automated planner with parallel action semantics. Combines a Pyt
 - **Search modes**: Satisficing, cost-optimal (Branch & Bound), anytime
 - **Core-guided lazy activation** (`cgb`): actions start dormant behind blocking assumptions; UNSAT cores drive activation and horizon growth
 - **Interference analysis**: Syntactic (eager/lazy) and semantic (eager/lazy)
-- **Custom Z3 propagators**: Lazy interference via cycle detection, decision heuristics
+- **Planning as an SMT theory**: actions, fluents and auxiliaries are `THEORY_PLAN` atoms in the fork, so planning-specific inference (interference cycle detection, forall mutexes, lazy frame axioms) runs inside the solver rather than around it
 - **Numeric planning**: Full support for numeric fluents with SMT-based relaxed planning graph
 - **Bounded-integer action parameters & range variables**: finite-domain integer parameters (`Int[lb,ub]`) and integer-range quantifiers, compiled away before grounding (C++-native, no Python compiler)
 - **Native array fluents**: fixed-size array-valued fluents (Unified Planning's `ARRAY_FLUENTS` kind) compiled to ordinary scalar cells before solving — constant, action-parameter, and quantified indices are supported; state-dependent indices and object-parameterised arrays are not yet
@@ -23,7 +23,54 @@ A SAT/SMT-based automated planner with parallel action semantics. Combines a Pyt
 
 ## Installation
 
-**Prerequisites**: Python 3.8+, CMake ≥ 3.15, a C++20 compiler. Z3 and nanobind come from pip packages — no other native libraries needed.
+**Prerequisites**: Python 3.8+, CMake ≥ 3.15, a C++20 compiler, GNU Make, and
+(on macOS) `brew install gmp`.
+
+The build is a **three-stage chain** — CaDiCaL → cvc5 → RantanPlan — and CMake
+cannot drive it end to end: cvc5 has its own `configure.sh` and its own
+dependency-fetching machinery, and CaDiCaL is built by its own makefile.
+RantanPlan's CMake consumes the *result*. Stages 1 and 2 are one-time; only
+stage 3 is repeated during normal development.
+
+> **Migration in progress.** Z3 has been removed; the backend is the cvc5 fork
+> (see `docs/cvc5/migration-plan.md`). The propagator modules are being
+> reimplemented as `THEORY_PLAN` reasoning over milestones M5–M7, so the
+> strategy registry is temporarily reduced to those that need no propagator:
+> `seq`, `r2e`, `f`, `e`, `fgs`, `egs`. Run `rantanplan --list-strategies` for
+> the current set.
+
+### 1. Check out CaDiCaL
+
+CaDiCaL is the CDCL(T) SAT backend cvc5 runs on, and planning-specific reasoning
+is expected to live inside it eventually — so it is built from a checkout rather
+than downloaded as a tarball.
+
+```bash
+git clone https://github.com/arminbiere/cadical.git ~/git/cadical
+cd ~/git/cadical && git checkout rel-2.1.3-elevate   # a branch, not a tag
+```
+
+The sources are currently **unmodified** upstream. Nothing else is needed here:
+cvc5 builds this checkout itself in stage 2 (its `ExternalProject` writes only
+into `<checkout>/build/`, which CaDiCaL's own `.gitignore` covers). If you do
+fork it, keep `VERSION` within `[2.1.0, 2.1.3]` — cvc5 compiles *and runs* a
+probe calling `CaDiCaL::Solver::version()`.
+
+### 2. Build the cvc5 fork
+
+```bash
+git clone https://github.com/JoanEspasa/cvc5.git ~/git/cvc5
+cd ~/git/cvc5
+./configure.sh --auto-download --cadical-path=$HOME/git/cadical
+make -C build -j
+```
+
+This produces a shared `Production` build at `build/src/libcvc5.dylib` (or
+`.so`), which is what RantanPlan links. `--auto-download` fetches GMP, SymFPU
+and LibPoly; `--cadical-path` is a fork addition that replaces the pinned
+upstream tarball with your checkout.
+
+### 3. Build RantanPlan
 
 ```bash
 git clone https://github.com/pyPMT/RantanPlan.git
@@ -33,16 +80,32 @@ source .venv/bin/activate  # Always activate before build/run
 
 # Build dependencies go in the venv because the install runs without build
 # isolation (see note below)
-pip install scikit-build-core nanobind z3-solver
+pip install scikit-build-core nanobind
 
 pip install -e . --no-build-isolation
 ```
 
 The install itself builds the C++ extension module — there is no separate build
-step. `--no-build-isolation` is required: the module must link the exact same
-libz3 that the `z3-solver` package loads at runtime (two copies of libz3 in one
-process is undefined behavior), so the build has to see the venv's own z3
-package rather than a temporary isolated copy.
+step. `--no-build-isolation` is required so the build sees the venv's own
+`scikit-build-core` and `nanobind` rather than a temporary isolated copy.
+
+cvc5 is located at `$HOME/git/cvc5` by default. Elsewhere:
+
+```bash
+pip install -e . --no-build-isolation \
+    --config-settings=cmake.define.CVC5_SOURCE_DIR=/path/to/cvc5
+```
+
+### The iteration loop
+
+`libcvc5` is *shared* and linked by full path, so:
+
+| You edited | You must run | Cost |
+|---|---|---|
+| RantanPlan C++ | `pip install -e . --no-build-isolation` | seconds |
+| cvc5 | `make -C ~/git/cvc5/build -j` — **no RantanPlan rebuild** | ~20–40 s |
+| a cvc5 `*.toml` (options, kinds) | same, but code generation cascades | minutes |
+| CaDiCaL | `make -C ~/git/cvc5/build -j` — CaDiCaL is linked *statically* into `libcvc5`, so cvc5 relinks | ~1 min |
 
 ## Usage
 
@@ -161,15 +224,15 @@ Python Frontend              C++ Backend (_rantanplan module)
                             │  ┌──────────────────┐ │
                             │  │ Encoder          │ │
                             │  │ Parallelism      │ │
-                            │  │ Z3 Propagators   │ │
+                            │  │ THEORY_PLAN      │ │
                             │  │ B&B / Sequential │ │
                             │  └──────────────────┘ │
                             │                        │
-                            │  Z3 SMT Solver         │
+                            │  cvc5 (fork)           │
                             └──────────────────────┘
 ```
 
-The Python frontend uses Unified Planning to parse PDDL, converts the problem to a flat plain-data IR, and calls the C++ backend in-process through a nanobind extension module (no subprocess, no serialization). Canonicalization that used to run in Python — quantifier removal, integer-parameter instantiation, CNF normalization — now happens in C++; the only optional Python-side compilation step is UP cross-product grounding (`--up-grounding`). The backend runs a preprocessing pipeline (integer-parameter instantiation, quantifier expansion, array and set lowering, reachability grounding, RPG-based action removal, symmetry detection), then encodes the problem as SMT and solves with Z3 using custom propagators.
+The Python frontend uses Unified Planning to parse PDDL, converts the problem to a flat plain-data IR, and calls the C++ backend in-process through a nanobind extension module (no subprocess, no serialization). Canonicalization that used to run in Python — quantifier removal, integer-parameter instantiation, CNF normalization — now happens in C++; the only optional Python-side compilation step is UP cross-product grounding (`--up-grounding`). The backend runs a preprocessing pipeline (integer-parameter instantiation, quantifier expansion, array and set lowering, reachability grounding, RPG-based action removal, symmetry detection), then encodes the problem as SMT and solves with the cvc5 fork, whose `THEORY_PLAN` owns the planning atoms.
 
 ## Development
 

@@ -54,7 +54,12 @@ def test_conditional_effect_guard_not_pruned():
     """The guard-establishing action must survive goal-relevance pruning, so the
     problem stays solvable — checked on a sequential and an exists-step path
     (both run the achievers/ActionPruning preprocessor pass)."""
-    for strategy in ("seq", "elsc"):
+    # M4: the exists-step representative is "e" rather than "elsc" -- lazy
+    # interference needs a propagator, and those are out of the build until M5.
+    # RESTORE "elsc" AT M5. The guard being tested (goal-relevance pruning) is
+    # strategy-independent; what matters is covering one sequential and one
+    # exists-step path, which "e" does.
+    for strategy in ("seq", "e"):
         problem = _conditional_effect_delivery_problem()
         r = solve(problem, strategy=strategy)
         assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \

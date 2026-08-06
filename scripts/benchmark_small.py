@@ -121,7 +121,15 @@ def run_instance(domain_path, problem_path, strategy, timeout, extra_params=None
                                 stats.get("pipeline.final_actions", 0))),
             "activated_pairs": int(stats.get("planner.activated_pairs", 0)),
             "total_pairs": int(stats.get("planner.total_pairs", 0)),
-            "rlimit": int(stats.get("z3.rlimit count", 0)),
+            # cvc5's deterministic work counter -- the analogue of Z3's
+            # "z3.rlimit count", and the CPU-independent metric to prefer over
+            # wall-clock (this machine has 4 performance cores; see the M0 log).
+            "rlimit": int(stats.get("cvc5.resource::resourceUnitsUsed", 0)),
+            "decisions": int(stats.get("cvc5.cadical::propagator::notify_new_decision", 0)),
+            "max_mutex_group": int(stats.get("encoder.max_mutex_group_size", 0)),
+            "max_card_group": int(stats.get("encoder.card_max_group_size", 0)),
+            "card_calls": int(stats.get("encoder.card_atmost_calls", 0)
+                              + stats.get("encoder.card_atleast_calls", 0)),
         }
 
     except Exception as e:
@@ -192,6 +200,9 @@ def main():
                         help="Disable goal-relevance action removal preprocessing (enabled by default)")
     parser.add_argument("--hard", action="store_true",
                         help=f"Use the harder suite in {HARD_BENCH_DIR}/ instead of {BENCH_DIR}/")
+    parser.add_argument("-i", "--instance", action="append",
+                        help="Only run instances whose name contains this substring "
+                             "(repeatable; default: the whole suite)")
     args = parser.parse_args()
 
     strategies = args.strategy if args.strategy else STRATEGIES
@@ -201,6 +212,9 @@ def main():
 
     bench_dir = HARD_BENCH_DIR if args.hard else BENCH_DIR
     instances = discover_instances(bench_dir)
+    if args.instance:
+        instances = [i for i in instances
+                     if any(pat in i[0] for pat in args.instance)]
     if not instances:
         print(f"No instances found in {bench_dir}/")
         sys.exit(1)
@@ -273,7 +287,8 @@ def main():
                 "instance", "strategy", "solved", "time", "solve_time",
                 "preprocess_ms", "plan_len", "horizon", "rounds",
                 "activated", "total_actions", "activated_pairs", "total_pairs",
-                "rlimit",
+                "rlimit", "decisions",
+                "max_mutex_group", "max_card_group", "card_calls",
                 "gr_removed", "gr_initial", "gr_time_ms", "final_actions",
             ])
             writer.writeheader()

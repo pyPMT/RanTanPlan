@@ -4,8 +4,7 @@
 #include "../problem/plan.hpp"
 #include "../encoders/base_encoder.hpp"
 #include "base_planner.hpp"
-#include "propagators/propagator_strategy.hpp"
-#include <z3++.h>
+#include "../smtcore/smt_types.hpp"
 #include <memory>
 
 // Incremental-horizon search: grow the horizon step by step, re-checking
@@ -15,11 +14,7 @@ namespace rantanplan {
 class IncrementalHorizonPlanner : public BasePlanner {
 public:
     // Constructor
-    IncrementalHorizonPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx);
-
-    // Constructor with propagator support
-    IncrementalHorizonPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx,
-                     std::unique_ptr<PropagatorStrategy> propagator);
+    IncrementalHorizonPlanner(const Problem& problem, BaseEncoder& encoder, cvc5::TermManager& tm);
 
     // BasePlanner interface implementation
     Plan search() override;

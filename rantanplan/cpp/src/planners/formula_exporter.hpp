@@ -2,7 +2,7 @@
 
 #include "../problem/problem.hpp"
 #include "../encoders/base_encoder.hpp"
-#include <z3++.h>
+#include "../smtcore/smt_types.hpp"
 #include <string>
 
 namespace rantanplan {
@@ -24,9 +24,9 @@ public:
      * @brief Constructor
      * @param problem The planning problem instance
      * @param encoder The encoder to use for generating constraints
-     * @param ctx Z3 context (shared)
+     * @param tm cvc5 term manager (shared)
      */
-    FormulaExporter(const Problem& problem, BaseEncoder& encoder, z3::context& ctx);
+    FormulaExporter(const Problem& problem, BaseEncoder& encoder, cvc5::TermManager& tm);
 
     /**
      * @brief Export complete formula up to specified timestep
@@ -42,7 +42,7 @@ public:
 private:
     const Problem& problem_;
     BaseEncoder& encoder_;
-    z3::context& ctx_;
+    cvc5::TermManager& tm_;
 };
 
 } // namespace rantanplan

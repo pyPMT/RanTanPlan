@@ -5,9 +5,9 @@
 #include "../problem/effect_expression.hpp"
 #include "../preprocessing/local_invariants.hpp"
 #include "../preprocessing/symmetry_info.hpp"
-#include "../z3core/z3_variable_factory.hpp"
+#include "../smtcore/smt_types.hpp"
+#include "../smtcore/smt_variable_factory.hpp"
 #include "parallelism/parallelism_strategy.hpp"
-#include <z3++.h>
 
 #include <memory>
 #include <string>
@@ -24,12 +24,12 @@ public:
     virtual void set_symmetry_data(std::vector<SymmetryInfo> data) { symmetry_data_ = std::move(data); }
 
     // Encoding steps
-    virtual z3::expr encode_initial_state() = 0;
-    virtual z3::expr encode_actions(int t) = 0;
-    virtual z3::expr encode_frames(int t) = 0;
-    virtual z3::expr encode_goal(int t) = 0;
-    virtual z3::expr encode_parallelism(int t) = 0;
-    virtual z3::expr encode_symmetries(int t) = 0;
+    virtual Term encode_initial_state() = 0;
+    virtual Term encode_actions(int t) = 0;
+    virtual Term encode_frames(int t) = 0;
+    virtual Term encode_goal(int t) = 0;
+    virtual Term encode_parallelism(int t) = 0;
+    virtual Term encode_symmetries(int t) = 0;
 
     /**
      * @brief Encode the prefix-monotone (front-loading) symmetry-breaking constraint.
@@ -37,7 +37,7 @@ public:
      * Adds:  (∀a. ¬a@t)  →  (∀a. ¬a@(t+1))
      *
      * This chains across all t during search, forcing all active action steps to
-     * be contiguous at the front of the plan. Combined with at-most-one (pble)
+     * be contiguous at the front of the plan. Combined with at-most-one
      * parallelism semantics, this guarantees that if a valid plan of length k < h
      * exists, the solver can represent it with the actions at 0..k-1 and empty steps
      * at k..h-1. Frame axioms then propagate the goal state to timestep h, so a
@@ -46,43 +46,45 @@ public:
      * Only called by IncrementalHorizonPlanner; DoubleTailPlanner has structurally disjoint
      * forward/backward stacks that cannot use a single uniform front-loading chain.
      */
-    virtual z3::expr encode_prefix_monotone(int t) = 0;
-    
+    virtual Term encode_prefix_monotone(int t) = 0;
+
     // Parallelism management (the strategy is constructor-injected in
     // concrete encoders — an encoder without one cannot exist)
     virtual std::string get_parallelism_strategy_name() const = 0;
     virtual const ParallelismStrategy* get_parallelism_strategy() const = 0; // for plan extraction
-    
-    // Access to variable factory for plan extraction
-    virtual Z3VariableFactory& get_variable_factory() = 0;
-    virtual const Z3VariableFactory& get_variable_factory() const = 0;
-    
-    // Helper functions to convert expressions/effects to Z3 using visitor (for propagators)
-    virtual z3::expr convert_expr_id_to_z3(ExprID id, int timestep = -1) = 0;
-    virtual z3::expr convert_effect_to_z3(const EffectExpression& effect, int timestep) = 0;
 
-    /// Convert an action's cost expression to Z3 at the given timestep.
+    // Access to variable factory for plan extraction
+    virtual SmtVariableFactory& get_variable_factory() = 0;
+    virtual const SmtVariableFactory& get_variable_factory() const = 0;
+
+    // Helper functions to convert expressions/effects to terms using the visitor (for propagators)
+    virtual Term convert_expr_id_to_z3(ExprID id, int timestep = -1) = 0;
+    virtual Term convert_effect_to_z3(const EffectExpression& effect, int timestep) = 0;
+
+    /// Convert an action's cost expression to a term at the given timestep.
     /// The default evaluates the cost at the start-of-timestep state x_t.
     /// R2EGroundedEncoder overrides this to evaluate at the chain-substituted
     /// intermediate state σ^t_{prev(i)}, which is the state action i actually
     /// sees under the fixed R2E ordering. This makes SDAC costs correct for R2E.
-    virtual z3::expr convert_cost_to_z3(const Action& action, int timestep) {
+    virtual Term convert_cost_to_z3(const Action& action, int timestep) {
         return convert_expr_id_to_z3(action.cost_id(), timestep);
     }
-    
+
     /// Enable lazy frame mode (frame axioms supplied by a propagator module
     /// instead of the encoding). No-op for encoders without frame axioms.
     virtual void set_lazy_frames(bool enabled) { (void)enabled; }
 
     // State constraints (bounds/conservations/domains from ActionPruningPass,
     // mutexes from MutexAnalysisPass)
-    virtual z3::expr encode_state_constraints(int t) = 0;
+    virtual Term encode_state_constraints(int t) = 0;
 
     /// Receive state constraints from the pipeline result.
     void set_state_constraints(StateConstraints sc) { state_constraints_ = std::move(sc); }
 
-    // Plan extraction from Z3 model
-    virtual Plan extract_plan(const z3::model& model, int max_timestep) const = 0;
+    // Plan extraction from the solver's model. cvc5 has no model object: values
+    // are read with `solver.getValue(term)`, so the solver itself is passed in
+    // where the z3::model used to be.
+    virtual Plan extract_plan(const cvc5::Solver& solver, int max_timestep) const = 0;
 
 protected:
     std::vector<SymmetryInfo> symmetry_data_;

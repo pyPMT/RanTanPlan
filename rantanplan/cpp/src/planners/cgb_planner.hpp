@@ -6,7 +6,8 @@
 #include "../analysis/achievers_analysis.hpp"
 #include "../preprocessing/landmark_data.hpp"
 #include "base_planner.hpp"
-#include <z3++.h>
+#include "../smtcore/smt_types.hpp"
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -45,7 +46,7 @@ namespace rantanplan {
  */
 class CGBPlanner : public BasePlanner {
 public:
-    CGBPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx);
+    CGBPlanner(const Problem& problem, BaseEncoder& encoder, cvc5::TermManager& tm);
     ~CGBPlanner() override = default;
 
     /// Consumes (moves) the achievers analysis built by ActionPruningPass.
@@ -56,13 +57,15 @@ public:
 protected:
     // ---- Existence guards (one blocking literal per ground action) ----
 
-    std::unordered_map<const Action*, z3::expr> block_lit_;
+    std::unordered_map<const Action*, Term> block_lit_;
     std::unordered_set<const Action*> blocked_;
     std::unordered_set<const Action*> activated_;
-    std::unordered_map<unsigned, const Action*> blk_id_to_action_;
+    // Keyed by Term::getId(), which is uint64_t in cvc5 (was z3::expr::id(),
+    // an unsigned).
+    std::unordered_map<uint64_t, const Action*> blk_id_to_action_;
 
     int current_horizon_ = -1;
-    z3::expr goal_assumption_;
+    Term goal_assumption_;
     int next_goal_version_ = 0;
     std::unordered_map<const Action*, std::unordered_set<int>> action_encoded_at_;
 
@@ -136,9 +139,9 @@ protected:
     // ---- Search helpers ----
 
     void activate_action(const Action* action);
-    z3::expr_vector build_assumptions();
+    TermVec build_assumptions();
 
-    Plan extract_plan(const z3::model& model);
+    Plan extract_plan(const cvc5::Solver& solver);
 };
 
 } // namespace rantanplan

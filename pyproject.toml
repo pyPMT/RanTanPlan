@@ -1,5 +1,5 @@
 [build-system]
-requires = ["scikit-build-core>=0.10", "nanobind", "z3-solver"]
+requires = ["scikit-build-core>=0.10", "nanobind"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -17,7 +17,6 @@ classifiers = [
 ]
 dependencies = [
     "unified-planning>=1.2.0",
-    "z3-solver",
 ]
 
 [project.scripts]

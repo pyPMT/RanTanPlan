@@ -4,10 +4,13 @@
 #include "../problem/problem.hpp"
 #include "../problem/plan.hpp"
 #include "../encoders/base_encoder.hpp"
-#include "propagators/propagator_strategy.hpp"
-#include <z3++.h>
+#include "../smtcore/smt_types.hpp"
+#include "../smtcore/term_builder.hpp"
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -81,7 +84,8 @@ struct HorizonSchedule {
  */
 class BasePlanner {
 public:
-    virtual ~BasePlanner() = default;
+    /// Joins the deadline watchdog if one is running.
+    virtual ~BasePlanner();
 
     /**
      * @brief Main search method - runs the planning algorithm
@@ -104,8 +108,14 @@ public:
     /// Whether the search ended due to timeout.
     bool timed_out() const { return timed_out_; }
 
-    /// Set the arithmetic profile for Z3 solver tuning.
+    /// Set the arithmetic profile for cvc5 solver tuning.
     void set_arithmetic_profile(ArithmeticProfile profile) { arithmetic_profile_ = profile; }
+
+    /// Apply solver-wide options (fixed seed, logic). MUST run before the first
+    /// assertion — cvc5 accepts options only before the solver is initialised —
+    /// and after set_arithmetic_profile, which the logic choice depends on.
+    /// StrategyFactory::create_planner calls it; nothing else should.
+    void configure_solver();
 
     /// Take ownership of the preprocessing artifacts this planner consumes.
     /// Default: consume nothing. Overrides move artifacts out of the bundle
@@ -120,14 +130,9 @@ public:
         on_intermediate_plan_ = std::move(callback);
     }
 
-    /// Set the propagator strategy for this planner.
-    void set_propagator_strategy(std::unique_ptr<PropagatorStrategy> propagator);
 
-    /// Get the name of the current propagator strategy.
-    std::string get_propagator_strategy_name() const;
-
-    /// Access to the underlying Z3 solver.
-    z3::solver& get_solver() { return solver_; }
+    /// Access to the underlying cvc5 solver.
+    cvc5::Solver& get_solver() { return solver_; }
 
     /**
      * @brief Set the horizon schedule used during search
@@ -137,14 +142,17 @@ public:
 
 protected:
     /// Construct with shared planner dependencies.
-    BasePlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx);
+    BasePlanner(const Problem& problem, BaseEncoder& encoder, cvc5::TermManager& tm);
 
     // Shared state across all planners (declaration order matters for init).
     const Problem& problem_;
     BaseEncoder& encoder_;
-    z3::context& ctx_;
-    z3::solver solver_;
-    std::unique_ptr<PropagatorStrategy> propagator_strategy_;
+    cvc5::TermManager& tm_;
+    /// Term construction for the planners themselves (goal/link/blocking
+    /// literals and the formulas around them). cvc5 has no operator
+    /// overloading, so every connective goes through this.
+    TermBuilder tb_;
+    cvc5::Solver solver_;
 
     /// Horizon schedule; concrete planners initialise this from Config in their constructor.
     HorizonSchedule schedule_;
@@ -153,6 +161,20 @@ protected:
 
     bool solution_found_ = false;
     bool timed_out_ = false;
+
+    /// Deadline watchdog. cvc5 accepts options only before the first assertion,
+    /// so the Z3 idiom of re-setting a timeout before every check() cannot be
+    /// reproduced with setOption. Instead one thread sleeps until the deadline
+    /// and calls Solver::interrupt() (the fork patch added at M1, thread-safe
+    /// by construction), which is the faithful equivalent: each check is cut off
+    /// at the wall-clock deadline rather than after a stale per-check budget.
+    /// Started lazily on the first timed check and joined in the destructor.
+    std::thread watchdog_;
+    std::mutex watchdog_mutex_;
+    std::condition_variable watchdog_cv_;
+    bool watchdog_stop_ = false;
+    void start_watchdog(cvc5::Solver& solver);
+    void stop_watchdog();
 
     /// Optional plan hook (set_intermediate_plan_callback). Concrete planners
     /// call notify_intermediate_plan() wherever they write plan.txt.N.
@@ -172,27 +194,31 @@ protected:
     /// Milliseconds remaining until deadline. Returns 0 if already past.
     unsigned remaining_ms() const;
 
-    /// Apply the remaining timeout to a Z3 solver so that the next check()
+    /// Apply the remaining timeout to a cvc5 solver so that the next checkSat()
     /// call is interrupted if the wall-clock budget runs out.
     /// Returns false if the deadline has already passed (caller should break).
-    bool apply_solver_timeout(z3::solver& solver);
+    /// See the PORT-QUESTION in the .cpp: cvc5 only accepts options before the
+    /// first assertion, so only the first call can take effect.
+    bool apply_solver_timeout(cvc5::Solver& solver);
 
-    /// Check if a z3::unknown result was caused by timeout. If so, sets
+    /// Check if an unknown result was caused by timeout. If so, sets
     /// timed_out_ and logs the interruption. Returns true if it was a timeout.
-    bool handle_unknown_result(const z3::solver& solver, const std::string& context);
+    /// Takes the Result (not the solver): in cvc5 the explanation belongs to
+    /// the result of the check, not to the solver.
+    bool handle_unknown_result(const cvc5::Result& result, const std::string& context);
 
     /// Format the timeout value for log messages (e.g. "120s" or "none").
     static std::string format_timeout_string();
 
-    /// Collect Z3 solver statistics and memory usage into the global Stats singleton.
+    /// Collect cvc5 solver statistics and memory usage into the global Stats singleton.
     /// Uses get_solver() to access the derived class's solver.
     void collect_statistics();
 
     /// Add standard timestep constraints: actions, frames, symmetries, parallelism,
-    /// and propagator variable registration. Optionally includes prefix-monotone
+    /// Optionally includes prefix-monotone
     /// constraints (omitted by DoubleTailPlanner).
-    static void add_timestep_constraints(z3::solver& solver, BaseEncoder& encoder,
-                                         PropagatorStrategy& propagator, int timestep,
+    static void add_timestep_constraints(cvc5::Solver& solver, BaseEncoder& encoder,
+                                         int timestep,
                                          bool prefix_monotone = true);
 };
 

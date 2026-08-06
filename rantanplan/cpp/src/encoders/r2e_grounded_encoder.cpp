@@ -10,7 +10,7 @@
 
 namespace rantanplan {
 
-R2EGroundedEncoder::R2EGroundedEncoder(const Problem& problem, z3::context& ctx,
+R2EGroundedEncoder::R2EGroundedEncoder(const Problem& problem, cvc5::TermManager& ctx,
                                        std::unique_ptr<ParallelismStrategy> parallelism,
                                        ActionOrdering ordering)
     : GroundedEncoder(problem, ctx, std::move(parallelism)), action_ordering_(ordering) {
@@ -136,8 +136,8 @@ void R2EGroundedEncoder::build_prev_mappings() {
     }
 }
 
-z3::expr R2EGroundedEncoder::encode_actions(int t) {
-    z3::expr_vector all_constraints(ctx_);
+Term R2EGroundedEncoder::encode_actions(int t) {
+    TermVec all_constraints;
 
     // Add main R2E constraints (equations 1-4 from paper)
     all_constraints.push_back(encode_precondition_constraints(t));
@@ -147,23 +147,23 @@ z3::expr R2EGroundedEncoder::encode_actions(int t) {
     Stats::instance().add("encoder.r2e.action_constraints", all_constraints.size());
 
     return all_constraints.empty() ?
-        ctx_.bool_val(true) :
-        z3::mk_and(all_constraints);
+        tb().bool_val(true) :
+        tb().mk_and(all_constraints);
 }
 
-z3::expr R2EGroundedEncoder::encode_frames(int t) {
+Term R2EGroundedEncoder::encode_frames(int t) {
     // R2E has built-in frame semantics through chain variables and linking constraints
     // No additional frame axioms are needed
-    return ctx_.bool_val(true);
+    return tb().bool_val(true);
 }
 
-z3::expr R2EGroundedEncoder::encode_parallelism(int t) {
+Term R2EGroundedEncoder::encode_parallelism(int t) {
     // R2E has built-in parallelism semantics, so we return true (no additional constraints)
-    return ctx_.bool_val(true);
+    return tb().bool_val(true);
 }
 
-z3::expr R2EGroundedEncoder::encode_precondition_constraints(int t) {
-    z3::expr_vector constraints(ctx_);
+Term R2EGroundedEncoder::encode_precondition_constraints(int t) {
+    TermVec constraints;
 
     // Equation (1): a^t_i → Pre^t_ai σ^t_prev(i)
     for (size_t i = 0; i < global_action_order_.size(); ++i) {
@@ -172,28 +172,28 @@ z3::expr R2EGroundedEncoder::encode_precondition_constraints(int t) {
 
         if (!action->has_precondition()) continue;
 
-        z3::expr action_var = variable_factory_.get_action_variable(*action, t);
+        Term action_var = variable_factory_.get_action_variable(*action, t);
 
-        // Convert precondition to Z3
-        z3::expr precond_z3 = convert_expr_id_to_z3(action->precondition_id(), t);
+        // Convert precondition to a term
+        Term precond_z3 = convert_expr_id_to_z3(action->precondition_id(), t);
 
         // Get substitution
         auto prev_substitution = create_prev_substitution(action_index, t);
 
         // Apply substitution σ^t_prev(i)
-        z3::expr substituted_precond = apply_substitution(precond_z3, prev_substitution, t);
+        Term substituted_precond = apply_substitution(precond_z3, prev_substitution, t);
 
         // a^t_i → Pre^t_ai σ^t_prev(i)
-        z3::expr constraint = z3::implies(action_var, substituted_precond);
+        Term constraint = tb().mk_implies(action_var, substituted_precond);
         constraints.push_back(constraint);
     }
 
-    if (constraints.empty()) return ctx_.bool_val(true);
-    return z3::mk_and(constraints);
+    if (constraints.empty()) return tb().bool_val(true);
+    return tb().mk_and(constraints);
 }
 
-z3::expr R2EGroundedEncoder::encode_effect_constraints(int t) {
-    z3::expr_vector constraints(ctx_);
+Term R2EGroundedEncoder::encode_effect_constraints(int t) {
+    TermVec constraints;
 
     // Equation (2): a^t_i → Eff^t_ai σ^t_modi σ^t_prev(i)
     // Effects are grouped by fluent_id to produce ONE chain equation per (action, fluent) pair.
@@ -205,7 +205,7 @@ z3::expr R2EGroundedEncoder::encode_effect_constraints(int t) {
 
         if (action->effects().empty()) continue;
 
-        z3::expr action_var = variable_factory_.get_action_variable(*action, t);
+        Term action_var = variable_factory_.get_action_variable(*action, t);
 
         // Create substitutions once per action
         auto prev_substitution = create_prev_substitution(action_index, t);
@@ -219,8 +219,8 @@ z3::expr R2EGroundedEncoder::encode_effect_constraints(int t) {
 
         // Create one chain equation per modified fluent
         for (const auto& [fluent_id, effects] : effects_by_fluent) {
-            z3::expr chain_var = modi_substitution.at(fluent_id);
-            z3::expr prev_value = get_prev_variable_or_chain(fluent_id, t, action_index);
+            Term chain_var = modi_substitution.at(fluent_id);
+            Term prev_value = get_prev_variable_or_chain(fluent_id, t, action_index);
 
             // Combine all effects on this fluent into a single executed_value.
             //
@@ -244,7 +244,7 @@ z3::expr R2EGroundedEncoder::encode_effect_constraints(int t) {
                 else unconditional.push_back(eff);
             }
 
-            z3::expr executed_value = prev_value;
+            Term executed_value = prev_value;
 
             if (!unconditional.empty()) {
                 // Accumulate all unconditional effects. For ASSIGN the last
@@ -259,115 +259,116 @@ z3::expr R2EGroundedEncoder::encode_effect_constraints(int t) {
             if (!conditional.empty()) {
                 // Conditional effects: behaviour depends on effect kind.
                 for (const Effect* eff : conditional) {
-                    z3::expr condition_z3 = convert_expr_id_to_z3(
+                    Term condition_z3 = convert_expr_id_to_z3(
                         eff->effect_expression().condition_id(), t);
-                    z3::expr substituted_condition = apply_substitution(
+                    Term substituted_condition = apply_substitution(
                         condition_z3, prev_substitution, t);
 
                     if (eff->effect_expression().is_assign()) {
                         // ASSIGN: ITE selects this value or keeps the running value.
-                        z3::expr new_value = create_effect_value_z3(
+                        Term new_value = create_effect_value_z3(
                             eff->effect_expression(), executed_value, prev_substitution, t);
-                        executed_value = z3::ite(substituted_condition, new_value, executed_value);
+                        executed_value = tb().mk_ite(substituted_condition, new_value, executed_value);
                     } else {
                         // INCREASE/DECREASE: accumulate guarded delta.
                         // create_effect_value_z3 returns (executed_value ± delta),
                         // so ite(cond, that, executed_value) adds delta only when cond holds.
-                        z3::expr with_delta = create_effect_value_z3(
+                        Term with_delta = create_effect_value_z3(
                             eff->effect_expression(), executed_value, prev_substitution, t);
-                        executed_value = z3::ite(substituted_condition, with_delta, executed_value);
+                        executed_value = tb().mk_ite(substituted_condition, with_delta, executed_value);
                     }
                 }
             }
 
-            constraints.push_back(chain_var == z3::ite(action_var, executed_value, prev_value));
+            constraints.push_back(
+                tb().mk_eq(chain_var, tb().mk_ite(action_var, executed_value, prev_value)));
         }
     }
 
     return constraints.empty() ?
-        ctx_.bool_val(true) :
-        z3::mk_and(constraints);
+        tb().bool_val(true) :
+        tb().mk_and(constraints);
 }
 
-z3::expr R2EGroundedEncoder::encode_linking_constraints(int t) {
-    z3::expr_vector constraints(ctx_);
+Term R2EGroundedEncoder::encode_linking_constraints(int t) {
+    TermVec constraints;
 
     // Equation (4): x^{t+1} = x^t_ρx(|Ax|)
     for (const auto& [var_eid, modifying_actions] : variable_modifiers_) {
-        z3::expr var_t_plus_1 = convert_expr_id_to_z3(var_eid, t + 1);
+        Term var_t_plus_1 = convert_expr_id_to_z3(var_eid, t + 1);
 
         // The final chain variable corresponds to the last modifying action
         const Action* last_action = modifying_actions.back();
         // get its index
         int final_action_idx = get_global_action_index(last_action);
         // and get the corresponding chain variable with it
-        z3::expr final_chain = get_chain_variable(var_eid, t, final_action_idx);
+        Term final_chain = get_chain_variable(var_eid, t, final_action_idx);
 
-        z3::expr linking_constraint = (var_t_plus_1 == final_chain);
+        Term linking_constraint = tb().mk_eq(var_t_plus_1, final_chain);
         constraints.push_back(linking_constraint);
     }
 
     // For variables not modified by any action, add x^{t+1} = x^t
     for (ExprID eid : problem_.grounded_fluents()) {
         if (variable_modifiers_.find(eid) == variable_modifiers_.end()) {
-            z3::expr var_t = convert_expr_id_to_z3(eid, t);
-            z3::expr var_t_plus_1 = convert_expr_id_to_z3(eid, t + 1);
-            constraints.push_back(var_t_plus_1 == var_t);
+            Term var_t = convert_expr_id_to_z3(eid, t);
+            Term var_t_plus_1 = convert_expr_id_to_z3(eid, t + 1);
+            constraints.push_back(tb().mk_eq(var_t_plus_1, var_t));
         }
     }
 
     if (constraints.empty()) {
-        return ctx_.bool_val(true);
+        return tb().bool_val(true);
     }
-    return z3::mk_and(constraints);
+    return tb().mk_and(constraints);
 }
 
-std::unordered_map<ExprID, z3::expr> R2EGroundedEncoder::create_prev_substitution(int action_index, int timestep) {
-    std::unordered_map<ExprID, z3::expr> substitution;
+std::unordered_map<ExprID, Term> R2EGroundedEncoder::create_prev_substitution(int action_index, int timestep) {
+    std::unordered_map<ExprID, Term> substitution;
 
     for (const auto& [var_eid, _] : variable_modifiers_) {
-        z3::expr prev_var = get_prev_variable_or_chain(var_eid, timestep, action_index);
+        Term prev_var = get_prev_variable_or_chain(var_eid, timestep, action_index);
         substitution.emplace(var_eid, std::move(prev_var));
     }
 
     return substitution;
 }
 
-std::unordered_map<ExprID, z3::expr> R2EGroundedEncoder::create_modi_substitution(int action_index, int timestep) {
-    std::unordered_map<ExprID, z3::expr> substitution;
+std::unordered_map<ExprID, Term> R2EGroundedEncoder::create_modi_substitution(int action_index, int timestep) {
+    std::unordered_map<ExprID, Term> substitution;
 
     for (const auto& [var_eid, _] : variable_modifiers_) {
-        z3::expr chain_var = get_chain_variable(var_eid, timestep, action_index);
+        Term chain_var = get_chain_variable(var_eid, timestep, action_index);
         substitution.emplace(var_eid, std::move(chain_var));
     }
     return substitution;
 }
 
-z3::expr R2EGroundedEncoder::apply_substitution(const z3::expr& expr,
-                                               const std::unordered_map<ExprID, z3::expr>& substitution, int timestep) {
+Term R2EGroundedEncoder::apply_substitution(const Term& expr,
+                                               const std::unordered_map<ExprID, Term>& substitution, int timestep) {
     if (substitution.empty()) return expr;
 
-    z3::expr_vector from(ctx_);
-    z3::expr_vector to(ctx_);
+    TermVec from;
+    TermVec to;
 
     for (const auto& [var_eid, replacement] : substitution) {
-        z3::expr expr_z3 = convert_expr_id_to_z3(var_eid, timestep);
+        Term expr_z3 = convert_expr_id_to_z3(var_eid, timestep);
         from.push_back(expr_z3);
         to.push_back(replacement);
     }
     if (from.empty()) return expr;
 
-    z3::expr mutable_expr = expr;
+    Term mutable_expr = expr;
     return mutable_expr.substitute(from, to);
 }
 
-z3::expr R2EGroundedEncoder::create_effect_value_z3(const EffectExpression& eff_expr, const z3::expr& fluent_z3,
-                                                   const std::unordered_map<ExprID, z3::expr>& prev_substitution, int timestep) {
+Term R2EGroundedEncoder::create_effect_value_z3(const EffectExpression& eff_expr, const Term& fluent_z3,
+                                                   const std::unordered_map<ExprID, Term>& prev_substitution, int timestep) {
     // Convert the delta/value expression and substitute any fluent references
     // in it (e.g., "increase (fuel ?v) (distance ?from ?to)" — distance is a
     // fluent reference inside the delta that must be resolved via prev_substitution).
-    z3::expr value_z3 = convert_expr_id_to_z3(eff_expr.value_id(), timestep);
-    z3::expr substituted_value = apply_substitution(value_z3, prev_substitution, timestep);
+    Term value_z3 = convert_expr_id_to_z3(eff_expr.value_id(), timestep);
+    Term substituted_value = apply_substitution(value_z3, prev_substitution, timestep);
 
     switch (eff_expr.kind()) {
         case EffectExpression::Kind::ASSIGN:
@@ -377,10 +378,10 @@ z3::expr R2EGroundedEncoder::create_effect_value_z3(const EffectExpression& eff_
             // fluent_z3 is the running accumulated value passed by the caller.
             // Using it (not prev_substitution[fluent]) ensures multiple
             // INCREASE effects on the same fluent sum their deltas correctly.
-            return fluent_z3 + substituted_value;
+            return tb().add(fluent_z3, substituted_value);
 
         case EffectExpression::Kind::DECREASE:
-            return fluent_z3 - substituted_value;
+            return tb().sub(fluent_z3, substituted_value);
     }
 
     // Should never reach here
@@ -391,12 +392,22 @@ std::string R2EGroundedEncoder::get_chain_variable_name(ExprID var_eid, int time
     return problem_.pool().to_string(var_eid) + "_chain_t" + std::to_string(timestep) + "_action" + std::to_string(action_index);
 }
 
-z3::expr R2EGroundedEncoder::get_chain_variable(ExprID var_eid, int timestep, int action_index) {
+Term R2EGroundedEncoder::get_chain_variable(ExprID var_eid, int timestep, int action_index) {
     std::string chain_name = get_chain_variable_name(var_eid, timestep, action_index);
-    return variable_factory_.create_symbol_variable(chain_name, problem_.type_for_id(var_eid));
+    // The cache is mandatory under cvc5 (see chain_variables_ in the header):
+    // create_symbol_variable goes to TermManager::mkConst, which is fresh every
+    // call, so re-deriving the chain variable by name would produce a different
+    // variable at each of the many call sites that ask for it.
+    auto it = chain_variables_.find(chain_name);
+    if (it != chain_variables_.end()) {
+        return it->second;
+    }
+    Term chain_var = variable_factory_.create_symbol_variable(chain_name, problem_.type_for_id(var_eid));
+    chain_variables_.emplace(chain_name, chain_var);
+    return chain_var;
 }
 
-z3::expr R2EGroundedEncoder::get_prev_variable_or_chain(ExprID var_eid, int timestep, int action_index) {
+Term R2EGroundedEncoder::get_prev_variable_or_chain(ExprID var_eid, int timestep, int action_index) {
     // Check if this variable has prev mappings
     auto prev_it = prev_x_.find(var_eid);
     if (prev_it == prev_x_.end() || action_index >= static_cast<int>(prev_it->second.size())) {
@@ -420,22 +431,24 @@ int R2EGroundedEncoder::get_global_action_index(const Action* action) const {
     return std::distance(global_action_order_.begin(), it) + 1;
 }
 
-z3::expr R2EGroundedEncoder::convert_cost_to_z3(const Action& action, int timestep) {
+Term R2EGroundedEncoder::convert_cost_to_z3(const Action& action, int timestep) {
     // R2E's fixed ordering means action a_i sees state σ^t_{prev(i)},
     // not x^t. Apply the same prev_substitution used for preconditions
     // so that SDAC cost expressions reference the correct intermediate state.
-    z3::expr cost_z3 = convert_expr_id_to_z3(action.cost_id(), timestep);
+    Term cost_z3 = convert_expr_id_to_z3(action.cost_id(), timestep);
     int action_index = get_global_action_index(&action);
     auto prev_substitution = create_prev_substitution(action_index, timestep);
     return apply_substitution(cost_z3, prev_substitution, timestep);
 }
 
-Plan R2EGroundedEncoder::extract_plan(const z3::model& model, int max_timestep) const {
+Plan R2EGroundedEncoder::extract_plan(const cvc5::Solver& solver, int max_timestep) const {
     Plan plan;
     const auto& config = Config::instance();
 
     if (config.is_debug()) {
-        std::cout << "Extracting R2E plan from Z3 model with " << model.size() << " variable assignments" << std::endl;
+        // cvc5 has no model object to size up: values are pulled one term at a
+        // time with solver.getValue().
+        std::cout << "Extracting R2E plan from the cvc5 model" << std::endl;
     }
 
     // Double loop: first timesteps, then global action order
@@ -443,10 +456,10 @@ Plan R2EGroundedEncoder::extract_plan(const z3::model& model, int max_timestep) 
     for (int t = 0; t < max_timestep; ++t) {
         // Go through actions in their global ordering
         for (const Action* action : global_action_order_) {
-            z3::expr action_var = variable_factory_.get_action_variable(*action, t);
-            z3::expr action_value = model.eval(action_var, true);
+            Term action_var = variable_factory_.get_action_variable(*action, t);
+            Term action_value = solver.getValue(action_var);
 
-            if (action_value.is_true()) {
+            if (action_value.isBooleanValue() && action_value.getBooleanValue()) {
                 plan.add_action(action);
                 if (config.is_debug()) {
                     std::cout << "  Timestep " << t << ": " << action->name() << std::endl;

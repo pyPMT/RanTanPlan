@@ -11,28 +11,30 @@
 
 namespace rantanplan {
 
-DoubleTailPlanner::DoubleTailPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx)
-    : BasePlanner(problem, encoder, ctx) {
+DoubleTailPlanner::DoubleTailPlanner(const Problem& problem, BaseEncoder& encoder, cvc5::TermManager& tm)
+    : BasePlanner(problem, encoder, tm) {
     auto& config = Config::instance();
     max_horizon_ = config.planner.max_steps;
 }
 
-z3::expr DoubleTailPlanner::create_link_constraints(int forward_t, int backward_t) {
+Term DoubleTailPlanner::create_link_constraints(int forward_t, int backward_t) {
     // Create equivalence constraints for all fluents: fluent@forward_t ⟺ fluent@backward_t
-    z3::expr_vector links(ctx_);
+    TermVec links;
 
     for (ExprID eid : problem_.grounded_fluents()) {
-        z3::expr forward_var = encoder_.convert_expr_id_to_z3(eid, forward_t);
-        z3::expr backward_var = encoder_.convert_expr_id_to_z3(eid, backward_t);
-        links.push_back(forward_var == backward_var);
+        Term forward_var = encoder_.convert_expr_id_to_z3(eid, forward_t);
+        Term backward_var = encoder_.convert_expr_id_to_z3(eid, backward_t);
+        // mk_eq is bi-implication for Boolean fluents, equality otherwise —
+        // Term::operator== is syntactic equality in cvc5, not a formula.
+        links.push_back(tb_.mk_eq(forward_var, backward_var));
     }
 
-    return z3::mk_and(links);
+    return tb_.mk_and(links);
 }
 
 void DoubleTailPlanner::add_timestep_constraints(int t) {
     // DoubleTail omits prefix_monotone (not compatible with bidirectional search)
-    BasePlanner::add_timestep_constraints(solver_, encoder_, *propagator_strategy_, t,
+    BasePlanner::add_timestep_constraints(solver_, encoder_, t,
                                           /*prefix_monotone=*/false);
 }
 
@@ -82,7 +84,7 @@ Plan DoubleTailPlanner::search() {
     auto& config = Config::instance();
     auto& stats = Stats::instance();
 
-    std::string search_msg = "Starting double-tail search with propagator: " + propagator_strategy_->get_name();
+    std::string search_msg = "Starting double-tail search";
     search_msg += ", max horizon: " + std::to_string(max_horizon_);
     search_msg += ", timeout: " + format_timeout_string();
     Logger::instance().info(search_msg);
@@ -92,11 +94,9 @@ Plan DoubleTailPlanner::search() {
     init_deadline();
 
     // Add invariant constraints: initial state at t=0, goal state at t=max_horizon_
-    solver_.add(encoder_.encode_initial_state());
-    propagator_strategy_->register_timestep_variables(0);
+    solver_.assertFormula(encoder_.encode_initial_state());
 
-    solver_.add(encoder_.encode_goal(max_horizon_));
-    propagator_strategy_->register_timestep_variables(max_horizon_);
+    solver_.assertFormula(encoder_.encode_goal(max_horizon_));
 
     double total_time = 0.0;
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -106,7 +106,7 @@ Plan DoubleTailPlanner::search() {
     // - Odd iterations (1,3,5,...): add one forward transition
     // - Even iterations (2,4,6,...): add one backward transition
     for (int iteration = 0; iteration <= max_horizon_; ++iteration) {
-        // Apply Z3 timeout for the remaining budget
+        // Apply the solver timeout for the remaining budget
         if (!apply_solver_timeout(solver_)) break;
 
         auto step_start = std::chrono::high_resolution_clock::now();
@@ -137,18 +137,19 @@ Plan DoubleTailPlanner::search() {
 
         // Create link with activation literal: link_literal → L(forward_end, backward_start)
         std::string link_var_name = "link_at_" + std::to_string(iteration);
-        z3::expr link_literal = ctx_.bool_const(link_var_name.c_str());
-        solver_.add(z3::implies(link_literal, create_link_constraints(forward_end, backward_start)));
+        Term link_literal = tm_.mkConst(tm_.getBooleanSort(), link_var_name);
+        solver_.assertFormula(tb_.mk_implies(link_literal,
+                                             create_link_constraints(forward_end, backward_start)));
 
         auto formula_end = std::chrono::high_resolution_clock::now();
         double formula_time = std::chrono::duration<double>(formula_end - formula_start).count();
 
         // Solve with link activated
-        z3::expr_vector assumptions(ctx_);
+        TermVec assumptions;
         assumptions.push_back(link_literal);
 
         auto solve_start = std::chrono::high_resolution_clock::now();
-        z3::check_result result = solver_.check(assumptions);
+        cvc5::Result result = solver_.checkSatAssuming(assumptions);
         auto solve_end = std::chrono::high_resolution_clock::now();
         double solve_time = std::chrono::duration<double>(solve_end - solve_start).count();
 
@@ -176,25 +177,23 @@ Plan DoubleTailPlanner::search() {
             {"link", "t" + std::to_string(forward_end) + " <=> t" + std::to_string(backward_start)}
         });
 
-        if (result == z3::sat) {
+        if (result.isSat()) {
             Logger::instance().info("\n*** PLAN FOUND at iteration " + std::to_string(iteration) +
                                    " (plan length " + std::to_string(iteration) +
                                    ", total time: " + std::to_string(total_time) + "s) ***");
 
             solution_found_ = true;
-            z3::model model = solver_.get_model();
 
             if (iteration == 0) {
                 // Empty plan
                 stats.set("planner.plan_length", 0.0);
                 stats.set("planner.solution_timestep", 0.0);
                 collect_statistics();
-                propagator_strategy_->cleanup();
                 return Plan();
             }
 
             try {
-                Plan plan = extract_plan(model, iteration);
+                Plan plan = extract_plan(solver_, iteration);
 
                 plan.write_ipc(config.planner.output_plan, 1,
                                -1.0, true,
@@ -204,18 +203,16 @@ Plan DoubleTailPlanner::search() {
                 stats.set("planner.plan_length", static_cast<double>(plan.length()));
                 stats.set("planner.solution_timestep", static_cast<double>(iteration));
                 collect_statistics();
-                propagator_strategy_->cleanup();
                 return plan;
             } catch (const std::exception& e) {
                 Logger::instance().error("ERROR during plan extraction: " + std::string(e.what()));
                 collect_statistics();
-                propagator_strategy_->cleanup();
                 return Plan();
             }
-        } else if (result == z3::unsat) {
+        } else if (result.isUnsat()) {
             // Continue to next iteration
         } else {
-            if (handle_unknown_result(solver_, "iteration " + std::to_string(iteration))) break;
+            if (handle_unknown_result(result, "iteration " + std::to_string(iteration))) break;
         }
     }
 
@@ -225,11 +222,10 @@ Plan DoubleTailPlanner::search() {
         Logger::instance().info("\n*** NO PLAN FOUND within " + std::to_string(max_horizon_) + " iterations ***");
     }
     collect_statistics();
-    propagator_strategy_->cleanup();
     return Plan();
 }
 
-Plan DoubleTailPlanner::extract_plan(const z3::model& model, int plan_length) {
+Plan DoubleTailPlanner::extract_plan(const cvc5::Solver& solver, int plan_length) {
     Plan plan;
 
     // Calculate stack depths using helper methods
@@ -244,16 +240,16 @@ Plan DoubleTailPlanner::extract_plan(const z3::model& model, int plan_length) {
 
     // Extract forward actions (from timestep 0 up to forward_depth-1)
     // Then extract backward actions (from timestep backward_start up to max_horizon_-1)
-    extract_actions_in_range(plan, model, 0, forward_depth);
-    extract_actions_in_range(plan, model, backward_start, max_horizon_);
+    extract_actions_in_range(plan, solver, 0, forward_depth);
+    extract_actions_in_range(plan, solver, backward_start, max_horizon_);
 
     return plan;  // Total actions: forward_depth + backward_depth = plan_length
 }
 
-void DoubleTailPlanner::extract_actions_in_range(Plan& plan, const z3::model& model,
+void DoubleTailPlanner::extract_actions_in_range(Plan& plan, const cvc5::Solver& solver,
                                                    int start_timestep, int end_timestep) {
     for (int t = start_timestep; t < end_timestep; ++t) {
-        std::vector<const Action*> actions_at_t = extract_parallel_actions_at_timestep(model, t);
+        std::vector<const Action*> actions_at_t = extract_parallel_actions_at_timestep(solver, t);
 
         if (encoder_.get_parallelism_strategy()->allows_concurrent_actions()) {
             // Parallel: topologically sort and add all actions
@@ -271,17 +267,17 @@ void DoubleTailPlanner::extract_actions_in_range(Plan& plan, const z3::model& mo
 }
 
 std::vector<const Action*> DoubleTailPlanner::extract_parallel_actions_at_timestep(
-    const z3::model& model, int timestep) const {
+    const cvc5::Solver& solver, int timestep) const {
 
     std::vector<const Action*> parallel_actions;
 
     for (const Action& grounded_action : problem_.actions()) {
         try {
-            const z3::expr& action_var = encoder_.get_variable_factory()
+            const Term& action_var = encoder_.get_variable_factory()
                 .get_action_variable(grounded_action, timestep);
-            z3::expr action_value = model.eval(action_var, true);
+            Term action_value = solver.getValue(action_var);
 
-            if (action_value.is_true()) {
+            if (action_value.isBooleanValue() && action_value.getBooleanValue()) {
                 parallel_actions.push_back(&grounded_action);
             }
         } catch (const std::exception&) {

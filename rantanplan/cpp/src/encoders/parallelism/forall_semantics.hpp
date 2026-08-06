@@ -27,7 +27,7 @@ public:
                              const InterferenceGraphAnalysis* graph = nullptr)
         : interference_analyzer_(std::move(analyzer)), graph_(graph) {}
 
-    z3::expr encode_parallelism(int timestep) override;
+    Term encode_parallelism(int timestep) override;
 
     std::string get_name() const override { return "ForallSemantics"; }
 

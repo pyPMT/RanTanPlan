@@ -2,13 +2,36 @@
 """
 Report generator for RantanPlan SLURM benchmark results.
 
+Consumes the ``.out``/``.err`` pairs written by a SLURM array run of the
+commands produced by ``prepare_batch_run.py`` and, optionally, the ``.stat``
+files those runs wrote via ``--stats-file``.
+
 Generates:
-1. Survival (cactus) plot comparing strategies by solving time
-2. Pairwise scatter plots between strategies (linear + log scale)
-3. CSV summary tables (per-domain, overall, per-instance)
+1. Survival (cactus) plots comparing systems by solving time
+2. Pairwise scatter plots between systems (linear + log scale)
+3. CSV summary tables (per-instance, per-domain, overall)
+4. Solver/metric analysis: pairwise metric scatters, variant impact,
+   time breakdowns, encoding size, per-domain summaries
 
 Usage:
-    python scripts/slurm_report.py logs/ --stats-dir stats_and_plans/ -o report/
+    python3 scripts/slurm_report.py logs/ --stats-dir stats_and_plans/ -o report/
+
+Log format contract
+-------------------
+Each ``.out`` file is expected to look like::
+
+    [Sun  2 Aug 11:42:25 CEST 2026] Running task 1 from batches/batch_1.txt: <cmd>
+    domain=<name>
+    instance=<name>
+    strategy=<name>
+    mode=<name>
+    ... planner output ...
+    [Sun  2 Aug 11:44:30 CEST 2026] Task 1 finished with exit code 0
+
+Both the ``key=value`` echoes and the wrapper command line are used; the
+command line additionally yields the horizon schedule and the exact stats-file
+name, neither of which is echoed.  Everything is optional: a job is kept as
+long as its domain, instance and strategy can be recovered from either source.
 """
 import argparse
 import csv
@@ -19,8 +42,10 @@ import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from itertools import combinations
+from math import ceil, log2
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from statistics import median
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -28,370 +53,480 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
 
-# --- Enums and Data Structures ---
+# ===========================================================================
+# Data model
+# ===========================================================================
 
 class Status(Enum):
     SOLVED = "solved"
+    UNSOLVABLE = "unsolvable"
     TIMEOUT = "timeout"
     MEMOUT = "memout"
     ERROR = "error"
+    #: The wrapper never wrote a verdict: the job is still in flight, or the
+    #: whole array was torn down before it could report.  Kept apart from the
+    #: failure statuses so an ongoing run is not scored as a wall of timeouts.
+    RUNNING = "running"
+    UNKNOWN = "unknown"
+
+
+#: Statuses that count as "the planner answered the question".
+CONCLUSIVE = (Status.SOLVED, Status.UNSOLVABLE)
 
 
 @dataclass
-class SlurmJobResult:
+class Job:
+    """One (domain, instance, strategy, mode, schedule) run."""
     domain: str
     instance: str
     strategy: str
     mode: str
+    schedule: str
     log_file: Path
     status: Status
     total_time: Optional[float] = None
+    wall_time: Optional[float] = None
     horizon: Optional[int] = None
     num_actions: Optional[int] = None
     last_memory_mb: Optional[int] = None
+    exit_code: Optional[int] = None
+    stats_file: Optional[str] = None
     stats: Dict[str, float] = field(default_factory=dict)
+
+    #: Label used everywhere the run is compared against others.  Set by
+    #: :func:`assign_system_labels` once the whole experiment is known, so that
+    #: mode/schedule only clutter the label when the run actually varies them.
+    system: str = ""
+
+    @property
+    def instance_key(self) -> Tuple[str, str]:
+        return (self.domain, self.instance)
 
 
 @dataclass
-class ExperimentData:
-    jobs: List[SlurmJobResult]
+class Experiment:
+    jobs: List[Job]
     timeout: float
-    strategies: List[str]
+    systems: List[str]
     domains: List[str]
     skipped_empty: int = 0
-    skipped_no_metadata: int = 0
-    # Indexes built by _build_indexes()
-    _job_index: Dict[Tuple[str, str, str], "SlurmJobResult"] = field(
-        default_factory=dict, repr=False
-    )
-    _instance_keys: List[Tuple[str, str]] = field(
-        default_factory=list, repr=False
-    )
-    _jobs_by_strategy: Dict[str, List["SlurmJobResult"]] = field(
-        default_factory=dict, repr=False
-    )
-    _jobs_by_domain: Dict[str, List["SlurmJobResult"]] = field(
-        default_factory=dict, repr=False
-    )
-    _jobs_by_domain_strategy: Dict[Tuple[str, str], List["SlurmJobResult"]] = field(
+    skipped_unparsed: int = 0
+    duplicates: int = 0
+
+    _by_key: Dict[Tuple[str, str, str], Job] = field(default_factory=dict, repr=False)
+    _instance_keys: List[Tuple[str, str]] = field(default_factory=list, repr=False)
+    _by_system: Dict[str, List[Job]] = field(default_factory=dict, repr=False)
+    _by_domain_system: Dict[Tuple[str, str], List[Job]] = field(
         default_factory=dict, repr=False
     )
 
-    def _build_indexes(self) -> None:
-        """Build all lookup indexes. Call once after jobs list is final."""
-        self._job_index = {}
-        by_strat: Dict[str, List[SlurmJobResult]] = {}
-        by_dom: Dict[str, List[SlurmJobResult]] = {}
-        by_ds: Dict[Tuple[str, str], List[SlurmJobResult]] = {}
+    def build_indexes(self) -> None:
+        self._by_key = {}
+        self._by_system = {}
+        self._by_domain_system = {}
         keys: Set[Tuple[str, str]] = set()
         for j in self.jobs:
-            self._job_index[(j.domain, j.instance, j.strategy)] = j
-            keys.add((j.domain, j.instance))
-            by_strat.setdefault(j.strategy, []).append(j)
-            by_dom.setdefault(j.domain, []).append(j)
-            by_ds.setdefault((j.domain, j.strategy), []).append(j)
+            self._by_key[(j.domain, j.instance, j.system)] = j
+            keys.add(j.instance_key)
+            self._by_system.setdefault(j.system, []).append(j)
+            self._by_domain_system.setdefault((j.domain, j.system), []).append(j)
         self._instance_keys = sorted(keys)
-        self._jobs_by_strategy = by_strat
-        self._jobs_by_domain = by_dom
-        self._jobs_by_domain_strategy = by_ds
 
-    def job_for(
-        self, domain: str, instance: str, strategy: str
-    ) -> Optional[SlurmJobResult]:
-        return self._job_index.get((domain, instance, strategy))
+    def job_for(self, domain: str, instance: str, system: str) -> Optional[Job]:
+        return self._by_key.get((domain, instance, system))
 
     def instance_keys(self) -> List[Tuple[str, str]]:
         return self._instance_keys
 
-    def get_jobs_by_strategy(self, strategy: str) -> List[SlurmJobResult]:
-        return self._jobs_by_strategy.get(strategy, [])
+    def by_system(self, system: str) -> List[Job]:
+        return self._by_system.get(system, [])
 
-    def get_jobs_by_domain_strategy(
-        self, domain: str, strategy: str
-    ) -> List[SlurmJobResult]:
-        return self._jobs_by_domain_strategy.get((domain, strategy), [])
+    def by_domain_system(self, domain: str, system: str) -> List[Job]:
+        return self._by_domain_system.get((domain, system), [])
+
+    def solved_with_stats(self, system: str) -> List[Job]:
+        return [j for j in self.by_system(system) if j.status == Status.SOLVED and j.stats]
+
+    def stat_keys(self) -> Set[str]:
+        return {k for j in self.jobs for k in j.stats}
 
 
-# --- Regex Patterns ---
+# ===========================================================================
+# Log parsing
+# ===========================================================================
 
-RE_TIMESTEP = re.compile(
-    r"\[Solving T(\d+)\s*\]\s+"
-    r"(?:\[(?:Init|Forward|Backward)\]:\s+\|\s+)?"  # optional double-tail prefix
-    r"formula:\s+([\d.]+)s\s+\|\s+"
-    r"solve:\s+([\d.]+)s\s+\|\s+"
-    r"step:\s+([\d.]+)s\s+\|\s+"
-    r"mem:\s+(\d+)MB"
+# Wrapper lines emitted by the SLURM array driver around each task.
+RE_RUNNING = re.compile(r"^\[[^\]]*\]\s+Running task\s+\d+\b[^:]*:\s*(?P<cmd>.+)$")
+RE_FINISHED = re.compile(r"^\[[^\]]*\]\s+Task\s+\d+\s+finished with exit code\s+(-?\d+)")
+RE_CLOCK = re.compile(r"^\[[^\]]*?(\d{2}):(\d{2}):(\d{2})[^\]]*\]")
+
+RE_META = re.compile(r"^([A-Za-z_]\w*)=(.+)$")
+RE_CMD_OPT = re.compile(
+    r"--(strategy|mode|horizon-schedule|stats-file|output-plan)[= ]\s*(\S+)"
 )
-RE_TIMESTEP_PDLA = re.compile(
-    r"\[Solving R(\d+)\s*\]\s+"
-    r"solve:\s+([\d.]+)s\s+\|\s+"
-    r"round:\s+([\d.]+)s\s+\|\s+"
-    r"horizon:\s+\d+\s+\|\s+"
-    r"activated:\s+\d+/\d+\s+\|\s+"
-    r"queue:\s+\d+\s+\|\s+"
-    r"mem:\s+(\d+)MB"
-)
+
+# One tolerant matcher for every planner's success line.  Covers:
+#   *** PLAN FOUND: horizon=H, actions=A (total time: Ts) ***
+#   *** PLAN FOUND: A actions, R rounds, horizon=H, activated=x/y, extensions=E (total time: Ts) ***
+#   *** PLAN FOUND at iteration I (plan length L, total time: Ts) ***
+#   *** OPTIMAL|BEST PLAN FOUND: horizon=H, actions=A, cost=C (... total time: Ts) ***
 RE_PLAN_FOUND = re.compile(
-    r"\*\*\* PLAN FOUND: horizon=(\d+), actions=(\d+) \(total time: ([\d.]+)s\)"
+    r"\*\*\*\s+(?:OPTIMAL\s+|BEST\s+)?PLAN FOUND\b(.*?)total time:\s*([\d.]+)\s*s"
 )
-RE_DT_PLAN_FOUND = re.compile(
-    r"\*\*\* PLAN FOUND at iteration \d+ \(plan length (\d+), total time: ([\d.]+)s\)"
+RE_NO_PLAN = re.compile(r"\*\*\*\s+NO PLAN FOUND\b(.*)")
+RE_BODY_HORIZON = re.compile(r"horizon=(\d+)")
+RE_BODY_ACTIONS = re.compile(r"actions=(\d+)|\b(\d+)\s+actions\b|plan length\s+(\d+)")
+
+RE_STATUS = re.compile(r"Status:\s*PlanGenerationResultStatus\.(\w+)")
+RE_MEM = re.compile(r"\bmem:\s*(\d+)\s*MB")
+
+RE_OOM = re.compile(
+    r"std::bad_alloc|[Oo]ut of memory|oom[-_]kill|Killed process|\bKilled\b", re.IGNORECASE
 )
-RE_R2E_PLAN_FOUND = re.compile(
-    r"\*\*\* PLAN FOUND: (\d+) actions, (\d+) rounds, \d+ extensions \(total time: ([\d.]+)s\)"
+RE_FATAL = re.compile(
+    r"Error during planning:|Error parsing PDDL|Aborted \(core dumped\)"
+    r"|Traceback \(most recent call last\)|terminate called|Segmentation fault"
 )
-RE_PDLA_PLAN_FOUND = re.compile(
-    r"\*\*\* PLAN FOUND: (\d+) actions, (\d+) rounds, horizon=(\d+),\s+activated=\d+/\d+ \(total time: ([\d.]+)s\)"
-)
-RE_OPTIMAL_FOUND = re.compile(
-    r"\*\*\* OPTIMAL PLAN FOUND: horizon=(\d+), actions=(\d+), cost=[\d.]+.*\(total time: ([\d.]+)s\)"
-)
-RE_BEST_FOUND = re.compile(
-    r"\*\*\* BEST PLAN FOUND: horizon=(\d+), actions=(\d+), cost=[\d.]+.*\(total time: ([\d.]+)s\)"
-)
-RE_PLANNER_TIMEOUT = re.compile(r"Planner timed out\.")
-RE_STATUS = re.compile(r"Status: PlanGenerationResultStatus\.(\w+)")
-RE_SLURM_CANCEL = re.compile(r"CANCELLED.*DUE TO TIME LIMIT")
-RE_ERROR = re.compile(r"Error during planning:|Aborted \(core dumped\)")
-RE_OOM = re.compile(r"slurmstepd.*oom|Killed|Out of memory|std::bad_alloc", re.IGNORECASE)
-RE_METADATA = re.compile(r"^(\w+)=(.+)$")
+RE_CANCELLED = re.compile(r"CANCELLED.*DUE TO TIME LIMIT", re.IGNORECASE)
+
+#: Exit codes with a known meaning.  124 is GNU ``timeout``; 137/139 are
+#: 128+SIGKILL / 128+SIGSEGV, the former almost always an OOM kill.
+EXIT_STATUS = {0: None, 124: Status.TIMEOUT, 137: Status.MEMOUT, 139: Status.ERROR}
+
+#: Statuses the planner itself reports through the Python CLI.
+UP_STATUS = {
+    "SOLVED_SATISFICING": Status.SOLVED,
+    "SOLVED_OPTIMALLY": Status.SOLVED,
+    "UNSOLVABLE_PROVEN": Status.UNSOLVABLE,
+    "UNSOLVABLE_INCOMPLETELY": Status.UNSOLVABLE,
+    "TIMEOUT": Status.TIMEOUT,
+    "INTERNAL_ERROR": Status.ERROR,
+    "UNSUPPORTED_PROBLEM": Status.ERROR,
+    "MEMOUT": Status.MEMOUT,
+}
 
 
-# --- Parsing ---
+def _clock_seconds(line: str) -> Optional[int]:
+    m = RE_CLOCK.match(line)
+    if not m:
+        return None
+    h, mi, s = (int(g) for g in m.groups())
+    return h * 3600 + mi * 60 + s
 
-def parse_slurm_log(
-    log_path: Path, exclude_strategies: Optional[List[str]] = None
-) -> Optional[SlurmJobResult]:
-    """Parse a single SLURM .out log file. Streams line-by-line for huge files."""
-    metadata: Dict[str, str] = {}
-    solved = False
+
+def _parse_command(cmd: str) -> Dict[str, str]:
+    """Recover run parameters from the wrapper's echoed shell command."""
+    opts: Dict[str, str] = {}
+    for key, value in RE_CMD_OPT.findall(cmd):
+        opts.setdefault(key, value.strip("'\""))
+    # The `echo 'domain=...'` prefix carries domain/instance verbatim.
+    for token in re.findall(r"echo\s+'([^']*)'", cmd):
+        m = RE_META.match(token)
+        if m:
+            opts.setdefault(m.group(1), m.group(2))
+    return opts
+
+
+def _plan_body_fields(body: str) -> Tuple[Optional[int], Optional[int]]:
+    horizon = None
+    actions = None
+    m = RE_BODY_HORIZON.search(body)
+    if m:
+        horizon = int(m.group(1))
+    m = RE_BODY_ACTIONS.search(body)
+    if m:
+        actions = int(next(g for g in m.groups() if g is not None))
+    return horizon, actions
+
+
+def _scan_err_file(log_path: Path) -> Optional[Status]:
+    """SLURM writes cancellation and OOM notices to the sibling .err file."""
+    err_path = log_path.with_suffix(".err")
+    try:
+        if not err_path.is_file() or err_path.stat().st_size == 0:
+            return None
+        text = err_path.read_text(errors="replace")
+    except OSError:
+        return None
+    if RE_OOM.search(text):
+        return Status.MEMOUT
+    if RE_CANCELLED.search(text):
+        return Status.TIMEOUT
+    return None
+
+
+def parse_log(log_path: Path, exclude: Optional[Sequence[str]] = None) -> Optional[Job]:
+    """Parse one SLURM ``.out`` file.  Streams line by line; logs run to
+    hundreds of thousands of lines when a plan is printed."""
+    meta: Dict[str, str] = {}
+    start_clock: Optional[int] = None
+    end_clock: Optional[int] = None
+    exit_code: Optional[int] = None
     total_time: Optional[float] = None
     horizon: Optional[int] = None
-    num_actions: Optional[int] = None
-    last_memory_mb: Optional[int] = None
-    is_timeout = False
-    is_memout = False
-    is_error = False
+    actions: Optional[int] = None
+    last_mem: Optional[int] = None
+    reported: Optional[Status] = None       # from the planner's own Status: line
+    no_plan: Optional[Status] = None        # from a *** NO PLAN FOUND *** line
+    solved = False
+    saw_oom = False
+    saw_fatal = False
+    have_cmd = False
 
     try:
         with open(log_path, "r", errors="replace") as f:
-            # Read metadata header (first few lines)
-            for line in f:
-                line = line.strip()
-                m = RE_METADATA.match(line)
-                if m and len(metadata) < 4:
-                    metadata[m.group(1)] = m.group(2)
-                else:
-                    # First non-metadata line; process it too
-                    break
-            else:
-                # File exhausted during metadata
-                line = ""
+            for lineno, raw in enumerate(f):
+                # Every line we care about starts at column 0.  Indented lines
+                # are printed plan steps ("  12. move(a, b)") and secondary
+                # detail lines, and they dominate the file — a solved log runs
+                # to hundreds of thousands of lines — so reject them before
+                # paying for a strip.
+                if not raw or raw[0].isspace():
+                    continue
+                line = raw.rstrip()
+                head = line[0]
 
-            # Check required metadata
-            if "domain" not in metadata or "strategy" not in metadata:
-                return None
+                if head == "[":
+                    if line.startswith("[Solving"):
+                        if "mem:" in line:
+                            m = RE_MEM.search(line)
+                            if m:
+                                last_mem = int(m.group(1))
+                        continue
+                    if not have_cmd and " Running task " in line:
+                        m = RE_RUNNING.match(line)
+                        if m:
+                            have_cmd = True
+                            start_clock = _clock_seconds(line)
+                            for k, v in _parse_command(m.group("cmd")).items():
+                                meta.setdefault(k, v)
+                            # Bail out early on excluded strategies: avoids
+                            # reading the (often enormous) rest of the file.
+                            strategy = meta.get("strategy", "")
+                            if exclude and any(pat in strategy for pat in exclude):
+                                return None
+                        continue
+                    if "finished with exit code" in line:
+                        m = RE_FINISHED.match(line)
+                        if m:
+                            exit_code = int(m.group(1))
+                            end_clock = _clock_seconds(line)
+                    continue
 
-            # Early exit for excluded strategies (avoids reading rest of file)
-            if exclude_strategies:
-                strat = metadata["strategy"]
-                if any(pat in strat for pat in exclude_strategies):
-                    return None
-
-            # Process the remaining lines
-            def process_line(line: str) -> None:
-                nonlocal solved, total_time, horizon, num_actions
-                nonlocal last_memory_mb, is_timeout, is_memout, is_error
-
-                m = RE_TIMESTEP.search(line)
-                if m:
-                    last_memory_mb = int(m.group(5))
-                    return
-
-                m = RE_TIMESTEP_PDLA.search(line)
-                if m:
-                    last_memory_mb = int(m.group(4))
-                    return
-
-                for pattern in (RE_PLAN_FOUND, RE_OPTIMAL_FOUND, RE_BEST_FOUND):
-                    m = pattern.search(line)
+                if head == "*":
+                    m = RE_PLAN_FOUND.search(line)
                     if m:
                         solved = True
-                        horizon = int(m.group(1))
-                        num_actions = int(m.group(2))
-                        total_time = float(m.group(3))
-                        return
+                        total_time = float(m.group(2))
+                        h, a = _plan_body_fields(m.group(1))
+                        horizon = h if h is not None else horizon
+                        actions = a if a is not None else actions
+                        continue
+                    m = RE_NO_PLAN.search(line)
+                    if m:
+                        # "(timeout after Ns)" vs "within N iterations" — the
+                        # latter means the search space was exhausted.
+                        no_plan = (
+                            Status.TIMEOUT if "timeout" in m.group(1).lower()
+                            else Status.UNSOLVABLE
+                        )
+                    continue
 
-                m = RE_DT_PLAN_FOUND.search(line)
-                if m:
-                    solved = True
-                    num_actions = int(m.group(1))
-                    total_time = float(m.group(2))
-                    return
+                if head.isdigit():
+                    continue  # printed plan step, "  12. move(a, b)"
 
-                m = RE_R2E_PLAN_FOUND.search(line)
-                if m:
-                    solved = True
-                    num_actions = int(m.group(1))
-                    total_time = float(m.group(3))
-                    return
+                if head == "S" and line.startswith("Status:"):
+                    m = RE_STATUS.search(line)
+                    if m:
+                        reported = UP_STATUS.get(m.group(1), Status.UNKNOWN)
+                    continue
 
-                m = RE_PDLA_PLAN_FOUND.search(line)
-                if m:
-                    solved = True
-                    num_actions = int(m.group(1))
-                    horizon = int(m.group(3))
-                    total_time = float(m.group(4))
-                    return
-
-                if RE_PLANNER_TIMEOUT.search(line):
-                    is_timeout = True
-                    return
-                if RE_SLURM_CANCEL.search(line):
-                    is_timeout = True
-                    return
-
-                m = RE_STATUS.search(line)
-                if m:
-                    status_str = m.group(1)
-                    if status_str in ("SOLVED_SATISFICING", "SOLVED_OPTIMALLY"):
-                        solved = True
-                    elif status_str == "TIMEOUT":
-                        is_timeout = True
-                    elif status_str == "INTERNAL_ERROR":
-                        is_error = True
-                    return
+                if lineno < 16 and "=" in line:
+                    m = RE_META.match(line)
+                    if m:
+                        meta.setdefault(m.group(1), m.group(2))
+                        continue
 
                 if RE_OOM.search(line):
-                    is_memout = True
-                    return
-                if RE_ERROR.search(line):
-                    is_error = True
-                    return
-
-            if line:
-                process_line(line)
-
-            for line in f:
-                process_line(line.strip())
-
+                    saw_oom = True
+                elif RE_FATAL.search(line):
+                    saw_fatal = True
     except OSError:
         return None
 
-    # Determine status with priority: SOLVED > MEMOUT > TIMEOUT > ERROR
-    if solved:
-        status = Status.SOLVED
-    elif is_memout:
-        status = Status.MEMOUT
-    elif is_timeout:
-        status = Status.TIMEOUT
-    elif is_error:
-        status = Status.ERROR
-    else:
-        # No clear status detected — likely killed by SLURM without a message
-        status = Status.TIMEOUT
+    if "domain" not in meta or "instance" not in meta or "strategy" not in meta:
+        return None
+    if exclude and any(pat in meta["strategy"] for pat in exclude):
+        return None
 
-    return SlurmJobResult(
-        domain=metadata.get("domain", "unknown"),
-        instance=metadata.get("instance", "unknown"),
-        strategy=metadata.get("strategy", "unknown"),
-        mode=metadata.get("mode", "unknown"),
+    status = _resolve_status(
+        solved=solved, reported=reported, no_plan=no_plan, exit_code=exit_code,
+        saw_oom=saw_oom, saw_fatal=saw_fatal, log_path=log_path,
+    )
+
+    wall_time = None
+    if start_clock is not None and end_clock is not None:
+        wall_time = float((end_clock - start_clock) % 86400)
+
+    return Job(
+        domain=meta["domain"],
+        instance=meta["instance"],
+        strategy=meta["strategy"],
+        mode=meta.get("mode", "unknown"),
+        schedule=meta.get("horizon-schedule", "default"),
         log_file=log_path,
         status=status,
         total_time=total_time,
+        wall_time=wall_time,
         horizon=horizon,
-        num_actions=num_actions,
-        last_memory_mb=last_memory_mb,
+        num_actions=actions,
+        last_memory_mb=last_mem,
+        exit_code=exit_code,
+        stats_file=meta.get("stats-file"),
     )
 
 
-_worker_exclude: Optional[List[str]] = None
+def _resolve_status(
+    *, solved: bool, reported: Optional[Status], no_plan: Optional[Status],
+    exit_code: Optional[int], saw_oom: bool, saw_fatal: bool, log_path: Path,
+) -> Status:
+    """Decide a job's outcome from the strongest evidence available.
+
+    Precedence: a plan was actually printed > the planner's own Status: line >
+    an explicit "no plan" verdict > the wrapper's exit code > SLURM's .err
+    notice > in-log crash markers.  Nothing is silently folded into TIMEOUT: a
+    job with no evidence at all is RUNNING (still in flight), and a job that
+    exited cleanly yet reported nothing is UNKNOWN.
+    """
+    if solved or reported == Status.SOLVED:
+        return Status.SOLVED
+    if reported is not None and reported != Status.UNKNOWN:
+        return reported
+    if no_plan is not None:
+        return no_plan
+    if exit_code is not None:
+        mapped = EXIT_STATUS.get(exit_code, Status.ERROR)
+        if mapped is not None:
+            return mapped
+        # Exit code 0 without any verdict: treat crash markers as decisive.
+        return Status.MEMOUT if saw_oom else (Status.ERROR if saw_fatal else Status.UNKNOWN)
+    from_err = _scan_err_file(log_path)
+    if from_err is not None:
+        return from_err
+    if saw_oom:
+        return Status.MEMOUT
+    if saw_fatal:
+        return Status.ERROR
+    return Status.RUNNING
 
 
-def _init_worker(exclude: Optional[List[str]]) -> None:
-    """Initializer for pool workers — sets the exclude list."""
+_worker_exclude: Optional[Sequence[str]] = None
+
+
+def _init_worker(exclude: Optional[Sequence[str]]) -> None:
     global _worker_exclude
     _worker_exclude = exclude
 
 
-def _parse_slurm_log_worker(log_path_str: str) -> Optional[SlurmJobResult]:
-    """Multiprocessing wrapper — accepts str path, returns result."""
-    return parse_slurm_log(Path(log_path_str), _worker_exclude)
+def _parse_worker(path_str: str) -> Optional[Job]:
+    return parse_log(Path(path_str), _worker_exclude)
 
 
-def parse_stats_file(stats_path: Path) -> Dict[str, float]:
-    """Parse a key: value stats file."""
-    result: Dict[str, float] = {}
+def parse_stats_file(path: Path) -> Dict[str, float]:
+    """Parse a ``key: value`` stats file, keeping only numeric values."""
+    out: Dict[str, float] = {}
     try:
-        with open(stats_path, "r") as f:
+        with open(path, "r", errors="replace") as f:
             for line in f:
-                line = line.strip()
-                if ": " in line:
-                    key, val = line.split(": ", 1)
-                    try:
-                        result[key.strip()] = float(val.strip())
-                    except ValueError:
-                        pass
+                key, sep, val = line.partition(": ")
+                if not sep:
+                    continue
+                try:
+                    out[key.strip()] = float(val.strip())
+                except ValueError:
+                    pass
     except OSError:
         pass
-    return result
+    return out
 
 
-# --- Discovery and Loading ---
+# ===========================================================================
+# Experiment assembly
+# ===========================================================================
 
-def discover_stats_files(
-    stats_dir: Path, known_strategies: List[str]
-) -> Dict[Tuple[str, str, str], Path]:
-    """Index stats files by (domain_instance, strategy, mode).
+def assign_system_labels(jobs: List[Job]) -> None:
+    """Label each job with the identity it is compared under.
 
-    Filenames: {domain}_{instance}_{strategy}_{mode}_{horizon_schedule}.stat
-    Strategy names use hyphens; other fields use underscores as separators.
+    ``prepare_batch_run.py`` sweeps modes and horizon schedules by default, but
+    neither is echoed into the log metadata.  Folding them into the label keeps
+    two schedules of the same strategy from silently overwriting each other,
+    while leaving the label as a bare strategy name for the common single-mode,
+    single-schedule run.
     """
-    index: Dict[Tuple[str, str, str], Path] = {}
-    strategies_sorted = sorted(known_strategies, key=len, reverse=True)
+    vary_mode = len({j.mode for j in jobs}) > 1
+    vary_schedule = len({j.schedule for j in jobs}) > 1
+    for j in jobs:
+        parts = [j.strategy]
+        if vary_mode:
+            parts.append(j.mode)
+        if vary_schedule:
+            parts.append(j.schedule)
+        j.system = "@".join(parts)
 
-    for p in stats_dir.glob("*.stat"):
-        stem = p.stem
-        # Strip last two _-separated segments: horizon_schedule and mode
-        parts = stem.rsplit("_", 2)
-        if len(parts) == 3:
-            rest, mode, _horizon = parts
-        elif len(parts) == 2:
-            rest, mode = parts
-        else:
+
+def attach_stats(jobs: List[Job], stats_dir: Path) -> int:
+    """Load each job's ``.stat`` file and let it refine the log-derived numbers."""
+    attached = 0
+    for job in jobs:
+        name = Path(job.stats_file).name if job.stats_file else (
+            f"{job.domain}_{job.instance}_{job.strategy}_{job.mode}_{job.schedule}.stat"
+        )
+        path = stats_dir / name
+        if not path.is_file():
             continue
-
-        # Find strategy by matching known strategies from the end
-        matched_strategy = None
-        domain_instance = None
-        for strat in strategies_sorted:
-            suffix = "_" + strat
-            if rest.endswith(suffix):
-                matched_strategy = strat
-                domain_instance = rest[: len(rest) - len(suffix)]
-                break
-
-        if not matched_strategy or not domain_instance:
+        stats = parse_stats_file(path)
+        if not stats:
             continue
+        job.stats = stats
+        attached += 1
+        if "planner.total_time" in stats:
+            job.total_time = stats["planner.total_time"]
+        if job.horizon is None and "planner.solution_horizon" in stats:
+            job.horizon = int(stats["planner.solution_horizon"])
+        if job.num_actions is None and "planner.plan_length" in stats:
+            job.num_actions = int(stats["planner.plan_length"])
+    return attached
 
-        index[(domain_instance, matched_strategy, mode)] = p
 
-    return index
+def infer_timeout(jobs: List[Job], override: Optional[float]) -> Tuple[float, str]:
+    """Determine the per-job wall-clock limit.
+
+    The wrapper stamps a start and a finish time around every task, so jobs
+    that hit the limit measure it directly — far more reliable than guessing
+    from the slowest successful run.
+    """
+    if override is not None:
+        return override, "user override"
+    killed = [j.wall_time for j in jobs
+              if j.status in (Status.TIMEOUT, Status.MEMOUT) and j.wall_time]
+    if killed:
+        return float(round(median(killed))), f"median wall time of {len(killed)} killed jobs"
+    solved = [j.total_time for j in jobs if j.status == Status.SOLVED and j.total_time]
+    if solved:
+        return max(max(solved) * 1.1, 60.0), "1.1x slowest solve (no killed jobs to measure)"
+    return 1800.0, "default (no timing evidence)"
 
 
 def load_experiment(
     logs_dir: Path,
     stats_dir: Optional[Path],
     timeout_override: Optional[float],
-    exclude_strategies: Optional[List[str]] = None,
-) -> ExperimentData:
-    """Load all SLURM logs and optionally enrich with stats."""
+    exclude: Optional[Sequence[str]] = None,
+) -> Experiment:
     log_files = sorted(logs_dir.glob("*.out"))
     if not log_files:
-        print(f"Error: no .out files found in {logs_dir}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(f"Error: no .out files found in {logs_dir}")
 
-    # Filter empty files first (cheap stat call)
     non_empty: List[Path] = []
     skipped_empty = 0
     for lf in log_files:
@@ -400,627 +535,537 @@ def load_experiment(
         else:
             non_empty.append(lf)
 
-    n_workers = min(os.cpu_count() or 1, len(non_empty))
-    print(
-        f"Parsing {len(non_empty)} log files with {n_workers} workers...",
-        file=sys.stderr,
-    )
+    workers = max(1, min(os.cpu_count() or 1, len(non_empty)))
+    print(f"Parsing {len(non_empty)} log files with {workers} workers...", file=sys.stderr)
 
-    # Parallel parsing
-    paths_str = [str(p) for p in non_empty]
-    with multiprocessing.Pool(
-        n_workers, initializer=_init_worker, initargs=(exclude_strategies,)
-    ) as pool:
-        results = pool.map(_parse_slurm_log_worker, paths_str, chunksize=64)
-
-    jobs: List[SlurmJobResult] = []
-    skipped_no_metadata = 0
-    for r in results:
-        if r is not None:
-            jobs.append(r)
-        else:
-            skipped_no_metadata += 1
-
-    print(f"Parsed {len(jobs)} jobs successfully.", file=sys.stderr)
-    if skipped_empty:
-        print(
-            f"Warning: {skipped_empty} empty log files (jobs died before producing output)",
-            file=sys.stderr,
-        )
-    if skipped_no_metadata:
-        print(
-            f"Warning: {skipped_no_metadata} files skipped (missing metadata)",
-            file=sys.stderr,
-        )
-
-    # Determine timeout
-    if timeout_override is not None:
-        timeout = timeout_override
+    paths = [str(p) for p in non_empty]
+    if workers == 1:
+        _init_worker(exclude)
+        results = [_parse_worker(p) for p in paths]
     else:
-        solved_times = [j.total_time for j in jobs if j.status == Status.SOLVED and j.total_time is not None]
-        if solved_times:
-            timeout = max(solved_times) * 1.1
-            # Round to a nice number
-            timeout = max(timeout, 60.0)
-        else:
-            timeout = 1800.0
-        print(f"Auto-detected timeout: {timeout:.0f}s", file=sys.stderr)
+        with multiprocessing.Pool(workers, initializer=_init_worker, initargs=(exclude,)) as pool:
+            results = pool.map(_parse_worker, paths, chunksize=32)
 
-    # Enrich with stats files if available
+    jobs = [r for r in results if r is not None]
+    skipped_unparsed = len(results) - len(jobs)
+    print(f"Parsed {len(jobs)} jobs.", file=sys.stderr)
+    if skipped_empty:
+        print(f"  {skipped_empty} empty log files (job died before any output)", file=sys.stderr)
+    if skipped_unparsed:
+        print(f"  {skipped_unparsed} files skipped (excluded or no recoverable metadata)",
+              file=sys.stderr)
+    if not jobs:
+        sys.exit("Error: no usable jobs — check that the logs carry the "
+                 "'domain='/'instance='/'strategy=' header or the wrapper command line.")
+
+    assign_system_labels(jobs)
+
+    # Detect genuine collisions rather than letting the index swallow them.
+    seen: Set[Tuple[str, str, str]] = set()
+    duplicates = 0
+    for j in jobs:
+        key = (j.domain, j.instance, j.system)
+        if key in seen:
+            duplicates += 1
+        seen.add(key)
+    if duplicates:
+        print(f"  Warning: {duplicates} duplicate (domain, instance, system) runs; "
+              f"the last one wins", file=sys.stderr)
+
     if stats_dir and stats_dir.is_dir():
-        known_strategies = sorted({j.strategy for j in jobs})
-        stats_index = discover_stats_files(stats_dir, known_strategies)
+        attached = attach_stats(jobs, stats_dir)
+        print(f"Attached stats to {attached}/{len(jobs)} jobs.", file=sys.stderr)
 
-        enriched = 0
-        for job in jobs:
-            if job.status != Status.SOLVED:
-                continue
-            # Build the domain_instance key the same way the filename was constructed
-            di_key = f"{job.domain}_{job.instance}"
-            key = (di_key, job.strategy, job.mode)
-            stats_path = stats_index.get(key)
-            if stats_path:
-                stats = parse_stats_file(stats_path)
-                job.stats = stats
-                if "planner.total_time" in stats:
-                    job.total_time = stats["planner.total_time"]
-                if job.horizon is None and "planner.solution_horizon" in stats:
-                    job.horizon = int(stats["planner.solution_horizon"])
-                if job.num_actions is None and "planner.plan_length" in stats:
-                    job.num_actions = int(stats["planner.plan_length"])
-                enriched += 1
+    timeout, how = infer_timeout(jobs, timeout_override)
+    print(f"Timeout: {timeout:.0f}s ({how})", file=sys.stderr)
 
-        print(f"Enriched {enriched} jobs with stats data.", file=sys.stderr)
-
-    strategies = sorted({j.strategy for j in jobs})
-    domains = sorted({j.domain for j in jobs})
-
-    data = ExperimentData(
+    exp = Experiment(
         jobs=jobs,
         timeout=timeout,
-        strategies=strategies,
-        domains=domains,
+        systems=sorted({j.system for j in jobs}),
+        domains=sorted({j.domain for j in jobs}),
         skipped_empty=skipped_empty,
-        skipped_no_metadata=skipped_no_metadata,
+        skipped_unparsed=skipped_unparsed,
+        duplicates=duplicates,
     )
-    data._build_indexes()
-    return data
+    exp.build_indexes()
+    return exp
 
 
-# --- CSV Generation ---
+# ===========================================================================
+# Metric resolution (solver-agnostic)
+# ===========================================================================
 
-def write_instances_csv(data: ExperimentData, output_path: Path) -> None:
-    """Write per-instance detail CSV."""
-    with open(output_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            "domain", "instance", "strategy", "mode", "status",
-            "total_time", "horizon", "num_actions", "last_memory_mb",
-        ])
-        for job in sorted(data.jobs, key=lambda j: (j.domain, j.instance, j.strategy)):
-            writer.writerow([
-                job.domain,
-                job.instance,
-                job.strategy,
-                job.mode,
-                job.status.value,
-                f"{job.total_time:.3f}" if job.total_time is not None else "",
-                job.horizon if job.horizon is not None else "",
-                job.num_actions if job.num_actions is not None else "",
-                job.last_memory_mb if job.last_memory_mb is not None else "",
+#: Prefixes under which an SMT solver publishes its own counters.  RantanPlan
+#: emitted ``z3.*`` before the cvc5 port and ``cvc5.*`` after it
+#: (``planners/base_planner.cpp``), with entirely different counter names, so
+#: nothing below may hardcode either spelling.
+SOLVER_PREFIXES = ("z3", "cvc5")
+
+#: (concept, label, ordered suffix patterns).  The first pattern that matches
+#: any key wins; among equally-ranked matches the shortest key is taken, which
+#: prefers the aggregate counter over its per-theory refinements.
+CONCEPTS: List[Tuple[str, str, List[str]]] = [
+    ("decisions",    "Decisions",           [r"^decisions$", r"decisions$"]),
+    ("conflicts",    "Conflicts",           [r"^conflicts$", r"conflicts$"]),
+    ("propagations", "Propagations",        [r"^propagations$", r"propagations$"]),
+    ("restarts",     "Restarts",            [r"^restarts$", r"restarts$"]),
+    ("solver_time",  "Solver time (s)",     [r"^time$", r"totalTime$", r"[-_:]time$"]),
+    ("solver_mem",   "Solver memory (MB)",  [r"^max memory$", r"^memory$", r"memory$"]),
+    ("rlimit",       "Resource count",      [r"^rlimit count$", r"rlimit", r"resource"]),
+    ("bool_vars",    "Boolean variables",   [r"^mk bool var$", r"[Vv]ariables$"]),
+    ("clauses",      "Clauses",             [r"^mk clause$", r"[Cc]lauses$"]),
+    ("lp_columns",   "LP columns",          [r"max-columns$", r"columns$"]),
+    ("lp_rows",      "LP rows",             [r"max-rows$", r"rows$"]),
+]
+
+#: Concepts that come from RantanPlan itself and are stable across solvers.
+FIXED_METRICS: Dict[str, Tuple[str, str]] = {
+    "total_time":   ("planner.total_time", "Total time (s)"),
+    "solve_time":   ("planner.solve_time", "Solve time (s)"),
+    "formula_time": ("planner.formula_time", "Formula time (s)"),
+    "peak_mem":     ("memory.current_mb", "Process memory (MB)"),
+    "plan_length":  ("planner.plan_length", "Plan length"),
+}
+
+
+class Metrics:
+    """Maps stable concept names onto whatever keys the data actually holds."""
+
+    def __init__(self, keys: Set[str]) -> None:
+        self.keys = keys
+        self.solver_prefixes = sorted(
+            p for p in SOLVER_PREFIXES if any(k.startswith(p + ".") for k in keys)
+        )
+        self._resolved: Dict[str, str] = {}
+        self._labels: Dict[str, str] = {}
+        for concept, label, patterns in CONCEPTS:
+            key = self._match(patterns)
+            if key:
+                self._resolved[concept] = key
+                self._labels[concept] = label
+        for concept, (key, label) in FIXED_METRICS.items():
+            if key in keys:
+                self._resolved[concept] = key
+                self._labels[concept] = label
+
+    def _match(self, patterns: Iterable[str]) -> Optional[str]:
+        for pattern in patterns:
+            rx = re.compile(pattern)
+            hits = [
+                k for k in self.keys
+                for prefix in self.solver_prefixes
+                if k.startswith(prefix + ".") and rx.search(k[len(prefix) + 1:])
+            ]
+            if hits:
+                return min(hits, key=lambda k: (len(k), k))
+        return None
+
+    def key(self, concept: str) -> Optional[str]:
+        return self._resolved.get(concept)
+
+    def label(self, concept: str) -> str:
+        return self._labels.get(concept, concept)
+
+    def select(self, concepts: Sequence[str]) -> List[Tuple[str, str]]:
+        """Return [(key, label)] for the concepts that resolved."""
+        return [(self._resolved[c], self._labels[c]) for c in concepts if c in self._resolved]
+
+    def describe(self) -> str:
+        if not self._resolved:
+            return "no recognisable metrics in the stats files"
+        prefixes = ", ".join(self.solver_prefixes) or "none"
+        return (f"solver prefix: {prefixes}; resolved "
+                f"{len(self._resolved)}/{len(CONCEPTS) + len(FIXED_METRICS)} concepts")
+
+
+#: Concepts used by each plotting section, in display order.
+SEARCH_CONCEPTS = ["decisions", "conflicts", "propagations", "rlimit", "solver_time"]
+ENCODING_CONCEPTS = ["bool_vars", "clauses", "lp_columns", "lp_rows"]
+SUMMARY_CONCEPTS = ["total_time", "decisions", "conflicts", "solver_mem", "bool_vars"]
+RATIO_CONCEPTS = ["total_time", "solve_time", "solver_time", "decisions",
+                  "conflicts", "propagations", "restarts", "rlimit",
+                  "bool_vars", "clauses"]
+AGGREGATE_CONCEPTS = ["total_time", "solve_time", "solver_time", "decisions",
+                      "conflicts", "propagations", "restarts", "rlimit", "solver_mem"]
+
+
+def discover_time_components(exp: Experiment, metrics: Metrics) -> List[Tuple[str, str, float]]:
+    """Auto-discover (key, label, scale) time components from the stats keys.
+
+    Pass timings are named ``pass.<name>.time_ms`` and appear and disappear as
+    the pipeline changes, so they are discovered rather than listed.
+    """
+    components: List[Tuple[str, str, float]] = []
+    solver_time = metrics.key("solver_time")
+    if solver_time:
+        components.append((solver_time, "Solver", 1.0))
+    for key in sorted(exp.stat_keys()):
+        if key.startswith("pass.") and key.endswith(".time_ms"):
+            components.append((key, key[len("pass."):-len(".time_ms")], 0.001))
+        elif key == "achievers_analysis.total_time_seconds":
+            components.append((key, "achievers", 1.0))
+    return components
+
+
+# ===========================================================================
+# CSV output
+# ===========================================================================
+
+def _fmt(value: Optional[float], spec: str = ".6g") -> str:
+    return format(value, spec) if value is not None else ""
+
+
+def write_instances_csv(exp: Experiment, path: Path) -> None:
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["domain", "instance", "system", "strategy", "mode", "schedule",
+                    "status", "total_time", "wall_time", "horizon", "num_actions",
+                    "last_memory_mb", "exit_code", "log_file"])
+        for j in sorted(exp.jobs, key=lambda j: (j.domain, j.instance, j.system)):
+            w.writerow([
+                j.domain, j.instance, j.system, j.strategy, j.mode, j.schedule,
+                j.status.value, _fmt(j.total_time, ".3f"), _fmt(j.wall_time, ".0f"),
+                j.horizon if j.horizon is not None else "",
+                j.num_actions if j.num_actions is not None else "",
+                j.last_memory_mb if j.last_memory_mb is not None else "",
+                j.exit_code if j.exit_code is not None else "",
+                j.log_file.name,
             ])
-    print(f"Wrote {output_path}", file=sys.stderr)
+    print(f"Wrote {path}", file=sys.stderr)
 
 
-def write_summary_by_domain_csv(data: ExperimentData, output_path: Path) -> None:
-    """Write per-domain summary CSV."""
-    with open(output_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        # Header
+def _tally(jobs: Sequence[Job]) -> List[int]:
+    counts = {s: 0 for s in Status}
+    for j in jobs:
+        counts[j.status] += 1
+    return [counts[s] for s in Status] + [len(jobs)]
+
+
+_TALLY_HEADERS = [s.value for s in Status] + ["total"]
+
+
+def write_summary_by_domain_csv(exp: Experiment, path: Path) -> None:
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
         header = ["domain"]
-        for s in data.strategies:
-            header.extend([f"{s}_solved", f"{s}_timeout", f"{s}_memout", f"{s}_error", f"{s}_total"])
-        writer.writerow(header)
-
-        for domain in data.domains:
-            row = [domain]
-            for strategy in data.strategies:
-                domain_jobs = data.get_jobs_by_domain_strategy(domain, strategy)
-                solved = sum(1 for j in domain_jobs if j.status == Status.SOLVED)
-                timeout = sum(1 for j in domain_jobs if j.status == Status.TIMEOUT)
-                memout = sum(1 for j in domain_jobs if j.status == Status.MEMOUT)
-                error = sum(1 for j in domain_jobs if j.status == Status.ERROR)
-                row.extend([solved, timeout, memout, error, len(domain_jobs)])
-            writer.writerow(row)
-    print(f"Wrote {output_path}", file=sys.stderr)
+        for s in exp.systems:
+            header.extend(f"{s}_{h}" for h in _TALLY_HEADERS)
+        w.writerow(header)
+        for domain in exp.domains:
+            row: List[object] = [domain]
+            for system in exp.systems:
+                row.extend(_tally(exp.by_domain_system(domain, system)))
+            w.writerow(row)
+    print(f"Wrote {path}", file=sys.stderr)
 
 
-def write_summary_overall_csv(data: ExperimentData, output_path: Path) -> None:
-    """Write overall summary CSV."""
-    with open(output_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["strategy", "solved", "timeout", "memout", "error", "total"])
-        for strategy in data.strategies:
-            strat_jobs = data.get_jobs_by_strategy(strategy)
-            solved = sum(1 for j in strat_jobs if j.status == Status.SOLVED)
-            timeout = sum(1 for j in strat_jobs if j.status == Status.TIMEOUT)
-            memout = sum(1 for j in strat_jobs if j.status == Status.MEMOUT)
-            error = sum(1 for j in strat_jobs if j.status == Status.ERROR)
-            writer.writerow([strategy, solved, timeout, memout, error, len(strat_jobs)])
-        skipped = data.skipped_empty + data.skipped_no_metadata
+def write_summary_overall_csv(exp: Experiment, path: Path) -> None:
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["system"] + _TALLY_HEADERS + ["mean_solve_time", "median_solve_time"])
+        for system in exp.systems:
+            jobs = exp.by_system(system)
+            times = sorted(j.total_time for j in jobs
+                           if j.status == Status.SOLVED and j.total_time is not None)
+            mean = sum(times) / len(times) if times else None
+            med = median(times) if times else None
+            w.writerow([system] + _tally(jobs) + [_fmt(mean, ".3f"), _fmt(med, ".3f")])
+        skipped = exp.skipped_empty + exp.skipped_unparsed
         if skipped:
-            writer.writerow([f"(unparseable: {skipped} log files)", "", "", "", "", skipped])
-    print(f"Wrote {output_path}", file=sys.stderr)
+            w.writerow([f"(unparseable: {skipped} log files)"] +
+                       [""] * len(_TALLY_HEADERS) + ["", ""])
+    print(f"Wrote {path}", file=sys.stderr)
 
 
-# --- Plotting ---
+def write_stats_full_csv(exp: Experiment, path: Path) -> None:
+    keys = sorted(exp.stat_keys())
+    if not keys:
+        return
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["domain", "instance", "system", "status", "total_time"] + keys)
+        for j in sorted(exp.jobs, key=lambda j: (j.domain, j.instance, j.system)):
+            if not j.stats:
+                continue
+            w.writerow([j.domain, j.instance, j.system, j.status.value,
+                        _fmt(j.total_time, ".3f")] +
+                       [_fmt(j.stats.get(k)) for k in keys])
+    print(f"Wrote {path}", file=sys.stderr)
+
+
+def write_solver_comparison_csv(exp: Experiment, metrics: Metrics, path: Path) -> None:
+    """Resolved metrics, one row per instance, one column block per system."""
+    selected = metrics.select(AGGREGATE_CONCEPTS)
+    if not selected:
+        return
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        header = ["domain", "instance"]
+        for system in exp.systems:
+            header.extend(f"{system}|{label}" for _, label in selected)
+        w.writerow(header)
+        for domain, instance in exp.instance_keys():
+            present = {s: exp.job_for(domain, instance, s) for s in exp.systems}
+            present = {s: j for s, j in present.items()
+                       if j and j.status == Status.SOLVED and j.stats}
+            if len(present) < 2:
+                continue
+            row: List[str] = [domain, instance]
+            for system in exp.systems:
+                job = present.get(system)
+                row.extend(_fmt(job.stats.get(k)) if job else "" for k, _ in selected)
+            w.writerow(row)
+    print(f"Wrote {path}", file=sys.stderr)
+
+
+def write_variant_impact_csv(exp: Experiment, metrics: Metrics, path: Path) -> None:
+    pairs = discover_variant_pairs(exp.systems)
+    if not pairs:
+        return
+    selected = metrics.select(RATIO_CONCEPTS)
+    extra_keys = sorted({k for base, ext, _ in pairs
+                         for k in variant_only_keys(exp, base, ext)})
+
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        header = ["domain", "instance", "base", "variant", "suffix"]
+        for _, label in selected:
+            header.extend([f"base|{label}", f"variant|{label}", f"ratio|{label}"])
+        header.extend(f"variant|{k}" for k in extra_keys)
+        w.writerow(header)
+        for base, ext, suffix in pairs:
+            for domain, instance, jb, je in common_solved(exp, base, ext):
+                row: List[str] = [domain, instance, base, ext, suffix]
+                for key, _ in selected:
+                    vb, ve = jb.stats.get(key), je.stats.get(key)
+                    row.extend([_fmt(vb), _fmt(ve),
+                                _fmt(ve / vb, ".4f") if vb and ve is not None else ""])
+                row.extend(_fmt(je.stats.get(k)) for k in extra_keys)
+                w.writerow(row)
+    print(f"Wrote {path}", file=sys.stderr)
+
+
+def write_domain_aggregate_csv(exp: Experiment, metrics: Metrics, path: Path) -> None:
+    selected = metrics.select(AGGREGATE_CONCEPTS)
+    if not selected:
+        return
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        header = ["domain", "system", "n_solved"]
+        for _, label in selected:
+            header.extend([f"median|{label}", f"mean|{label}"])
+        w.writerow(header)
+        for domain in exp.domains:
+            for system in exp.systems:
+                jobs = [j for j in exp.by_domain_system(domain, system)
+                        if j.status == Status.SOLVED and j.stats]
+                if not jobs:
+                    continue
+                row: List[str] = [domain, system, str(len(jobs))]
+                for key, _ in selected:
+                    vals = [j.stats[key] for j in jobs if key in j.stats]
+                    if vals:
+                        row.extend([_fmt(median(vals)), _fmt(sum(vals) / len(vals))])
+                    else:
+                        row.extend(["", ""])
+                w.writerow(row)
+    print(f"Wrote {path}", file=sys.stderr)
+
+
+# ===========================================================================
+# Analysis helpers
+# ===========================================================================
+
+def discover_variant_pairs(systems: Sequence[str]) -> List[Tuple[str, str, str]]:
+    """Find (base, variant, suffix) triples where one name extends another with
+    a dash suffix, e.g. ``els`` / ``els-fp``."""
+    pairs: List[Tuple[str, str, str]] = []
+    ordered = sorted(systems, key=len)
+    for i, base in enumerate(ordered):
+        for ext in ordered[i + 1:]:
+            if ext.startswith(base + "-"):
+                pairs.append((base, ext, ext[len(base) + 1:]))
+    return pairs
+
+
+def common_solved(exp: Experiment, a: str, b: str) -> List[Tuple[str, str, Job, Job]]:
+    """Instances solved by both systems, both carrying stats."""
+    out: List[Tuple[str, str, Job, Job]] = []
+    for domain, instance in exp.instance_keys():
+        ja = exp.job_for(domain, instance, a)
+        jb = exp.job_for(domain, instance, b)
+        if (ja and jb and ja.status == Status.SOLVED and jb.status == Status.SOLVED
+                and ja.stats and jb.stats):
+            out.append((domain, instance, ja, jb))
+    return out
+
+
+def variant_only_keys(exp: Experiment, base: str, variant: str) -> Set[str]:
+    """Stat keys whose prefix exists for the variant but not for the base —
+    i.e. counters the extra component contributes."""
+    def prefixes(system: str) -> Set[str]:
+        return {k.split(".", 1)[0] for j in exp.by_system(system) for k in j.stats}
+    only = prefixes(variant) - prefixes(base)
+    return {k for j in exp.by_system(variant) for k in j.stats
+            if k.split(".", 1)[0] in only}
+
+
+# ===========================================================================
+# Plotting
+# ===========================================================================
 
 MARKERS = ["o", "s", "^", "D", "v", "P", "X", "*", "p", "h", "<", ">", "d", "H", "8"]
 
 
-def get_strategy_colors(strategies: List[str]) -> Dict[str, object]:
-    """Assign consistent colors to strategies."""
+def system_colors(systems: Sequence[str]) -> Dict[str, object]:
     cmap = matplotlib.colormaps["tab10"]
-    return {s: cmap(i % 10) for i, s in enumerate(strategies)}
+    return {s: cmap(i % 10) for i, s in enumerate(systems)}
 
 
-def get_domain_styles(domains: List[str]) -> Dict[str, Tuple[str, object]]:
-    """Assign (marker, color) pairs to domains."""
+def domain_styles(domains: Sequence[str]) -> Dict[str, Tuple[str, object]]:
     cmap = matplotlib.colormaps["tab20"]
-    styles: Dict[str, Tuple[str, object]] = {}
-    for i, d in enumerate(domains):
-        marker = MARKERS[i % len(MARKERS)]
-        color = cmap(i % 20)
-        styles[d] = (marker, color)
-    return styles
+    return {d: (MARKERS[i % len(MARKERS)], cmap(i % 20)) for i, d in enumerate(domains)}
 
 
-def _plot_cactus(
-    data: ExperimentData, output_path: Path, log_scale: bool
-) -> None:
-    """Generate survival/cactus plot with the given y-axis scale."""
-    colors = get_strategy_colors(data.strategies)
+def _solved_times(exp: Experiment, system: str) -> List[float]:
+    return sorted(j.total_time for j in exp.by_system(system)
+                  if j.status == Status.SOLVED and j.total_time is not None)
 
+
+def plot_cactus(exp: Experiment, path: Path, log_scale: bool) -> None:
+    """Classic survival plot: cumulative instances solved against time."""
+    colors = system_colors(exp.systems)
     fig, ax = plt.subplots(figsize=(12, 7))
+    total = len(exp.instance_keys())
 
-    instance_keys = data.instance_keys()
+    for system in exp.systems:
+        times = _solved_times(exp, system)
+        if not times:
+            continue
+        ax.plot(range(1, len(times) + 1), times, marker="o", markersize=3,
+                label=f"{system} ({len(times)})", color=colors[system])
 
-    for strategy in data.strategies:
-        # Collect solving times; unsolved instances get the timeout value
-        times: List[float] = []
-        for domain, instance in instance_keys:
-            job = data.job_for(domain, instance, strategy)
-            if job is not None and job.status == Status.SOLVED and job.total_time is not None:
-                times.append(job.total_time)
-            else:
-                times.append(data.timeout)
-        times.sort()
-        x = list(range(1, len(times) + 1))
-        ax.plot(x, times, marker="o", markersize=4, label=strategy, color=colors[strategy])
-
-    ax.axhline(
-        y=data.timeout, color="gray", linestyle="--", linewidth=0.8,
-        label=f"timeout ({data.timeout:.0f}s)",
-    )
-    ax.set_xlabel("Number of instances solved")
+    ax.axhline(y=exp.timeout, color="gray", linestyle="--", linewidth=0.8,
+               label=f"timeout ({exp.timeout:.0f}s)")
+    ax.set_xlabel(f"Instances solved (of {total})")
     ax.set_ylabel("Time (s)")
     if log_scale:
         ax.set_yscale("log")
-        ax.set_title("Survival Plot (log scale)")
-    else:
-        ax.set_title("Survival Plot (linear scale)")
-    ax.legend(fontsize=9, loc="best")
+    ax.set_title(f"Survival plot ({'log' if log_scale else 'linear'} scale)")
+    ax.legend(fontsize=8, loc="best")
     ax.grid(True, which="both", alpha=0.3)
     fig.tight_layout()
-
-    fig.savefig(str(output_path))
+    fig.savefig(str(path))
     plt.close(fig)
-    print(f"Wrote {output_path}", file=sys.stderr)
+    print(f"Wrote {path}", file=sys.stderr)
 
 
-def plot_cactus(data: ExperimentData, output_path: Path) -> None:
-    """Generate survival/cactus plot (log scale)."""
-    _plot_cactus(data, output_path, log_scale=True)
+def _draw_by_domain(ax: plt.Axes, points: Dict[str, Tuple[List[float], List[float]]],
+                    styles: Dict[str, Tuple[str, object]], size: int) -> None:
+    """One scatter call per domain rather than per point — with a few hundred
+    instances per pair and dozens of pairs, per-point calls dominate runtime."""
+    for domain in sorted(points):
+        xs, ys = points[domain]
+        marker, color = styles.get(domain, ("o", "gray"))
+        ax.scatter(xs, ys, marker=marker, color=color, s=size, alpha=0.7,
+                   label=domain, edgecolors="none")
 
 
-def plot_cactus_linear(data: ExperimentData, output_path: Path) -> None:
-    """Generate survival/cactus plot (linear scale)."""
-    _plot_cactus(data, output_path, log_scale=False)
+def _runtime_points(exp: Experiment, a: str, b: str
+                    ) -> Dict[str, Tuple[List[float], List[float]]]:
+    """Runtime of both systems per instance; unsolved runs sit at the timeout.
 
-
-def plot_scatter_pair(
-    data: ExperimentData,
-    strategy_a: str,
-    strategy_b: str,
-    ax: plt.Axes,
-    log_scale: bool,
-    timeout: float,
-    domain_styles: Dict[str, Tuple[str, object]],
-) -> None:
-    """Plot a single scatter comparison on the given axes."""
-    instance_keys = data.instance_keys()
-
-    plotted_domains: Dict[str, bool] = {}
-
-    for domain, instance in instance_keys:
-        job_a = data.job_for(domain, instance, strategy_a)
-        job_b = data.job_for(domain, instance, strategy_b)
-        if job_a is None or job_b is None:
+    Runs with no verdict yet (still in flight) are left out entirely — plotting
+    them at the timeout would read as a failure they have not earned.
+    """
+    timeout = exp.timeout
+    points: Dict[str, Tuple[List[float], List[float]]] = {}
+    for domain, instance in exp.instance_keys():
+        ja = exp.job_for(domain, instance, a)
+        jb = exp.job_for(domain, instance, b)
+        if ja is None or jb is None:
             continue
+        if ja.status == Status.RUNNING or jb.status == Status.RUNNING:
+            continue
+        ta = ja.total_time if ja.status == Status.SOLVED and ja.total_time else timeout
+        tb = jb.total_time if jb.status == Status.SOLVED and jb.total_time else timeout
+        xs, ys = points.setdefault(domain, ([], []))
+        xs.append(ta)
+        ys.append(tb)
+    return points
 
-        time_a = job_a.total_time if job_a.status == Status.SOLVED and job_a.total_time is not None else timeout
-        time_b = job_b.total_time if job_b.status == Status.SOLVED and job_b.total_time is not None else timeout
 
-        marker, color = domain_styles.get(domain, ("o", "gray"))
-        label = domain if domain not in plotted_domains else None
-        plotted_domains[domain] = True
+def _scatter_pair(ax: plt.Axes, exp: Experiment, a: str, b: str, log_scale: bool,
+                  styles: Dict[str, Tuple[str, object]],
+                  points: Dict[str, Tuple[List[float], List[float]]]) -> None:
+    timeout = exp.timeout
+    _draw_by_domain(ax, points, styles, size=30)
 
-        ax.scatter(
-            time_a, time_b,
-            marker=marker, color=color, s=30, alpha=0.7,
-            label=label, edgecolors="none",
-        )
-
-    # Diagonal reference line
-    if log_scale:
-        lo = 0.01
-    else:
-        lo = 0
+    lo = 0.01 if log_scale else 0.0
     hi = timeout * 1.1
     ax.plot([lo, hi], [lo, hi], "k--", linewidth=0.5, alpha=0.5)
-
-    # Timeout reference lines
     ax.axhline(y=timeout, color="gray", linestyle=":", linewidth=0.5, alpha=0.5)
     ax.axvline(x=timeout, color="gray", linestyle=":", linewidth=0.5, alpha=0.5)
-
-    ax.set_xlabel(strategy_a)
-    ax.set_ylabel(strategy_b)
-
+    ax.set_xlabel(f"{a} time (s)")
+    ax.set_ylabel(f"{b} time (s)")
+    ax.set_title(f"{a} vs {b} ({'log' if log_scale else 'linear'})")
     if log_scale:
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_title(f"{strategy_a} vs {strategy_b} (log)")
-    else:
-        ax.set_title(f"{strategy_a} vs {strategy_b} (linear)")
-
-    ax.set_xlim(left=lo if log_scale else -timeout * 0.02, right=hi)
-    ax.set_ylim(bottom=lo if log_scale else -timeout * 0.02, top=hi)
+    ax.set_xlim(lo if log_scale else -timeout * 0.02, hi)
+    ax.set_ylim(lo if log_scale else -timeout * 0.02, hi)
     ax.set_aspect("equal", adjustable="box")
     ax.grid(True, which="both", alpha=0.3)
 
 
-def plot_all_scatters(data: ExperimentData, output_dir: Path) -> None:
-    """Generate all pairwise scatter plots."""
-    domain_styles = get_domain_styles(data.domains)
-    pairs = list(combinations(data.strategies, 2))
-
-    for strategy_a, strategy_b in pairs:
-        fig, (ax_lin, ax_log) = plt.subplots(1, 2, figsize=(16, 7))
-
-        plot_scatter_pair(data, strategy_a, strategy_b, ax_lin, False, data.timeout, domain_styles)
-        plot_scatter_pair(data, strategy_a, strategy_b, ax_log, True, data.timeout, domain_styles)
-
-        # Shared legend from log axis
-        handles, labels = ax_log.get_legend_handles_labels()
-        if handles:
-            fig.legend(
-                handles, labels,
-                loc="center right",
-                fontsize=7,
-                bbox_to_anchor=(1.0, 0.5),
-                ncol=1,
-            )
-
-        fig.suptitle(f"{strategy_a} vs {strategy_b}", fontsize=13)
-        fig.tight_layout(rect=[0, 0, 0.85, 0.95])
-
-        safe_a = strategy_a.replace("/", "_")
-        safe_b = strategy_b.replace("/", "_")
-        path = output_dir / f"scatter_{safe_a}_vs_{safe_b}.pdf"
-        fig.savefig(str(path))
-        plt.close(fig)
-        print(f"Wrote {path}", file=sys.stderr)
-
-
-# --- Stats Analysis: Discovery ---
-
-
-def get_stat(job: SlurmJobResult, key: str, default: float = 0.0) -> float:
-    """Get a stat value, defaulting to 0 for missing Z3 counters."""
-    return job.stats.get(key, default)
-
-
-def discover_stat_prefixes(data: ExperimentData) -> Dict[str, Set[str]]:
-    """Map stat key prefix -> set of strategies that have keys with that prefix."""
-    result: Dict[str, Set[str]] = {}
-    for job in data.jobs:
-        if not job.stats:
-            continue
-        for key in job.stats:
-            prefix = key.split(".")[0]
-            if prefix not in result:
-                result[prefix] = set()
-            result[prefix].add(job.strategy)
-    return result
-
-
-def discover_strategy_pairs(
-    strategies: List[str],
-) -> List[Tuple[str, str, str]]:
-    """Find pairs where one strategy name is a dash-suffix extension of another.
-    Returns [(base, extended, suffix), ...]."""
-    pairs: List[Tuple[str, str, str]] = []
-    sorted_strats = sorted(strategies, key=len)
-    for i, base in enumerate(sorted_strats):
-        for extended in sorted_strats[i + 1 :]:
-            if extended.startswith(base + "-"):
-                suffix = extended[len(base) + 1 :]
-                pairs.append((base, extended, suffix))
-    return pairs
-
-
-def get_common_solved(
-    data: ExperimentData, strategy_a: str, strategy_b: str
-) -> List[Tuple[str, str, SlurmJobResult, SlurmJobResult]]:
-    """Return [(domain, instance, job_a, job_b)] for instances solved by both with stats."""
-    results: List[Tuple[str, str, SlurmJobResult, SlurmJobResult]] = []
-    for domain, instance in data.instance_keys():
-        job_a = data.job_for(domain, instance, strategy_a)
-        job_b = data.job_for(domain, instance, strategy_b)
-        if (
-            job_a is not None
-            and job_b is not None
-            and job_a.status == Status.SOLVED
-            and job_b.status == Status.SOLVED
-            and job_a.stats
-            and job_b.stats
-        ):
-            results.append((domain, instance, job_a, job_b))
-    return results
-
-
-# --- Stats Analysis: CSV Generation ---
-
-
-def write_stats_full_csv(data: ExperimentData, output_path: Path) -> None:
-    """Write complete stats dump: one row per solved job with stats."""
-    all_keys = sorted({k for job in data.jobs for k in job.stats})
-    if not all_keys:
-        return
-    with open(output_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            ["domain", "instance", "strategy", "mode", "status", "total_time"]
-            + all_keys
-        )
-        for job in sorted(
-            data.jobs, key=lambda j: (j.domain, j.instance, j.strategy)
-        ):
-            if not job.stats:
-                continue
-            row = [
-                job.domain,
-                job.instance,
-                job.strategy,
-                job.mode,
-                job.status.value,
-                f"{job.total_time:.3f}" if job.total_time is not None else "",
-            ]
-            for key in all_keys:
-                val = job.stats.get(key)
-                row.append(f"{val:.6g}" if val is not None else "")
-            writer.writerow(row)
-    print(f"Wrote {output_path}", file=sys.stderr)
-
-
-def write_z3_comparison_csv(data: ExperimentData, output_path: Path) -> None:
-    """Write Z3 metrics side-by-side for commonly-solved instances."""
-    z3_keys = sorted(
-        {k for job in data.jobs for k in job.stats if k.startswith("z3.")}
-    )
-    if not z3_keys:
-        return
-    with open(output_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        header = ["domain", "instance"]
-        for s in data.strategies:
-            for k in z3_keys:
-                header.append(f"{s}|{k}")
-        writer.writerow(header)
-
-        for domain, instance in data.instance_keys():
-            jobs: Dict[str, SlurmJobResult] = {}
-            for s in data.strategies:
-                j = data.job_for(domain, instance, s)
-                if j and j.status == Status.SOLVED and j.stats:
-                    jobs[s] = j
-            if len(jobs) < 2:
-                continue
-            row: List[str] = [domain, instance]
-            for s in data.strategies:
-                j = jobs.get(s)
-                for k in z3_keys:
-                    if j:
-                        val = j.stats.get(k)
-                        row.append(f"{val:.6g}" if val is not None else "")
-                    else:
-                        row.append("")
-            writer.writerow(row)
-    print(f"Wrote {output_path}", file=sys.stderr)
-
-
-def write_propagator_impact_csv(data: ExperimentData, output_path: Path) -> None:
-    """Write propagator impact analysis for auto-discovered strategy pairs."""
-    pairs = discover_strategy_pairs(data.strategies)
+def plot_runtime_scatters(exp: Experiment, path: Path) -> None:
+    """All pairwise runtime scatters, one page per pair."""
+    styles = domain_styles(exp.domains)
+    pairs = list(combinations(exp.systems, 2))
     if not pairs:
         return
-    prefixes = discover_stat_prefixes(data)
-
-    ratio_keys = [
-        "planner.total_time",
-        "planner.solve_time",
-        "z3.time",
-        "z3.decisions",
-        "z3.conflicts",
-        "z3.propagations",
-        "z3.restarts",
-        "z3.rlimit count",
-        "z3.mk bool var",
-        "z3.mk clause",
-    ]
-
-    # Collect propagator-specific keys (present in extended but not base)
-    prop_keys: Set[str] = set()
-    for base, extended, _ in pairs:
-        for job in data.jobs:
-            if job.strategy == extended and job.stats:
-                for k in job.stats:
-                    prefix = k.split(".")[0]
-                    strats_with = prefixes.get(prefix, set())
-                    if extended in strats_with and base not in strats_with:
-                        prop_keys.add(k)
-    prop_keys_sorted = sorted(prop_keys)
-
-    with open(output_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        header = ["domain", "instance", "base", "extended", "suffix"]
-        for k in ratio_keys:
-            header.extend([f"base|{k}", f"extended|{k}", f"ratio|{k}"])
-        header.extend([f"extended|{k}" for k in prop_keys_sorted])
-        writer.writerow(header)
-
-        for base, extended, suffix in pairs:
-            common = get_common_solved(data, base, extended)
-            for domain, instance, job_base, job_ext in common:
-                row: List[str] = [domain, instance, base, extended, suffix]
-                for k in ratio_keys:
-                    vb = job_base.stats.get(k)
-                    ve = job_ext.stats.get(k)
-                    row.append(f"{vb:.6g}" if vb is not None else "")
-                    row.append(f"{ve:.6g}" if ve is not None else "")
-                    if vb is not None and ve is not None and vb > 0:
-                        row.append(f"{ve / vb:.4f}")
-                    else:
-                        row.append("")
-                for k in prop_keys_sorted:
-                    ve = job_ext.stats.get(k)
-                    row.append(f"{ve:.6g}" if ve is not None else "")
-                writer.writerow(row)
-    print(f"Wrote {output_path}", file=sys.stderr)
+    with PdfPages(str(path)) as pdf:
+        for a, b in pairs:
+            points = _runtime_points(exp, a, b)
+            fig, (ax_lin, ax_log) = plt.subplots(1, 2, figsize=(16, 7))
+            _scatter_pair(ax_lin, exp, a, b, False, styles, points)
+            _scatter_pair(ax_log, exp, a, b, True, styles, points)
+            _shared_legend(fig, ax_log)
+            fig.suptitle(f"Runtime: {a} vs {b}", fontsize=13)
+            fig.tight_layout(rect=(0, 0, 0.85, 0.95))
+            pdf.savefig(fig)
+            plt.close(fig)
+    print(f"Wrote {path} ({len(pairs)} pages)", file=sys.stderr)
 
 
-def write_domain_aggregate_csv(data: ExperimentData, output_path: Path) -> None:
-    """Write per-domain aggregated Z3 metrics."""
-    agg_keys = [
-        "planner.total_time",
-        "planner.solve_time",
-        "z3.time",
-        "z3.decisions",
-        "z3.conflicts",
-        "z3.propagations",
-        "z3.restarts",
-        "z3.rlimit count",
-        "z3.max memory",
-    ]
-    with open(output_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        header = ["domain", "strategy", "n_solved"]
-        for k in agg_keys:
-            header.extend([f"median|{k}", f"mean|{k}"])
-        writer.writerow(header)
-
-        for domain in data.domains:
-            for strategy in data.strategies:
-                jobs = [
-                    j
-                    for j in data.get_jobs_by_domain_strategy(domain, strategy)
-                    if j.status == Status.SOLVED and j.stats
-                ]
-                if not jobs:
-                    continue
-                row: List[str] = [domain, strategy, str(len(jobs))]
-                for k in agg_keys:
-                    vals = [j.stats[k] for j in jobs if k in j.stats]
-                    if vals:
-                        vals_sorted = sorted(vals)
-                        med = vals_sorted[len(vals) // 2]
-                        mean = sum(vals) / len(vals)
-                        row.extend([f"{med:.6g}", f"{mean:.6g}"])
-                    else:
-                        row.extend(["", ""])
-                writer.writerow(row)
-    print(f"Wrote {output_path}", file=sys.stderr)
+def _shared_legend(fig, ax, loc: str = "center right") -> None:
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc=loc, fontsize=7,
+                   bbox_to_anchor=(1.0, 0.5), ncol=max(1, len(labels) // 18 + 1))
 
 
-# --- Stats Analysis: Plots ---
-
-Z3_SCATTER_METRICS = [
-    ("z3.decisions", "Decisions"),
-    ("z3.conflicts", "Conflicts"),
-    ("z3.propagations", "Propagations"),
-    ("z3.rlimit count", "RLimit Count"),
-    ("z3.time", "Z3 Time (s)"),
-]
-
-ENCODING_METRICS = [
-    ("z3.mk bool var", "Boolean Variables"),
-    ("z3.mk clause", "Clauses (non-binary)"),
-    ("z3.arith-max-columns", "LP Columns"),
-    ("z3.arith-max-rows", "LP Rows"),
-]
-
-TIME_COMPONENTS = [
-    ("z3.time", "Z3 solving", 1.0),
-    ("achievers_analysis.total_time_seconds", "Achiever analysis", 1.0),
-    ("pass.grounding.time_ms", "Grounding", 0.001),
-    ("pass.interference.time_ms", "Interference", 0.001),
-    ("pass.numeric-rpg.time_ms", "Numeric RPG", 0.001),
-]
-
-DOMAIN_SUMMARY_METRICS = [
-    ("planner.total_time", "Total Time (s)"),
-    ("z3.decisions", "Z3 Decisions"),
-    ("z3.conflicts", "Z3 Conflicts"),
-    ("z3.max memory", "Z3 Memory (MB)"),
-    ("z3.mk bool var", "Boolean Vars"),
-]
-
-
-def _plot_metric_scatter(
-    ax: plt.Axes,
-    common: List[Tuple[str, str, SlurmJobResult, SlurmJobResult]],
-    metric_key: str,
-    title: str,
-    xlabel: str,
-    ylabel: str,
-    domain_styles: Dict[str, Tuple[str, object]],
-) -> bool:
-    """Plot a log-scale scatter comparing a metric between two sets of jobs.
-    Returns True if any points were plotted."""
-    plotted_domains: Dict[str, bool] = {}
-    all_vals: List[float] = []
-
-    for domain, instance, job_a, job_b in common:
-        va = job_a.stats.get(metric_key, 0)
-        vb = job_b.stats.get(metric_key, 0)
+def _metric_scatter(ax: plt.Axes, common: Sequence[Tuple[str, str, Job, Job]],
+                    key: str, title: str, xlabel: str, ylabel: str,
+                    styles: Dict[str, Tuple[str, object]]) -> bool:
+    """Log-log scatter of one metric between two systems.  False if empty."""
+    points: Dict[str, Tuple[List[float], List[float]]] = {}
+    values: List[float] = []
+    for domain, _instance, ja, jb in common:
+        va, vb = ja.stats.get(key, 0.0), jb.stats.get(key, 0.0)
         if va <= 0 or vb <= 0:
             continue
-        all_vals.extend([va, vb])
-        marker, color = domain_styles.get(domain, ("o", "gray"))
-        label = domain if domain not in plotted_domains else None
-        plotted_domains[domain] = True
-        ax.scatter(
-            va, vb,
-            marker=marker, color=color, s=25, alpha=0.7,
-            label=label, edgecolors="none",
-        )
-
-    if not all_vals:
+        values.extend((va, vb))
+        xs, ys = points.setdefault(domain, ([], []))
+        xs.append(va)
+        ys.append(vb)
+    if not values:
         ax.set_visible(False)
         return False
-
-    lo = max(min(all_vals) * 0.5, 1e-4)
-    hi = max(all_vals) * 2
+    _draw_by_domain(ax, points, styles, size=25)
+    lo = max(min(values) * 0.5, 1e-4)
+    hi = max(values) * 2
     ax.plot([lo, hi], [lo, hi], "k--", linewidth=0.5, alpha=0.5)
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -1034,536 +1079,387 @@ def _plot_metric_scatter(
     return True
 
 
-def plot_z3_metric_scatters(data: ExperimentData, pdf: PdfPages) -> None:
-    """Z3 metric scatter plots for each strategy pair."""
-    domain_styles = get_domain_styles(data.domains)
-    pairs = list(combinations(data.strategies, 2))
-
-    for strategy_a, strategy_b in pairs:
-        common = get_common_solved(data, strategy_a, strategy_b)
-        if len(common) < 2:
-            continue
-
-        n_metrics = len(Z3_SCATTER_METRICS)
-        ncols = 3
-        nrows = (n_metrics + ncols - 1) // ncols
-        fig, axes = plt.subplots(
-            nrows, ncols, figsize=(6 * ncols, 5.5 * nrows), squeeze=False
-        )
-        axes_flat = axes.flatten()
-
-        any_plotted = False
-        for idx, (metric_key, metric_label) in enumerate(Z3_SCATTER_METRICS):
-            if _plot_metric_scatter(
-                axes_flat[idx], common, metric_key, metric_label,
-                strategy_a, strategy_b, domain_styles,
-            ):
-                any_plotted = True
-
-        for idx in range(n_metrics, len(axes_flat)):
-            axes_flat[idx].set_visible(False)
-
-        if not any_plotted:
-            plt.close(fig)
-            continue
-
-        handles, labels = axes_flat[0].get_legend_handles_labels()
-        if handles:
-            fig.legend(
-                handles, labels, loc="lower right", fontsize=7,
-                bbox_to_anchor=(0.98, 0.02),
-                ncol=max(1, len(labels) // 15 + 1),
-            )
-
-        fig.suptitle(f"Z3 Metrics: {strategy_a} vs {strategy_b}", fontsize=13)
-        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
-        pdf.savefig(fig)
+def _metric_grid(pdf: PdfPages, common: Sequence[Tuple[str, str, Job, Job]],
+                 selected: Sequence[Tuple[str, str]], a: str, b: str,
+                 styles: Dict[str, Tuple[str, object]], title: str,
+                 ncols: int = 3) -> None:
+    ncols = min(ncols, len(selected))
+    nrows = (len(selected) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 5.5 * nrows), squeeze=False)
+    flat = axes.flatten()
+    plotted = False
+    for idx, (key, label) in enumerate(selected):
+        if _metric_scatter(flat[idx], common, key, label, a, b, styles):
+            plotted = True
+    for idx in range(len(selected), len(flat)):
+        flat[idx].set_visible(False)
+    if not plotted:
         plt.close(fig)
-
-
-def plot_propagator_impact(data: ExperimentData, pdf: PdfPages) -> None:
-    """Propagator impact analysis for auto-discovered strategy pairs."""
-    pairs = discover_strategy_pairs(data.strategies)
-    if not pairs:
         return
-    prefixes = discover_stat_prefixes(data)
-    domain_styles = get_domain_styles(data.domains)
+    _shared_legend(fig, flat[0])
+    fig.suptitle(title, fontsize=13)
+    fig.tight_layout(rect=(0, 0, 0.88, 0.95))
+    pdf.savefig(fig)
+    plt.close(fig)
 
-    for base, extended, suffix in pairs:
-        common = get_common_solved(data, base, extended)
+
+def plot_search_metrics(exp: Experiment, metrics: Metrics, pdf: PdfPages) -> None:
+    selected = metrics.select(SEARCH_CONCEPTS)
+    if not selected:
+        print("    (no search metrics resolved — skipped)", file=sys.stderr)
+        return
+    styles = domain_styles(exp.domains)
+    for a, b in combinations(exp.systems, 2):
+        common = common_solved(exp, a, b)
+        if len(common) < 2:
+            continue
+        _metric_grid(pdf, common, selected, a, b, styles, f"Search effort: {a} vs {b}")
+
+
+def plot_encoding(exp: Experiment, metrics: Metrics, pdf: PdfPages) -> None:
+    selected = metrics.select(ENCODING_CONCEPTS)
+    if not selected:
+        print("    (no encoding-size metrics resolved — skipped)", file=sys.stderr)
+        return
+    styles = domain_styles(exp.domains)
+    for a, b in combinations(exp.systems, 2):
+        common = common_solved(exp, a, b)
+        if len(common) < 2:
+            continue
+        _metric_grid(pdf, common, selected, a, b, styles,
+                     f"Encoding size: {a} vs {b}", ncols=2)
+
+
+def plot_variant_impact(exp: Experiment, metrics: Metrics, pdf: PdfPages) -> None:
+    """For each auto-discovered ``base`` / ``base-suffix`` pair: a speedup bar
+    chart, metric deltas, and box plots of the counters only the variant has."""
+    pairs = discover_variant_pairs(exp.systems)
+    if not pairs:
+        print("    (no base/variant system pairs found — skipped)", file=sys.stderr)
+        return
+    styles = domain_styles(exp.domains)
+    time_key = metrics.key("total_time")
+    delta = metrics.select(["decisions", "conflicts", "propagations"])
+
+    for base, variant, suffix in pairs:
+        common = common_solved(exp, base, variant)
         if len(common) < 2:
             continue
 
-        # --- Page: Speedup bar chart ---
-        ratios: List[float] = []
-        bar_labels: List[str] = []
-        bar_colors: List[str] = []
-
-        for domain, instance, job_base, job_ext in common:
-            tb = job_base.stats.get("planner.total_time")
-            te = job_ext.stats.get("planner.total_time")
-            if tb and te and tb > 0:
-                ratio = te / tb
-                ratios.append(ratio)
-                bar_labels.append(f"{domain}/{instance}")
-                bar_colors.append("tab:green" if ratio < 1 else "tab:red")
-
-        if ratios:
-            sorted_data = sorted(zip(ratios, bar_labels, bar_colors))
-            ratios_s, labels_s, colors_s = zip(*sorted_data)
-
-            fig, ax = plt.subplots(figsize=(max(10, len(ratios_s) * 0.25), 6))
-            x = range(len(ratios_s))
-            ax.bar(x, ratios_s, color=colors_s, alpha=0.7, width=0.8)
-            ax.axhline(y=1.0, color="black", linewidth=0.8, linestyle="--")
-            ax.set_ylabel(f"Time ratio ({extended} / {base})")
-            ax.set_title(
-                f"Impact of -{suffix}: green = faster, red = slower\n"
-                f"({len(ratios_s)} commonly-solved instances)"
-            )
-            ax.set_xticks(list(x))
-            ax.set_xticklabels(labels_s, rotation=90, fontsize=5)
-            fig.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
-
-        # --- Page: Z3 delta scatters ---
-        delta_metrics = [
-            ("z3.decisions", "Decisions"),
-            ("z3.conflicts", "Conflicts"),
-            ("z3.propagations", "Propagations"),
-        ]
-        n_delta = len(delta_metrics)
-        fig, axes = plt.subplots(
-            1, n_delta, figsize=(6 * n_delta, 5.5), squeeze=False
-        )
-        axes_flat = axes.flatten()
-        any_plotted = False
-        for idx, (metric_key, metric_label) in enumerate(delta_metrics):
-            if _plot_metric_scatter(
-                axes_flat[idx], common, metric_key,
-                metric_label, base, extended, domain_styles,
-            ):
-                any_plotted = True
-
-        if any_plotted:
-            handles, labels = axes_flat[0].get_legend_handles_labels()
-            if handles:
-                fig.legend(
-                    handles, labels, loc="center right", fontsize=7,
-                    bbox_to_anchor=(1.0, 0.5), ncol=1,
+        if time_key:
+            ratios = [(je.stats[time_key] / jb.stats[time_key], f"{d}/{i}")
+                      for d, i, jb, je in common
+                      if jb.stats.get(time_key, 0.0) > 0 and je.stats.get(time_key, 0.0) > 0]
+            if ratios:
+                ratios.sort()
+                values = [r for r, _ in ratios]
+                labels = [l for _, l in ratios]
+                # Bars carry log2 of the ratio so they grow from parity in both
+                # directions and a 2x speed-up reads as the mirror image of a
+                # 2x slowdown; the axis is relabelled back into plain ratios.
+                heights = [log2(r) for r in values]
+                colors = ["tab:green" if r < 1 else "tab:red" for r in values]
+                faster = sum(1 for r in values if r < 1)
+                fig, ax = plt.subplots(figsize=(max(10, len(values) * 0.25), 6))
+                ax.bar(range(len(values)), heights, color=colors, alpha=0.75, width=0.8)
+                ax.axhline(y=0.0, color="black", linewidth=0.8)
+                span = ceil(max(abs(h) for h in heights))
+                ticks = list(range(-span, span + 1))
+                ax.set_yticks(ticks)
+                ax.set_yticklabels([f"{2.0 ** t:g}x" for t in ticks])
+                ax.set_ylabel(f"time ratio ({variant} / {base})")
+                ax.set_title(
+                    f"Impact of -{suffix}: green = faster, red = slower\n"
+                    f"{faster}/{len(values)} instances faster "
+                    f"(median ratio {median(values):.3f})"
                 )
-            fig.suptitle(f"Z3 Impact: {base} vs {extended}", fontsize=13)
-            fig.tight_layout(rect=[0, 0, 0.88, 0.95])
-            pdf.savefig(fig)
-        plt.close(fig)
+                ax.set_xticks(range(len(values)))
+                ax.set_xticklabels(labels, rotation=90, fontsize=5)
+                ax.grid(True, axis="y", alpha=0.3)
+                fig.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
 
-        # --- Page: Propagator-specific stats box plots ---
-        prop_prefixes = []
-        for prefix, strats in prefixes.items():
-            if extended in strats and base not in strats:
-                prop_prefixes.append(prefix)
+        if delta:
+            _metric_grid(pdf, common, delta, base, variant, styles,
+                         f"Search effort: {base} vs {variant}")
 
-        if not prop_prefixes:
+        keys = sorted(variant_only_keys(exp, base, variant))
+        if not keys:
             continue
+        groups: Dict[str, List[Job]] = {}
+        for domain, _instance, _jb, je in common:
+            groups.setdefault(domain, []).append(je)
+        names = sorted(groups)
 
-        prop_keys = sorted(
-            {
-                k
-                for job in data.jobs
-                if job.strategy == extended and job.stats
-                for k in job.stats
-                if k.split(".")[0] in prop_prefixes
-            }
-        )
-        if not prop_keys:
-            continue
-
-        domain_groups: Dict[str, List[SlurmJobResult]] = {}
-        for domain, instance, _, job_ext in common:
-            domain_groups.setdefault(domain, []).append(job_ext)
-        domain_names = sorted(domain_groups.keys())
-
-        ncols = min(3, len(prop_keys))
-        nrows = (len(prop_keys) + ncols - 1) // ncols
-        fig, axes_grid = plt.subplots(
-            nrows, ncols, figsize=(6 * ncols, 5 * nrows), squeeze=False
-        )
-        axes_flat = axes_grid.flatten()
-
-        for idx, key in enumerate(prop_keys):
-            ax = axes_flat[idx]
-            box_data: List[List[float]] = []
-            box_labels: List[str] = []
-            for d in domain_names:
-                vals = [j.stats.get(key, 0) for j in domain_groups[d]]
+        ncols = min(3, len(keys))
+        nrows = (len(keys) + ncols - 1) // ncols
+        fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 5 * nrows), squeeze=False)
+        flat = axes.flatten()
+        for idx, key in enumerate(keys):
+            ax = flat[idx]
+            data, labels = [], []
+            for d in names:
+                vals = [j.stats.get(key, 0.0) for j in groups[d]]
                 if any(v > 0 for v in vals):
-                    box_data.append(vals)
-                    box_labels.append(d)
-            if box_data:
-                ax.boxplot(box_data)
-                ax.set_xticklabels(box_labels, rotation=45, ha="right", fontsize=7)
-            short_key = key.split(".", 1)[1] if "." in key else key
-            ax.set_title(short_key)
+                    data.append(vals)
+                    labels.append(d)
+            if data:
+                ax.boxplot(data)
+                ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+            ax.set_title(key.split(".", 1)[-1], fontsize=9)
             ax.grid(True, axis="y", alpha=0.3)
-
-        for idx in range(len(prop_keys), len(axes_flat)):
-            axes_flat[idx].set_visible(False)
-
-        fig.suptitle(
-            f"Propagator Stats: {extended} ({', '.join(prop_prefixes)})",
-            fontsize=13,
-        )
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        for idx in range(len(keys), len(flat)):
+            flat[idx].set_visible(False)
+        fig.suptitle(f"Counters unique to {variant}", fontsize=13)
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
         pdf.savefig(fig)
         plt.close(fig)
 
 
-def plot_time_breakdowns(data: ExperimentData, pdf: PdfPages) -> None:
-    """Time breakdown stacked bars per strategy."""
-    for strategy in data.strategies:
-        strat_jobs = [
-            j
-            for j in data.get_jobs_by_strategy(strategy)
-            if j.status == Status.SOLVED and j.stats
-        ]
-        if not strat_jobs:
+def plot_time_breakdown(exp: Experiment, metrics: Metrics, pdf: PdfPages) -> None:
+    """Per-system stacked bars of where the mean solve time goes, by domain."""
+    components = discover_time_components(exp, metrics)
+    total_key = metrics.key("total_time")
+    if not components or not total_key:
+        print("    (no time components resolved — skipped)", file=sys.stderr)
+        return
+    cmap = matplotlib.colormaps["tab20"]
+
+    for system in exp.systems:
+        jobs = exp.solved_with_stats(system)
+        if not jobs:
+            continue
+        groups: Dict[str, List[Job]] = {}
+        for j in jobs:
+            groups.setdefault(j.domain, []).append(j)
+        domains = sorted(groups)
+
+        def mean_of(key: str, scale: float, domain: str) -> float:
+            vals = [j.stats.get(key, 0.0) * scale for j in groups[domain]]
+            return sum(vals) / len(vals)
+
+        totals = {d: mean_of(total_key, 1.0, d) for d in domains}
+        grand_total = sum(totals.values()) or 1.0
+
+        # Keep components worth at least 1% of the total; the rest go to "Other"
+        # together with whatever the accounted components fail to explain.
+        active = [(k, lbl, sc) for k, lbl, sc in components
+                  if sum(mean_of(k, sc, d) for d in domains) / grand_total >= 0.01]
+        if not active:
             continue
 
-        domain_groups: Dict[str, List[SlurmJobResult]] = {}
-        for j in strat_jobs:
-            domain_groups.setdefault(j.domain, []).append(j)
-        domains = sorted(domain_groups.keys())
-
-        # Determine which time components are non-zero for this strategy
-        active_components: List[Tuple[str, str, float]] = []
-        for key, label, scale in TIME_COMPONENTS:
-            has_any = False
-            for d in domains:
-                vals = [j.stats.get(key, 0) * scale for j in domain_groups[d]]
-                if sum(vals) / len(vals) > 0:
-                    has_any = True
-                    break
-            if has_any:
-                active_components.append((key, label, scale))
-
-        component_means: Dict[str, List[float]] = {d: [] for d in domains}
-        component_names: List[str] = []
-        for key, label, scale in active_components:
-            component_names.append(label)
-            for d in domains:
-                vals = [j.stats.get(key, 0) * scale for j in domain_groups[d]]
-                component_means[d].append(sum(vals) / len(vals))
-
-        # Add "Other" = total - accounted
-        component_names.append("Other")
+        names = [lbl for _, lbl, _ in active] + ["unaccounted"]
+        values: Dict[str, List[float]] = {}
         for d in domains:
-            total_vals = [
-                j.stats.get("planner.total_time", 0) for j in domain_groups[d]
-            ]
-            mean_total = sum(total_vals) / len(total_vals)
-            accounted = sum(component_means[d])
-            component_means[d].append(max(0, mean_total - accounted))
+            row = [mean_of(k, sc, d) for k, _, sc in active]
+            row.append(max(0.0, totals[d] - sum(row)))
+            values[d] = row
 
         fig, ax = plt.subplots(figsize=(max(10, len(domains) * 0.8), 7))
-        x = list(range(len(domains)))
+        x = range(len(domains))
         bottom = [0.0] * len(domains)
-        cmap = matplotlib.colormaps["Set2"]
-
-        for i, name in enumerate(component_names):
-            vals = [component_means[d][i] for d in domains]
-            color = cmap(i % 8)
-            ax.bar(x, vals, bottom=bottom, label=name, color=color, alpha=0.85)
-            bottom = [b + v for b, v in zip(bottom, vals)]
-
-        ax.set_xticks(x)
+        for i, name in enumerate(names):
+            heights = [values[d][i] for d in domains]
+            ax.bar(x, heights, bottom=bottom, label=name, color=cmap(i % 20), alpha=0.85)
+            bottom = [b + h for b, h in zip(bottom, heights)]
+        ax.set_xticks(list(x))
         ax.set_xticklabels(domains, rotation=45, ha="right", fontsize=8)
         ax.set_ylabel("Mean time (s)")
-        ax.set_title(f"Time Breakdown: {strategy}")
-        ax.legend(fontsize=8, loc="best")
+        ax.set_title(f"Time breakdown: {system}")
+        ax.legend(fontsize=7, loc="best", ncol=2)
         ax.grid(True, axis="y", alpha=0.3)
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
 
 
-def plot_encoding_comparison(data: ExperimentData, pdf: PdfPages) -> None:
-    """Encoding size scatter plots across strategy pairs."""
-    domain_styles = get_domain_styles(data.domains)
-    pairs = list(combinations(data.strategies, 2))
+def plot_domain_summaries(exp: Experiment, metrics: Metrics, pdf: PdfPages) -> None:
+    selected = metrics.select(SUMMARY_CONCEPTS)
+    if not selected:
+        print("    (no summary metrics resolved — skipped)", file=sys.stderr)
+        return
+    colors = system_colors(exp.systems)
 
-    for strategy_a, strategy_b in pairs:
-        common = get_common_solved(data, strategy_a, strategy_b)
-        if len(common) < 2:
+    for domain in exp.domains:
+        per_system = {s: [j for j in exp.by_domain_system(domain, s)
+                          if j.status == Status.SOLVED and j.stats]
+                      for s in exp.systems}
+        per_system = {s: jobs for s, jobs in per_system.items() if len(jobs) >= 3}
+        if len(per_system) < 2:
             continue
+        systems = sorted(per_system)
 
-        n_metrics = len(ENCODING_METRICS)
-        ncols = min(n_metrics, 2)
-        nrows = (n_metrics + ncols - 1) // ncols
-        fig, axes = plt.subplots(
-            nrows, ncols, figsize=(7 * ncols, 6 * nrows), squeeze=False
-        )
-        axes_flat = axes.flatten()
-
-        any_plotted = False
-        for idx, (metric_key, metric_label) in enumerate(ENCODING_METRICS):
-            if _plot_metric_scatter(
-                axes_flat[idx], common, metric_key, metric_label,
-                strategy_a, strategy_b, domain_styles,
-            ):
-                any_plotted = True
-
-        for idx in range(n_metrics, len(axes_flat)):
-            axes_flat[idx].set_visible(False)
-
-        if not any_plotted:
-            plt.close(fig)
-            continue
-
-        handles, labels = axes_flat[0].get_legend_handles_labels()
-        if handles:
-            fig.legend(
-                handles, labels, loc="center right", fontsize=7,
-                bbox_to_anchor=(1.0, 0.5), ncol=1,
-            )
-        fig.suptitle(f"Encoding Size: {strategy_a} vs {strategy_b}", fontsize=13)
-        fig.tight_layout(rect=[0, 0, 0.88, 0.95])
-        pdf.savefig(fig)
-        plt.close(fig)
-
-
-def plot_domain_summaries(data: ExperimentData, pdf: PdfPages) -> None:
-    """Per-domain grouped bar chart comparing strategies on key metrics."""
-    colors = get_strategy_colors(data.strategies)
-
-    for domain in data.domains:
-        strat_data: Dict[str, List[SlurmJobResult]] = {}
-        for strategy in data.strategies:
-            jobs = [
-                j
-                for j in data.get_jobs_by_domain_strategy(domain, strategy)
-                if j.status == Status.SOLVED and j.stats
-            ]
-            if len(jobs) >= 3:
-                strat_data[strategy] = jobs
-
-        if len(strat_data) < 2:
-            continue
-
-        strategies_here = sorted(strat_data.keys())
-        n_metrics = len(DOMAIN_SUMMARY_METRICS)
-
-        fig, axes = plt.subplots(
-            1, n_metrics, figsize=(3.5 * n_metrics, 5), squeeze=False
-        )
-        axes_flat = axes.flatten()
-
-        width = 0.8 / len(strategies_here)
-
-        for m_idx, (metric_key, metric_label) in enumerate(DOMAIN_SUMMARY_METRICS):
-            ax = axes_flat[m_idx]
-            for s_idx, strategy in enumerate(strategies_here):
-                vals = [j.stats.get(metric_key, 0) for j in strat_data[strategy]]
-                vals_sorted = sorted(vals)
-                median_val = vals_sorted[len(vals) // 2]
-                offset = (s_idx - len(strategies_here) / 2 + 0.5) * width
-                ax.bar(
-                    offset, median_val, width=width,
-                    color=colors[strategy], alpha=0.8,
-                    label=strategy if m_idx == 0 else None,
-                )
-
-            ax.set_title(metric_label, fontsize=9)
+        fig, axes = plt.subplots(1, len(selected), figsize=(3.5 * len(selected), 5),
+                                 squeeze=False)
+        flat = axes.flatten()
+        width = 0.8 / len(systems)
+        for m_idx, (key, label) in enumerate(selected):
+            ax = flat[m_idx]
+            for s_idx, system in enumerate(systems):
+                vals = [j.stats.get(key, 0.0) for j in per_system[system]]
+                offset = (s_idx - len(systems) / 2 + 0.5) * width
+                ax.bar(offset, median(vals), width=width, color=colors[system],
+                       alpha=0.85, label=system if m_idx == 0 else None)
+            ax.set_title(label, fontsize=9)
             ax.set_xticks([])
             ax.grid(True, axis="y", alpha=0.3)
 
-        handles, labels = axes_flat[0].get_legend_handles_labels()
+        handles, labels = flat[0].get_legend_handles_labels()
         if handles:
-            fig.legend(
-                handles, labels, loc="lower center", fontsize=7,
-                ncol=min(4, len(strategies_here)),
-                bbox_to_anchor=(0.5, 0.01),
-            )
-
-        n_instances = min(len(v) for v in strat_data.values())
-        fig.suptitle(
-            f"Domain: {domain} (median, n>={n_instances})", fontsize=13
-        )
-        fig.tight_layout(rect=[0, 0.08, 1, 0.93])
+            fig.legend(handles, labels, loc="lower center", fontsize=7,
+                       ncol=min(4, len(systems)), bbox_to_anchor=(0.5, 0.01))
+        n = min(len(v) for v in per_system.values())
+        fig.suptitle(f"Domain: {domain} (median over commonly solved, n>={n})", fontsize=13)
+        fig.tight_layout(rect=(0, 0.08, 1, 0.93))
         pdf.savefig(fig)
         plt.close(fig)
 
 
-# --- Stats Analysis: Report Orchestration ---
+# ===========================================================================
+# Report orchestration
+# ===========================================================================
 
-STATS_SECTIONS = {
-    "z3-scatters": "Z3 metric scatter plots (pairwise strategy comparison)",
-    "propagator": "Propagator impact analysis (auto-discovered pairs)",
-    "time-breakdown": "Time breakdown stacked bars (per strategy)",
-    "encoding": "Encoding size comparison (pairwise)",
-    "domain-summary": "Per-domain summary (grouped bars)",
+SECTIONS: Dict[str, str] = {
+    "search":         "Search-effort metric scatters (pairwise)",
+    "variant-impact": "Base vs variant impact (auto-discovered name pairs)",
+    "time-breakdown": "Time breakdown stacked bars (per system)",
+    "encoding":       "Encoding size comparison (pairwise)",
+    "domain-summary": "Per-domain summary (grouped medians)",
 }
 
-_STATS_CSV_DISPATCH = {
-    "z3-scatters": ("stats_z3_comparison.csv", write_z3_comparison_csv),
-    "propagator": ("stats_propagator_impact.csv", write_propagator_impact_csv),
+_CSV_DISPATCH = {
+    "search":         ("stats_solver_comparison.csv", write_solver_comparison_csv),
+    "variant-impact": ("stats_variant_impact.csv", write_variant_impact_csv),
     "domain-summary": ("stats_domain_aggregate.csv", write_domain_aggregate_csv),
 }
 
-_STATS_PLOT_DISPATCH = {
-    "z3-scatters": plot_z3_metric_scatters,
-    "propagator": plot_propagator_impact,
-    "time-breakdown": plot_time_breakdowns,
-    "encoding": plot_encoding_comparison,
+_PLOT_DISPATCH = {
+    "search":         plot_search_metrics,
+    "variant-impact": plot_variant_impact,
+    "time-breakdown": plot_time_breakdown,
+    "encoding":       plot_encoding,
     "domain-summary": plot_domain_summaries,
 }
 
 
-def generate_stats_report(
-    data: ExperimentData,
-    output_dir: Path,
-    sections: Optional[List[str]] = None,
-) -> None:
-    """Generate stats-based analysis outputs."""
-    has_stats = any(job.stats for job in data.jobs)
-    if not has_stats:
-        print("No stats data loaded, skipping stats analysis.", file=sys.stderr)
+def generate_stats_report(exp: Experiment, output_dir: Path,
+                          sections: Optional[Sequence[str]]) -> None:
+    if not any(j.stats for j in exp.jobs):
+        print("No stats files loaded — skipping metric analysis "
+              "(pass --stats-dir to enable it).", file=sys.stderr)
         return
-
-    if sections is None:
-        active = set(STATS_SECTIONS.keys())
-    else:
-        active = set(sections) & set(STATS_SECTIONS.keys())
-
+    active = set(SECTIONS) if sections is None else (set(sections) & set(SECTIONS))
     if not active:
         return
 
-    print(
-        f"\nGenerating stats analysis ({len(active)} sections)...",
-        file=sys.stderr,
-    )
+    metrics = Metrics(exp.stat_keys())
+    plural = "section" if len(active) == 1 else "sections"
+    print(f"\nMetric analysis ({len(active)} {plural}) — {metrics.describe()}", file=sys.stderr)
 
-    # Always write full dump when any stats section is active
-    write_stats_full_csv(data, output_dir / "stats_full.csv")
+    write_stats_full_csv(exp, output_dir / "stats_full.csv")
+    for name in SECTIONS:
+        if name in active and name in _CSV_DISPATCH:
+            filename, writer = _CSV_DISPATCH[name]
+            writer(exp, metrics, output_dir / filename)
 
-    # Section-specific CSVs
-    for name in STATS_SECTIONS:
-        if name in active and name in _STATS_CSV_DISPATCH:
-            csv_name, csv_fn = _STATS_CSV_DISPATCH[name]
-            csv_fn(data, output_dir / csv_name)
-
-    # All plots in one PDF
     pdf_path = output_dir / "stats_analysis.pdf"
     with PdfPages(str(pdf_path)) as pdf:
-        for name in STATS_SECTIONS:
-            if name in active and name in _STATS_PLOT_DISPATCH:
-                print(
-                    f"  Plotting: {STATS_SECTIONS[name]}...", file=sys.stderr
-                )
-                _STATS_PLOT_DISPATCH[name](data, pdf)
-
+        for name in SECTIONS:
+            if name in active:
+                print(f"  Plotting: {SECTIONS[name]}", file=sys.stderr)
+                _PLOT_DISPATCH[name](exp, metrics, pdf)
     print(f"Wrote {pdf_path}", file=sys.stderr)
 
 
-# --- Main ---
+def print_summary(exp: Experiment) -> None:
+    print("\n=== Summary ===", file=sys.stderr)
+    width = max(len(s) for s in exp.systems)
+    columns = [s for s in Status]
+    header = " " * (width + 2) + "  ".join(f"{s.value:>10}" for s in columns) + f"{'total':>10}"
+    print(header, file=sys.stderr)
+    for system in exp.systems:
+        counts = _tally(exp.by_system(system))
+        cells = "  ".join(f"{c:>10}" for c in counts[:-1])
+        print(f"  {system:<{width}}{cells}{counts[-1]:>10}", file=sys.stderr)
 
-def generate_all_outputs(
-    data: ExperimentData,
-    output_dir: Path,
-    stats_sections: Optional[List[str]] = None,
-) -> None:
-    """Generate all output files.
+    skipped = exp.skipped_empty + exp.skipped_unparsed
+    if skipped:
+        print(f"\n  {skipped} log files not counted "
+              f"({exp.skipped_empty} empty, {exp.skipped_unparsed} unparsed).", file=sys.stderr)
+    running = sum(1 for j in exp.jobs if j.status == Status.RUNNING)
+    if running:
+        print(f"\n  {running} jobs have no verdict yet (no plan, no status line, no exit "
+              f"code) — still in flight, or the array was torn down. They are excluded "
+              f"from every comparison rather than counted as failures.", file=sys.stderr)
+    unknown = sum(1 for j in exp.jobs if j.status == Status.UNKNOWN)
+    if unknown:
+        print(f"  {unknown} jobs exited cleanly but reported no result — worth a look.",
+              file=sys.stderr)
+    missing = len(exp.systems) * len(exp.instance_keys()) - len(exp.jobs)
+    if missing > 0:
+        print(f"  {missing} (instance, system) cells have no log at all — expected while "
+              f"the run is still being submitted.", file=sys.stderr)
 
-    stats_sections: list of section names to generate, None = all, [] = skip stats.
-    """
+
+def generate_all_outputs(exp: Experiment, output_dir: Path,
+                         sections: Optional[Sequence[str]]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # CSVs
-    write_instances_csv(data, output_dir / "instances.csv")
-    write_summary_by_domain_csv(data, output_dir / "summary_by_domain.csv")
-    write_summary_overall_csv(data, output_dir / "summary_overall.csv")
+    write_instances_csv(exp, output_dir / "instances.csv")
+    write_summary_by_domain_csv(exp, output_dir / "summary_by_domain.csv")
+    write_summary_overall_csv(exp, output_dir / "summary_overall.csv")
 
-    # Plots
-    plot_cactus(data, output_dir / "cactus.pdf")
-    plot_cactus_linear(data, output_dir / "cactus_linear.pdf")
-    plot_all_scatters(data, output_dir)
+    plot_cactus(exp, output_dir / "cactus.pdf", log_scale=True)
+    plot_cactus(exp, output_dir / "cactus_linear.pdf", log_scale=False)
+    plot_runtime_scatters(exp, output_dir / "scatters.pdf")
 
-    # Stats analysis
-    if stats_sections is None or stats_sections:
-        generate_stats_report(data, output_dir, stats_sections)
+    if sections is None or sections:
+        generate_stats_report(exp, output_dir, sections)
 
-    # Print summary
-    print("\n=== Summary ===", file=sys.stderr)
-    for strategy in data.strategies:
-        strat_jobs = data.get_jobs_by_strategy(strategy)
-        solved = sum(1 for j in strat_jobs if j.status == Status.SOLVED)
-        timeout = sum(1 for j in strat_jobs if j.status == Status.TIMEOUT)
-        memout = sum(1 for j in strat_jobs if j.status == Status.MEMOUT)
-        error = sum(1 for j in strat_jobs if j.status == Status.ERROR)
-        print(
-            f"  {strategy}: {solved} solved, {timeout} timeout, "
-            f"{memout} memout, {error} error (total: {len(strat_jobs)})",
-            file=sys.stderr,
-        )
-    skipped = data.skipped_empty + data.skipped_no_metadata
-    if skipped:
-        print(
-            f"\n  Note: {skipped} log files could not be parsed "
-            f"({data.skipped_empty} empty, {data.skipped_no_metadata} missing metadata). "
-            f"These jobs are not included in any strategy totals.",
-            file=sys.stderr,
-        )
+    print_summary(exp)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Analyze SLURM benchmark results from RantanPlan experiments.",
+        description="Analyse SLURM benchmark results from RantanPlan experiments.",
     )
-    parser.add_argument(
-        "logs_dir",
-        help="Directory with SLURM .out log files",
-    )
-    parser.add_argument(
-        "--stats-dir",
-        default=None,
-        help="Directory with stats/plan files (optional, for enriched timing data)",
-    )
-    parser.add_argument(
-        "-o", "--output-dir",
-        default="slurm_report",
-        help="Output directory for generated files (default: slurm_report)",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=None,
-        help="Override timeout value in seconds (auto-detected if not set)",
-    )
-    section_names = ", ".join(STATS_SECTIONS.keys())
-    parser.add_argument(
-        "--stats-sections",
-        default=None,
-        help=f"Comma-separated list of stats sections to generate. "
-        f"Available: {section_names}. Default: all",
-    )
-    parser.add_argument(
-        "--skip-stats-sections",
-        default=None,
-        help="Comma-separated list of stats sections to skip",
-    )
-    parser.add_argument(
-        "--no-stats",
-        action="store_true",
-        help="Skip all stats-based analysis",
-    )
-    parser.add_argument(
-        "--exclude-strategy",
-        action="append",
-        default=[],
-        metavar="SUBSTR",
-        help="Exclude strategies whose name contains SUBSTR (repeatable)",
-    )
+    parser.add_argument("logs_dir", help="Directory with SLURM .out/.err log files")
+    parser.add_argument("--stats-dir", default=None,
+                        help="Directory with the .stat files the runs wrote "
+                             "(optional; enables the metric analysis)")
+    parser.add_argument("-o", "--output-dir", default="slurm_report",
+                        help="Output directory (default: slurm_report)")
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="Override the per-job wall-clock limit in seconds "
+                             "(measured from the logs if not set)")
+    parser.add_argument("--stats-sections", default=None,
+                        help="Comma-separated sections to generate. Available: "
+                             + ", ".join(SECTIONS) + ". Default: all")
+    parser.add_argument("--skip-stats-sections", default=None,
+                        help="Comma-separated sections to skip")
+    parser.add_argument("--no-stats", action="store_true",
+                        help="Skip all metric analysis")
+    parser.add_argument("--exclude-strategy", action="append", default=[],
+                        metavar="SUBSTR",
+                        help="Exclude strategies whose name contains SUBSTR (repeatable)")
     return parser.parse_args()
+
+
+def resolve_sections(args: argparse.Namespace) -> Optional[List[str]]:
+    if args.no_stats:
+        return []
+    if args.stats_sections:
+        requested = [s.strip() for s in args.stats_sections.split(",") if s.strip()]
+        unknown = [s for s in requested if s not in SECTIONS]
+        if unknown:
+            sys.exit(f"Error: unknown section(s) {', '.join(unknown)}. "
+                     f"Available: {', '.join(SECTIONS)}")
+        return requested
+    if args.skip_stats_sections:
+        skip = {s.strip() for s in args.skip_stats_sections.split(",")}
+        return [s for s in SECTIONS if s not in skip]
+    return None
 
 
 def main() -> None:
@@ -1571,30 +1467,15 @@ def main() -> None:
 
     logs_dir = Path(args.logs_dir)
     if not logs_dir.is_dir():
-        print(f"Error: {logs_dir} is not a directory", file=sys.stderr)
-        sys.exit(1)
-
+        sys.exit(f"Error: {logs_dir} is not a directory")
     stats_dir = Path(args.stats_dir) if args.stats_dir else None
     if stats_dir and not stats_dir.is_dir():
-        print(f"Error: {stats_dir} is not a directory", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(f"Error: {stats_dir} is not a directory")
+    # Validate before the (slow) load so a typo fails in milliseconds.
+    sections = resolve_sections(args)
 
-    data = load_experiment(
-        logs_dir, stats_dir, args.timeout, args.exclude_strategy or None
-    )
-
-    # Determine stats sections to run
-    if args.no_stats:
-        stats_sections: Optional[List[str]] = []
-    elif args.stats_sections:
-        stats_sections = [s.strip() for s in args.stats_sections.split(",")]
-    elif args.skip_stats_sections:
-        skip = {s.strip() for s in args.skip_stats_sections.split(",")}
-        stats_sections = [s for s in STATS_SECTIONS if s not in skip]
-    else:
-        stats_sections = None  # all
-
-    generate_all_outputs(data, Path(args.output_dir), stats_sections)
+    exp = load_experiment(logs_dir, stats_dir, args.timeout, args.exclude_strategy or None)
+    generate_all_outputs(exp, Path(args.output_dir), sections)
 
 
 if __name__ == "__main__":

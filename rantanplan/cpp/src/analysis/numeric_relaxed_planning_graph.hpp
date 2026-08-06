@@ -3,10 +3,11 @@
 #include "../problem/problem.hpp"
 #include "../problem/action.hpp"
 #include "../problem/effect_expression.hpp"
-#include "../z3core/z3_variable_factory.hpp"
-#include "../z3core/grounded_encoding_visitor.hpp"
+#include "../smtcore/smt_types.hpp"
+#include "../smtcore/smt_variable_factory.hpp"
+#include "../smtcore/grounded_encoding_visitor.hpp"
+#include "../smtcore/term_builder.hpp"
 #include "../config/config.hpp"
-#include <z3++.h>
 
 #include <vector>
 #include <unordered_map>
@@ -26,10 +27,10 @@
  *
  * - Numeric fluents: interval arithmetic for bound propagation. Each effect
  *   branch is evaluated as an interval; layer result is convex union of all
- *   branches including persistence. No Z3 calls for bound propagation.
+ *   branches including persistence. No SMT calls for bound propagation.
  *
  * - Action applicability / goal checks: by default, interval-based 3-valued
- *   formula evaluation. --smt-rpg-checker reverts to per-action Z3 SAT queries
+ *   formula evaluation. --smt-rpg-checker reverts to per-action SMT SAT queries
  *   for cases where joint multi-variable constraints need exact reasoning.
  *
  * - Directional widening: per-fluent, per-side expansion counters. After
@@ -42,15 +43,15 @@
  *   termination for both linear and non-linear effects.
  *
  * - Lower bound refinement: after interval-based layer expansion, the lower
- *   bound is refined using a Z3 joint goal check (one SAT query per layer).
+ *   bound is refined using an SMT joint goal check (one SAT query per layer).
  *   The interval checker evaluates each goal independently and can be overly
  *   optimistic for conjunctive goals with cross-variable dependencies (e.g.,
- *   c17 >= c16+1 >= ... >= c0+17). The Z3 joint check catches these.
+ *   c17 >= c16+1 >= ... >= c0+17). The SMT joint check catches these.
  *
  * Termination criteria (independent, both on by default):
  *   1. Config::RPG::early_goal_termination: stop when goals are achievable.
  *   2. set_stop_when_all_reachable(true): stop when all actions are reachable
- *      AND goals are jointly achievable (Z3 check).
+ *      AND goals are jointly achievable (SMT check).
  * Disabling both runs to true fixpoint (needed for sound variable bounds
  * in AchieversAnalysis and cost lower bounds).
  */
@@ -83,7 +84,7 @@ public:
     /**
      * @brief 3-valued result for interval-based formula evaluation.
      *
-     * Used by the interval checker (non-Z3) to determine if a formula
+     * Used by the interval checker (non-SMT) to determine if a formula
      * is satisfiable given box constraints (independent per-fluent bounds).
      */
     enum class FormulaResult {
@@ -160,7 +161,7 @@ public:
     explicit NumericRelaxedPlanningGraph(const Problem& problem);
     ~NumericRelaxedPlanningGraph() = default;
 
-    // Disable copying (Z3 context is not copyable)
+    // Disable copying (cvc5::TermManager is not copyable)
     NumericRelaxedPlanningGraph(const NumericRelaxedPlanningGraph&) = delete;
     NumericRelaxedPlanningGraph& operator=(const NumericRelaxedPlanningGraph&) = delete;
 
@@ -275,12 +276,13 @@ private:
     std::unordered_set<int> object_fluent_ids_;
 
     // ========================================================================
-    // MEMBER VARIABLES - Z3 Infrastructure
+    // MEMBER VARIABLES - SMT Infrastructure
     // ========================================================================
 
-    mutable z3::context ctx_;              // Owned Z3 context (mutable: Z3 API is not const-correct)
-    Z3VariableFactory variable_factory_;   // Z3 variable management per layer
-    mutable GroundedEncodingVisitor grounded_visitor_;  // ExprID -> z3::expr (mutable for const methods)
+    mutable cvc5::TermManager ctx_;        // Owned cvc5 TermManager (mutable: term creation is non-const)
+    TermBuilder tb_;                       // Term construction (cvc5 has no operator overloading)
+    SmtVariableFactory variable_factory_;  // SMT variable management per layer
+    mutable GroundedEncodingVisitor grounded_visitor_;  // ExprID -> Term (mutable for const methods)
 
     // Maps each fluent to the actions/effects that can modify it
     // Enables O(effects_for_fluent) lookup instead of O(all_actions * all_effects)
@@ -417,8 +419,8 @@ private:
      *   - AND/OR/NOT/IMPLIES: compose with 3-valued logic
      *
      * Sound over-approximation: never returns ALWAYS_FALSE when the formula
-     * is actually satisfiable. May return UNKNOWN when Z3 would prove UNSAT
-     * (only for joint multi-variable numeric constraints).
+     * is actually satisfiable. May return UNKNOWN when the SMT solver would
+     * prove UNSAT (only for joint multi-variable numeric constraints).
      */
     FormulaResult evaluate_formula_interval(ExprID eid, int layer) const;
 
@@ -440,14 +442,14 @@ private:
     bool are_goals_achievable_at_layer_interval(int layer) const;
 
     /**
-     * @brief Z3 joint goal achievability check at a specific layer.
+     * @brief SMT joint goal achievability check at a specific layer.
      *
-     * Creates a Z3 solver with per-fluent box constraints from the layer's
+     * Creates a cvc5 solver with per-fluent box constraints from the layer's
      * numeric bounds and boolean reachability, then asserts ALL goal conditions
      * simultaneously and checks satisfiability. This is more precise than the
      * interval checker for conjunctive goals with cross-variable dependencies.
      *
-     * Cost: 1 Z3 SAT query per call (sub-millisecond for typical problems).
+     * Cost: 1 SMT SAT query per call (sub-millisecond for typical problems).
      */
     bool are_goals_achievable_at_layer_smt(int layer) const;
 
@@ -496,7 +498,7 @@ private:
     /**
      * @brief Compute numeric bounds for all numeric fluents at next layer
      *
-     * Uses interval arithmetic instead of Z3 optimize:
+     * Uses interval arithmetic instead of an SMT optimizer:
      * For each numeric fluent, evaluates all applicable effects as intervals,
      * takes convex union with persistence, then applies directional widening.
      */
@@ -586,32 +588,31 @@ private:
     // ========================================================================
 
     /**
-     * @brief Add layer state constraints to Z3 optimizer
+     * @brief Add layer state constraints to an SMT solver
      *
      * Adds constraints for:
      * - Boolean reachability (for each Boolean fluent based on its state)
      * - Numeric bounds (for each numeric fluent)
      */
-    void add_layer_constraints(z3::solver& solver, int layer) const;
+    void add_layer_constraints(cvc5::Solver& solver, int layer) const;
 
     /**
      * @brief Add Boolean reachability constraints
      */
-    void add_boolean_constraints(z3::solver& solver, int layer) const;
+    void add_boolean_constraints(cvc5::Solver& solver, int layer) const;
 
     /**
      * @brief Add numeric bounds constraints
      */
-    void add_numeric_constraints(z3::solver& solver, int layer) const;
+    void add_numeric_constraints(cvc5::Solver& solver, int layer) const;
 
     /**
-     * @brief Extract numeric value from Z3 model
+     * @brief Extract numeric value from an SMT model value
      *
-     * Converts Z3 expression (int, real, fraction) to double.
+     * Converts a cvc5 value term (int, real, fraction) to double.
      * Note: Exact conversion strategy for fractions and algebraic numbers is TBD.
-     * Currently assumes Z3 returns decimal approximation.
      */
-    double extract_numeric_value(const z3::expr& z3_value) const;
+    double extract_numeric_value(const Term& z3_value) const;
 
     // ========================================================================
     // PRIVATE METHODS - Utilities

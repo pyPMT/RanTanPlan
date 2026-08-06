@@ -2,16 +2,17 @@
 
 #include "../problem/problem.hpp"
 #include "../preprocessing/symmetry_info.hpp"
-#include "../z3core/lifted_encoding_visitor.hpp"
+#include "../smtcore/lifted_encoding_visitor.hpp"
+#include "../smtcore/smt_types.hpp"
+#include "../smtcore/term_builder.hpp"
 #include "../config/config.hpp"
-#include <z3++.h>
 #include <string>
 #include <vector>
 #include <unordered_map>
 
 namespace rantanplan {
 /**
- * @brief SMT-based symmetry checker that uses Z3 to verify logical equivalence
+ * @brief SMT-based symmetry checker that uses cvc5 to verify logical equivalence
  * 
  * This implementation follows Rintanen's approach from "Symmetry Reduction for 
  * SAT Representations of Transition Systems" (ICAPS 2003).
@@ -33,15 +34,16 @@ namespace rantanplan {
 class SMTSymmetryChecker {
 private:
     const Problem* problem_;
-    z3::context& context_;
+    cvc5::TermManager& context_;
+    TermBuilder tb_;
     SymbolTable symbol_table_;
     LiftedEncodingVisitor visitor_;
-    
+
     // Storage for detected symmetries
     std::vector<SymmetryInfo> detected_symmetries_;
-    
+
 public:
-    SMTSymmetryChecker(const Problem* problem, z3::context& ctx);
+    SMTSymmetryChecker(const Problem* problem, cvc5::TermManager& ctx);
     
     /**
      * @brief Detect all symmetric object pairs in the problem

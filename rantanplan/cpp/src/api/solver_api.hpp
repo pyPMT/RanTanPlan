@@ -9,8 +9,8 @@
 #include <mutex>
 #include <string>
 
-namespace z3 {
-class context;
+namespace cvc5 {
+class Solver;
 }
 
 namespace rantanplan {
@@ -29,32 +29,38 @@ namespace rantanplan::api {
 /// polling the plan.txt.N files that --output-plan still writes.
 using PlanCallback = std::function<void(const Plan&)>;
 
-/// Cross-thread cancellation slot. solve() publishes its z3::context here
-/// for exactly the duration of the search; interrupt() flips Z3's interrupt
-/// flag on the published context (documented safe from another thread).
+/// Cross-thread cancellation slot. solve() publishes the planner's
+/// cvc5::Solver here for exactly the duration of the search; interrupt()
+/// calls Solver::interrupt() on it (the fork patch added at M1 —
+/// SolverEngine::interrupt() is internally documented thread-safe).
 /// Mutex-guarded rather than a bare atomic: unpublishing (and thus the
-/// context's destruction) waits for any in-flight interrupt() call, closing
-/// the load-then-use-after-free race. Outside the search window interrupt()
-/// is a no-op — preprocessing and non-Z3 phases are not interruptible.
+/// solver's destruction) waits for any in-flight interrupt() call, closing
+/// the load-then-use-after-free race.
+///
+/// NOTE the interruptible object changed with the backend. Under Z3 it was the
+/// *context*, created at the top of solve(); under cvc5 it is the *Solver*,
+/// which the planner owns and constructs later. The uninterruptible window
+/// therefore now also covers encoder and planner construction, not just
+/// preprocessing. Outside the search window interrupt() is a no-op, as before.
 class InterruptSlot {
 public:
     void interrupt();
 
 private:
-    friend class ScopedContextPublisher;
+    friend class ScopedSolverPublisher;
     std::mutex mutex_;
-    z3::context* ctx_ = nullptr;
+    cvc5::Solver* solver_ = nullptr;
 };
 
-/// RAII publish/unpublish of a z3::context into an InterruptSlot. Declare it
-/// after the context (destruction order then unpublishes before the context
-/// dies). A null slot makes it a no-op.
-class ScopedContextPublisher {
+/// RAII publish/unpublish of a cvc5::Solver into an InterruptSlot. Declare it
+/// after whatever owns the solver (destruction order then unpublishes before
+/// the solver dies). A null slot makes it a no-op.
+class ScopedSolverPublisher {
 public:
-    ScopedContextPublisher(InterruptSlot* slot, z3::context& ctx);
-    ~ScopedContextPublisher();
-    ScopedContextPublisher(const ScopedContextPublisher&) = delete;
-    ScopedContextPublisher& operator=(const ScopedContextPublisher&) = delete;
+    ScopedSolverPublisher(InterruptSlot* slot, cvc5::Solver& solver);
+    ~ScopedSolverPublisher();
+    ScopedSolverPublisher(const ScopedSolverPublisher&) = delete;
+    ScopedSolverPublisher& operator=(const ScopedSolverPublisher&) = delete;
 
 private:
     InterruptSlot* slot_;
@@ -81,7 +87,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
  * If on_plan is set, it is installed on the planner and invoked from the
  * solver thread with each plan found during the search.
  *
- * If interrupt_slot is set, the solve's z3::context is published there for
+ * If interrupt_slot is set, the planner's cvc5::Solver is published there for
  * the duration of the search so another thread can cancel it (the canceled
  * check surfaces through the planners' timeout path as TIMEOUT).
  */

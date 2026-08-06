@@ -130,6 +130,7 @@ bool NumericRelaxedPlanningGraph::LayerState::operator==(const LayerState& other
 NumericRelaxedPlanningGraph::NumericRelaxedPlanningGraph(const Problem& problem)
     : problem_(problem),
       ctx_(),
+      tb_(ctx_),
       variable_factory_(ctx_),
       grounded_visitor_(ctx_, &problem, &variable_factory_),
       widening_threshold_(Config::instance().rpg.widening_threshold),
@@ -140,8 +141,19 @@ NumericRelaxedPlanningGraph::NumericRelaxedPlanningGraph(const Problem& problem)
       total_applicability_checks_(0),
       total_interval_checks_(0) {
 
-    // Silence Z3 output from RPG's internal queries
-    ctx_.set("verbose", 0);
+    // The factory needs the problem: it decides the Int-vs-Real numeric sort
+    // (as under Z3) and, since M4, supplies the dense ground-fluent id that
+    // indexes every PLAN_FLUENT atom. Omitting it was harmless under Z3 but is
+    // now fatal on the first fluent this analysis converts.
+    variable_factory_.set_problem(&problem);
+    tb_.set_problem(&problem);
+
+    // PORT-QUESTION: Z3's `ctx_.set("verbose", 0)` (silence the RPG's internal
+    // queries) has no TermManager counterpart -- cvc5 puts `verbosity` on the
+    // Solver, and the solvers here are created per query. Dropped rather than
+    // re-added per solver because cvc5's default verbosity is already 0, so
+    // this is behaviour-preserving; restore as a per-solver setOption if a
+    // non-default verbosity is ever set globally.
 
     // Build EPC index for efficient effect lookup
     build_epc_index();
@@ -421,8 +433,8 @@ bool NumericRelaxedPlanningGraph::build() {
         }
 
         // Early termination if all actions reachable and goals jointly achieved (if enabled).
-        // Uses Z3 joint goal check: the interval checker evaluates goals independently
-        // and can be over-optimistic. The Z3 check catches cross-variable dependencies.
+        // Uses the SMT joint goal check: the interval checker evaluates goals independently
+        // and can be over-optimistic. The SMT check catches cross-variable dependencies.
         // Continuing past the interval-based stopping point gives more exact layers
         // for a tighter lower bound.
         if (stop_when_all_reachable_ &&
@@ -1073,41 +1085,42 @@ std::vector<const Action*> NumericRelaxedPlanningGraph::compute_applicable_actio
     std::vector<const Action*> applicable_actions;
 
     // Create a fresh solver for this query
-    z3::solver solver(ctx_);
-
+    cvc5::Solver solver(ctx_);
+    // Options must be set before the first assertFormula.
+    solver.setOption("produce-models", "true");
 
     // Add layer state constraints
     add_layer_constraints(solver, layer);
 
     // Create action variables and add implication constraints
     std::unordered_map<std::string, const Action*> action_map;
-    z3::expr_vector action_vars(ctx_);
+    TermVec action_vars;
 
     for (const Action& action : problem_.actions()) {
         std::string action_var_name = "action_" + action.name() + "_" + std::to_string(layer);
-        z3::expr action_var = ctx_.bool_const(action_var_name.c_str());
+        Term action_var = ctx_.mkConst(ctx_.getBooleanSort(), action_var_name);
         action_vars.push_back(action_var);
         action_map[action_var_name] = &action;
 
         // action_var → precondition (vacuously true if no precondition)
         if (action.has_precondition()) {
-            z3::expr precondition = grounded_visitor_.convert_from_pool(action.precondition_id(), layer);
-            solver.add(z3::implies(action_var, precondition));
+            Term precondition = grounded_visitor_.convert_from_pool(action.precondition_id(), layer);
+            solver.assertFormula(tb_.mk_implies(action_var, precondition));
         }
     }
 
     // Check satisfiability
     total_smt_queries_++;
-    if (solver.check() == z3::sat) {
-        z3::model model = solver.get_model();
+    if (solver.checkSat().isSat()) {
+        // cvc5 has no model object: values are read straight off the solver.
 
         // Extract which actions are applicable
-        for (unsigned i = 0; i < action_vars.size(); ++i) {
-            z3::expr action_var = action_vars[i];
-            z3::expr val = model.eval(action_var, true);
+        for (size_t i = 0; i < action_vars.size(); ++i) {
+            Term action_var = action_vars[i];
+            Term val = solver.getValue(action_var);
 
-            if (val.is_true()) {
-                std::string var_name = action_var.to_string();
+            if (val.isBooleanValue() && val.getBooleanValue()) {
+                std::string var_name = action_var.getSymbol();
                 auto it = action_map.find(var_name);
                 if (it != action_map.end()) {
                     applicable_actions.push_back(it->second);
@@ -1124,7 +1137,7 @@ std::vector<const Action*> NumericRelaxedPlanningGraph::compute_applicable_actio
 
 bool NumericRelaxedPlanningGraph::is_action_applicable_smt(const Action& action, int layer) const {
     // Create a fresh solver for this query
-    z3::solver solver(ctx_);
+    cvc5::Solver solver(ctx_);
 
 
     // Add layer state constraints
@@ -1132,23 +1145,23 @@ bool NumericRelaxedPlanningGraph::is_action_applicable_smt(const Action& action,
 
     // Add action precondition (vacuously true if no precondition)
     if (action.has_precondition()) {
-        z3::expr precondition = grounded_visitor_.convert_from_pool(action.precondition_id(), layer);
-        solver.add(precondition);
+        Term precondition = grounded_visitor_.convert_from_pool(action.precondition_id(), layer);
+        solver.assertFormula(precondition);
     }
 
     // Check satisfiability
     total_smt_queries_++;
     total_applicability_checks_++;
 
-    z3::check_result result = solver.check();
-    return result == z3::sat;
+    cvc5::Result result = solver.checkSat();
+    return result.isSat();
 }
 
 // ============================================================================
 // PRIVATE METHODS - SMT Constraint Building
 // ============================================================================
 
-void NumericRelaxedPlanningGraph::add_layer_constraints(z3::solver& solver, int layer) const {
+void NumericRelaxedPlanningGraph::add_layer_constraints(cvc5::Solver& solver, int layer) const {
     add_boolean_constraints(solver, layer);
     add_numeric_constraints(solver, layer);
 
@@ -1157,33 +1170,33 @@ void NumericRelaxedPlanningGraph::add_layer_constraints(z3::solver& solver, int 
     for (const auto& [fluent_id, values] : layer_state.object_value_sets) {
         if (values.empty()) continue;
         ExprID fluent_eid = problem_.grounded_fluent(fluent_id);
-        z3::expr fluent_z3 = grounded_visitor_.convert_from_pool(fluent_eid, layer);
-        z3::expr_vector valid(ctx_);
+        Term fluent_z3 = grounded_visitor_.convert_from_pool(fluent_eid, layer);
+        TermVec valid;
         for (int v : values) {
-            valid.push_back(fluent_z3 == ctx_.int_val(v));
+            valid.push_back(tb_.mk_eq(fluent_z3, tb_.int_val(v)));
         }
-        solver.add(z3::mk_or(valid));
+        solver.assertFormula(tb_.mk_or(valid));
     }
 }
 
-void NumericRelaxedPlanningGraph::add_boolean_constraints(z3::solver& solver, int layer) const {
+void NumericRelaxedPlanningGraph::add_boolean_constraints(cvc5::Solver& solver, int layer) const {
     const auto& layer_state = layer_states_[layer];
 
     // For each Boolean fluent, add constraints based on its reachability state
     for (const auto& [fluent_id, reach] : layer_state.boolean_reachability) {
         ExprID fluent_eid = problem_.grounded_fluent(fluent_id);
-        z3::expr fluent_z3 = grounded_visitor_.convert_from_pool(fluent_eid, layer);
+        Term fluent_z3 = grounded_visitor_.convert_from_pool(fluent_eid, layer);
 
         // Add constraints based on reachability state
         switch (reach) {
             case BooleanReachability::FALSE_ONLY:
                 // Fluent must be false
-                solver.add(!fluent_z3);
+                solver.assertFormula(tb_.mk_not(fluent_z3));
                 break;
 
             case BooleanReachability::TRUE_ONLY:
                 // Fluent must be true
-                solver.add(fluent_z3);
+                solver.assertFormula(fluent_z3);
                 break;
 
             case BooleanReachability::BOTH:
@@ -1193,19 +1206,19 @@ void NumericRelaxedPlanningGraph::add_boolean_constraints(z3::solver& solver, in
     }
 }
 
-void NumericRelaxedPlanningGraph::add_numeric_constraints(z3::solver& solver, int layer) const {
+void NumericRelaxedPlanningGraph::add_numeric_constraints(cvc5::Solver& solver, int layer) const {
     const auto& layer_state = layer_states_[layer];
 
     // For each numeric fluent, add bound constraints (skip infinite bounds)
     for (const auto& [fluent_id, bounds] : layer_state.numeric_bounds) {
         ExprID fluent_eid = problem_.grounded_fluent(fluent_id);
-        z3::expr fluent_z3 = grounded_visitor_.convert_from_pool(fluent_eid, layer);
+        Term fluent_z3 = grounded_visitor_.convert_from_pool(fluent_eid, layer);
 
         if (!std::isinf(bounds.lower)) {
-            solver.add(fluent_z3 >= ctx_.real_val(std::to_string(bounds.lower).c_str()));
+            solver.assertFormula(tb_.geq(fluent_z3, ctx_.mkReal(std::to_string(bounds.lower))));
         }
         if (!std::isinf(bounds.upper)) {
-            solver.add(fluent_z3 <= ctx_.real_val(std::to_string(bounds.upper).c_str()));
+            solver.assertFormula(tb_.leq(fluent_z3, ctx_.mkReal(std::to_string(bounds.upper))));
         }
     }
 }
@@ -1415,21 +1428,20 @@ bool NumericRelaxedPlanningGraph::are_goals_achievable_at_layer_interval(int lay
     return true;
 }
 
-double NumericRelaxedPlanningGraph::extract_numeric_value(const z3::expr& z3_value) const {
-    // Handle different Z3 value types
-    if (z3_value.is_numeral()) {
+double NumericRelaxedPlanningGraph::extract_numeric_value(const Term& z3_value) const {
+    // Handle different cvc5 value types
+    if (z3_value.isIntegerValue() || z3_value.isRealValue()) {
         // Try to get as integer first
-        int int_val;
-        if (z3_value.is_int() && z3_value.is_numeral_i(int_val)) {
-            return static_cast<double>(int_val);
+        if (z3_value.getSort().isInteger() && z3_value.isIntegerValue()) {
+            return std::stod(z3_value.getIntegerValue());
         }
 
         // Try to get as rational
-        if (z3_value.is_real()) {
+        if (z3_value.getSort().isReal()) {
             // Get numerator and denominator
-            std::string val_str = z3_value.to_string();
+            std::string val_str = z3_value.getRealValue();
 
-            // Simple parsing for now - Z3 returns rationals as "num/den" or decimals
+            // Simple parsing for now - cvc5 returns rationals as "num/den" or decimals
             size_t slash_pos = val_str.find('/');
             if (slash_pos != std::string::npos) {
                 // Rational: parse num and den
@@ -1444,11 +1456,11 @@ double NumericRelaxedPlanningGraph::extract_numeric_value(const z3::expr& z3_val
     }
 
     // Fallback: try to parse string representation
-    std::string val_str = z3_value.to_string();
+    std::string val_str = z3_value.toString();
     try {
         return std::stod(val_str);
     } catch (...) {
-        std::cerr << "Warning: Could not extract numeric value from Z3 expression: "
+        std::cerr << "Warning: Could not extract numeric value from SMT term: "
                   << val_str << std::endl;
         return 0.0;
     }
@@ -1518,14 +1530,14 @@ bool NumericRelaxedPlanningGraph::are_all_actions_reachable() const {
 // ============================================================================
 
 bool NumericRelaxedPlanningGraph::are_goals_achievable_at_layer_smt(int layer) const {
-    z3::solver solver(ctx_);
+    cvc5::Solver solver(ctx_);
 
     add_layer_constraints(solver, layer);
     for (const Goal& goal : problem_.goals()) {
-        solver.add(grounded_visitor_.convert_from_pool(goal.goal_id(), layer));
+        solver.assertFormula(grounded_visitor_.convert_from_pool(goal.goal_id(), layer));
     }
     total_smt_queries_++;
-    return solver.check() == z3::sat;
+    return solver.checkSat().isSat();
 }
 
 bool NumericRelaxedPlanningGraph::are_goals_achievable() const {
@@ -1565,14 +1577,14 @@ int NumericRelaxedPlanningGraph::get_minimum_steps_lower_bound() const {
         }
     }
 
-    // Second pass: refine with Z3 joint goal check.
+    // Second pass: refine with the SMT joint goal check.
     // The interval checker evaluates each goal condition independently and can
     // be over-optimistic for conjunctive goals (e.g., c17 >= c16+1 >= ... >= c0+17
     // is individually satisfiable per condition at layer 2, but jointly requires
-    // layer 6+). The Z3 check evaluates all goals simultaneously against the
+    // layer 6+). The SMT check evaluates all goals simultaneously against the
     // per-fluent box constraints at each layer.
     //
-    // Scan forward from the interval-based lb. At pre-widening layers, the Z3
+    // Scan forward from the interval-based lb. At pre-widening layers, the SMT
     // check may correctly say UNSAT. At/after widening layers, it will say SAT
     // (since ±inf bounds trivially satisfy anything).
     int smt_lb = interval_lb;
@@ -1586,7 +1598,7 @@ int NumericRelaxedPlanningGraph::get_minimum_steps_lower_bound() const {
     if (smt_lb > interval_lb) {
         Logger::instance().component(VerbosityLevel::INFO, "RPG.Numeric", {
             {"lb refinement", std::to_string(interval_lb) + " → " + std::to_string(smt_lb) +
-                              " (Z3 joint goal check)"}
+                              " (SMT joint goal check)"}
         });
     }
 

@@ -44,7 +44,7 @@ namespace rantanplan {
 //     decreases).
 //
 // Exactly-one groups give Z3 the equivalent of finite-domain variables
-// (z3::atmost + z3::atleast). This is the primary driver of solver speedups.
+// (encode_atmost + encode_atleast). This is the primary driver of solver speedups.
 //
 // Candidates that fail Tier 1 get a second chance via the h² pairwise
 // reachability fixpoint (H2MutexChecker), and h²-verified groups over

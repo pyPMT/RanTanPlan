@@ -12,10 +12,11 @@ class InterferenceOracle;
 
 /// Cost-optimal planner using branch-and-bound with an abstract suffix lower bound.
 ///
-/// Instead of z3::optimize (which is incompatible with Z3 user propagators), this
-/// planner reformulates cost minimization as a sequence of SAT feasibility checks
-/// with progressively tighter cost bounds, using z3::solver throughout. This preserves
-/// full compatibility with forall/exists/lazy propagators.
+/// Instead of a dedicated optimization solver (z3::optimize was incompatible with
+/// user propagators), this planner reformulates cost minimization as a sequence of
+/// SAT feasibility checks with progressively tighter cost bounds, using the ordinary
+/// incremental solver throughout. This preserves full compatibility with
+/// forall/exists/lazy propagators.
 ///
 /// Algorithm (outer loop over horizons, inner B&B loop per horizon):
 ///   1. Encode initial state, add permanent abstract constraints (mod_v, loop formulas).
@@ -94,7 +95,7 @@ class InterferenceOracle;
 class BranchAndBoundPlanner : public BasePlanner {
 public:
     BranchAndBoundPlanner(const Problem& problem, BaseEncoder& encoder,
-                          z3::context& ctx,
+                          cvc5::TermManager& tm,
                           const InterferenceOracle* interference,
                           SemanticsKind semantics);
 
@@ -117,7 +118,7 @@ private:
 
     void add_timestep_constraints(int timestep);
 
-    static double extract_cost_from_model(const z3::model& model, const z3::expr& cost_expr);
+    static double extract_cost_from_model(const cvc5::Solver& solver, const Term& cost_expr);
 };
 
 } // namespace rantanplan

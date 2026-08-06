@@ -14,7 +14,7 @@ class SequentialSemantics : public ParallelismStrategy {
 public:
     SequentialSemantics() = default;
     
-    z3::expr encode_parallelism(int timestep) override;
+    Term encode_parallelism(int timestep) override;
 
     std::string get_name() const override { return "SequentialSemantics"; }
 

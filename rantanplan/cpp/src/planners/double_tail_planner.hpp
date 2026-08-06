@@ -4,8 +4,7 @@
 #include "../problem/plan.hpp"
 #include "../encoders/base_encoder.hpp"
 #include "base_planner.hpp"
-#include "propagators/propagator_strategy.hpp"
-#include <z3++.h>
+#include "../smtcore/smt_types.hpp"
 #include <memory>
 #include <vector>
 
@@ -38,9 +37,9 @@ public:
      * @brief Construct a double-tail planner
      * @param problem The planning problem
      * @param encoder The encoder to use (grounded, chained, etc.)
-     * @param ctx Z3 context
+     * @param tm cvc5 term manager
      */
-    DoubleTailPlanner(const Problem& problem, BaseEncoder& encoder, z3::context& ctx);
+    DoubleTailPlanner(const Problem& problem, BaseEncoder& encoder, cvc5::TermManager& tm);
 
     // BasePlanner interface implementation
     Plan search() override;
@@ -54,7 +53,7 @@ private:
      * @param backward_t Timestep at start of backward stack
      * @return Conjunction of fluent equivalences: ∧fluents. fluent@forward_t ⟺ fluent@backward_t
      */
-    z3::expr create_link_constraints(int forward_t, int backward_t);
+    Term create_link_constraints(int forward_t, int backward_t);
 
     /**
      * @brief Add constraints for timestep t (actions + frames + parallelism)
@@ -68,29 +67,30 @@ private:
 
     /**
      * @brief Extract plan from satisfying model
-     * @param model The Z3 model containing satisfying assignment
+     * @param solver The solver holding the satisfying assignment (cvc5 has no
+     *               model object; values are read with getValue())
      * @param plan_length Total plan length (iteration number)
      * @return Plan with forward actions followed by backward actions
      */
-    Plan extract_plan(const z3::model& model, int plan_length);
+    Plan extract_plan(const cvc5::Solver& solver, int plan_length);
 
     /**
      * @brief Extract all actions that are true at a given timestep
-     * @param model The Z3 model
+     * @param solver The solver holding the satisfying assignment
      * @param timestep The timestep to extract actions from
      * @return Vector of actions that execute at this timestep
      */
     std::vector<const Action*> extract_parallel_actions_at_timestep(
-        const z3::model& model, int timestep) const;
+        const cvc5::Solver& solver, int timestep) const;
 
     /**
      * @brief Extract and add actions from a range of timesteps to a plan
      * @param plan The plan to add actions to
-     * @param model The Z3 model
+     * @param solver The solver holding the satisfying assignment
      * @param start_timestep First timestep (inclusive)
      * @param end_timestep Last timestep (exclusive)
      */
-    void extract_actions_in_range(Plan& plan, const z3::model& model,
+    void extract_actions_in_range(Plan& plan, const cvc5::Solver& solver,
                                    int start_timestep, int end_timestep);
 
     /**

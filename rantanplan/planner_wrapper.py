@@ -35,7 +35,13 @@ class _RantanPlanBase(Engine):
         Engine.__init__(self)
 
         self._verbosity = options.get('verbosity')
-        self._strategy = options.get('strategy', 'els')
+        # M4: 'els' (exists-step, LAZY semantic interference) needs a
+        # propagator, and those are out of the build until M5. 'e' is the same
+        # exists-step semantics with EAGER interference.
+        # REVERT TO 'els' AT M5, together with config.hpp's Planner::strategy.
+        # NOTE this default shadows the C++ one: the wrapper always passes
+        # --strategy, so Config::Planner::strategy is never consulted.
+        self._strategy = options.get('strategy', 'e')
         self._max_steps = options.get('max_steps')
         self._persist_clauses = options.get('persist_clauses', False)
         self._symmetries = options.get('symmetries', False)
