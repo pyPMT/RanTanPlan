@@ -838,8 +838,9 @@ def test_action_cost_with_cell_read():
 
 
 def test_same_cell_collision_instance_dependent():
-    """a[i]:=5; a[j]:=6 with int params: the i==j instances collide and are
-    discarded; distinct-cell instances solve the problem."""
+    """a[i]:=5; a[j]:=6 with int params: the i==j instances assign one cell two
+    values, which UP can never execute, so EffectNormalizationPass removes them
+    (case 6); distinct-cell instances solve the problem."""
     em = _em()
     a = Fluent("a", ArrayType(2, IntType(0, 9)))
     p = Problem("collinst")
@@ -870,7 +871,163 @@ def test_same_cell_collision_instance_dependent():
     r = _ref_check(p, ref)
     for ai in r.plan.actions:
         vs = [x.int_constant_value() for x in ai.actual_parameters]
-        assert vs[0] != vs[1], "a colliding same-cell instance leaked into the plan"
+        assert vs[0] != vs[1], "an instance assigning one cell two values leaked into the plan"
+
+
+def test_same_cell_increases_add_up():
+    """a[i] += 1; a[j] += 1 with int params: at i == j both increases hit one
+    cell and add up, as for any fluent (EffectNormalizationPass, case 3). The
+    goal a = [2, 0] needs exactly that instance, bump(0, 0)."""
+    em = _em()
+    a = Fluent("twice_inc_a", ArrayType(2, IntType(0, 9)))
+    done = Fluent("twice_inc_done", BoolType())
+    p = Problem("twiceinc")
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(a, [0, 0])
+    p.add_fluent(done, default_initial_value=False)
+    bump = InstantaneousAction("bump", i=IntType(0, 1), j=IntType(0, 1))
+    i, j = bump.parameter("i"), bump.parameter("j")
+    bump.add_precondition(Not(done()))
+    bump.add_increase_effect(em.ArrayIndex(a(), i), 1)
+    bump.add_increase_effect(em.ArrayIndex(a(), j), 1)
+    bump.add_effect(done(), True)
+    p.add_action(bump)
+    p.add_goal(And(Equals(em.ArrayIndex(a(), Int(0)), 2),
+                   Equals(em.ArrayIndex(a(), Int(1)), 0)))
+
+    a0, a1 = Fluent("a0", IntType(0, 9)), Fluent("a1", IntType(0, 9))
+    ref = Problem("twiceincref")
+    for f in (a0, a1):
+        ref.add_fluent(f, default_initial_value=0)
+    ref.add_fluent(done, default_initial_value=False)
+    rbump = InstantaneousAction("bump", i=IntType(0, 1), j=IntType(0, 1))
+    ri, rj = rbump.parameter("i"), rbump.parameter("j")
+    rbump.add_precondition(Not(done()))
+    for par in (ri, rj):
+        rbump.add_increase_effect(a0(), 1, condition=Equals(par, 0))
+        rbump.add_increase_effect(a1(), 1, condition=Equals(par, 1))
+    rbump.add_effect(done(), True)
+    ref.add_action(rbump)
+    ref.add_goal(And(Equals(a0(), 2), Equals(a1(), 0)))
+
+    r = _ref_check(p, ref)
+    assert [[x.int_constant_value() for x in ai.actual_parameters]
+            for ai in r.plan.actions] == [[0, 0]], r.plan
+
+
+def test_same_cell_set_and_clear():
+    """occ[i] := false; occ[j] := true on a Boolean array: at i == j the set
+    wins (add after delete, EffectNormalizationPass case 1), so a move to the
+    same cell leaves it occupied. The goal needs move(0, 0)."""
+    em = _em()
+    occ = Fluent("twice_occ", ArrayType(2, BoolType()))
+    moved = Fluent("twice_moved", BoolType())
+    p = Problem("twiceocc")
+    p.add_fluent(occ, default_initial_value=False)
+    p.set_initial_value(occ, [True, False])
+    p.add_fluent(moved, default_initial_value=False)
+    move = InstantaneousAction("move", i=IntType(0, 1), j=IntType(0, 1))
+    i, j = move.parameter("i"), move.parameter("j")
+    move.add_precondition(And(em.ArrayIndex(occ(), i), Not(moved())))
+    move.add_effect(em.ArrayIndex(occ(), i), False)
+    move.add_effect(em.ArrayIndex(occ(), j), True)
+    move.add_effect(moved(), True)
+    p.add_action(move)
+    p.add_goal(And(moved(), em.ArrayIndex(occ(), Int(0)),
+                   Not(em.ArrayIndex(occ(), Int(1)))))
+
+    o0, o1 = Fluent("o0", BoolType()), Fluent("o1", BoolType())
+    ref = Problem("twiceoccref")
+    for f in (o0, o1, moved):
+        ref.add_fluent(f, default_initial_value=False)
+    ref.set_initial_value(o0(), True)
+    rmove = InstantaneousAction("move", i=IntType(0, 1), j=IntType(0, 1))
+    ri, rj = rmove.parameter("i"), rmove.parameter("j")
+    rmove.add_precondition(And(Or(And(Equals(ri, 0), o0()), And(Equals(ri, 1), o1())),
+                               Not(moved())))
+    rmove.add_effect(o0(), False, condition=Equals(ri, 0))
+    rmove.add_effect(o1(), False, condition=Equals(ri, 1))
+    rmove.add_effect(o0(), True, condition=Equals(rj, 0))
+    rmove.add_effect(o1(), True, condition=Equals(rj, 1))
+    rmove.add_effect(moved(), True)
+    ref.add_action(rmove)
+    ref.add_goal(And(moved(), o0(), Not(o1())))
+
+    r = _ref_check(p, ref)
+    assert [[x.int_constant_value() for x in ai.actual_parameters]
+            for ai in r.plan.actions] == [[0, 0]], r.plan
+
+
+def test_same_cell_exclusive_guards():
+    """WHEN c: a[i] := 1; WHEN not c: a[i] := 2. Every instance writes one cell
+    twice, but the guards exclude each other, so the two writes never apply
+    together and the action is kept as it is. Goal a[0] = 2: flip, put(0)."""
+    em = _em()
+    a = Fluent("twice_excl_a", ArrayType(2, IntType(0, 9)))
+    c = Fluent("twice_excl_c", BoolType())
+    p = Problem("twiceexcl")
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(a, [0, 0])
+    p.add_fluent(c, default_initial_value=False)
+    p.set_initial_value(c(), True)
+    put = InstantaneousAction("put", i=IntType(0, 1))
+    i = put.parameter("i")
+    put.add_effect(em.ArrayIndex(a(), i), 1, condition=c())
+    put.add_effect(em.ArrayIndex(a(), i), 2, condition=Not(c()))
+    flip = InstantaneousAction("flip")
+    flip.add_effect(c(), False)
+    p.add_action(put)
+    p.add_action(flip)
+    p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 2))
+
+    a0, a1 = Fluent("a0", IntType(0, 9)), Fluent("a1", IntType(0, 9))
+    ref = Problem("twiceexclref")
+    for f in (a0, a1):
+        ref.add_fluent(f, default_initial_value=0)
+    ref.add_fluent(c, default_initial_value=False)
+    ref.set_initial_value(c(), True)
+    rput = InstantaneousAction("put", i=IntType(0, 1))
+    ri = rput.parameter("i")
+    rput.add_effect(a0(), 1, condition=And(c(), Equals(ri, 0)))
+    rput.add_effect(a1(), 1, condition=And(c(), Equals(ri, 1)))
+    rput.add_effect(a0(), 2, condition=And(Not(c()), Equals(ri, 0)))
+    rput.add_effect(a1(), 2, condition=And(Not(c()), Equals(ri, 1)))
+    rflip = InstantaneousAction("flip")
+    rflip.add_effect(c(), False)
+    ref.add_action(rput)
+    ref.add_action(rflip)
+    ref.add_goal(Equals(a0(), 2))
+
+    _ref_check(p, ref)
+
+
+def test_same_cell_folded_increases_add_up():
+    """a[0] += 1; a[1-1] += 2: the two targets fold to one cell in every
+    instance, and the increases add up (a[0] = 3), as in UP's model of the same
+    action on a scalar fluent. (UP itself blocks syntactically identical
+    targets, hence the folding.)"""
+    em = _em()
+    a = Fluent("twice_fold_a", ArrayType(2, IntType(0, 9)))
+    p = Problem("twicefold")
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(a, [0, 0])
+    add3 = InstantaneousAction("add3")
+    add3.add_increase_effect(em.ArrayIndex(a(), Int(0)), 1)
+    add3.add_increase_effect(em.ArrayIndex(a(), Minus(Int(1), Int(1))), 2)  # folds to a[0]
+    p.add_action(add3)
+    p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 3))
+
+    a0 = Fluent("a0", IntType(0, 9))
+    ref = Problem("twicefoldref")
+    ref.add_fluent(a0, default_initial_value=0)
+    radd3 = InstantaneousAction("add3")
+    radd3.add_increase_effect(a0(), 1)
+    radd3.add_increase_effect(a0(), 2)
+    ref.add_action(radd3)
+    ref.add_goal(Equals(a0(), 3))
+
+    r = _ref_check(p, ref)
+    assert [ai.action.name for ai in r.plan.actions] == ["add3"]
 
 
 def test_element_bounds_respected():
@@ -966,10 +1123,12 @@ def test_undefined_position_goal_error():
     _assert_rejected(build)
 
 
-def test_same_cell_collision_unconditional_error():
-    """Two writes to the same literal cell (folded from a[0] and a[1-1]) are an
-    unconditionally broken model — a hard error. (UP itself blocks syntactically
-    identical targets, so the collision is reached via constant folding.)"""
+def test_same_cell_conflicting_assignments_never_apply():
+    """Two assignments of different values to one literal cell (a[0] and the
+    folded a[1-1]): UP can never execute the action, so EffectNormalizationPass
+    removes it (case 6), with a warning, and the goal is unreachable. (UP
+    itself blocks syntactically identical targets, so the conflict is reached
+    via constant folding.)"""
     def build():
         em = _em()
         a = Fluent("a", ArrayType(2, IntType(0, 9)))
@@ -1004,11 +1163,11 @@ def test_whole_array_equality_rejected():
     _assert_rejected(build)
 
 
-def test_all_instances_collide_hard_error():
-    """A literal same-cell collision (a[0] and the folded a[1-1]) in an action
-    that also has an unrelated int parameter: EVERY instance collides, so the
-    schema is unconditionally broken — a hard error, not a silently vanished
-    schema."""
+def test_all_instances_conflicting_never_apply():
+    """The same conflict (a[0] and the folded a[1-1]) in an action that also
+    has an unrelated int parameter: every instance assigns one cell two values,
+    so EffectNormalizationPass removes every instance, with a warning naming
+    them, and the goal is unreachable."""
     def build():
         em = _em()
         a = Fluent("allcoll_a", ArrayType(2, IntType(0, 9)))
@@ -1198,15 +1357,19 @@ CASES = [
     test_state_invariant_with_cell_read,
     test_action_cost_with_cell_read,
     test_same_cell_collision_instance_dependent,
+    test_same_cell_increases_add_up,
+    test_same_cell_set_and_clear,
+    test_same_cell_exclusive_guards,
+    test_same_cell_folded_increases_add_up,
     test_element_bounds_respected,
     test_non_array_regression,
     test_parallel_different_cells_exists_step,
     # ill-formed models → clean rejection
     test_static_oob_goal_error,
     test_undefined_position_goal_error,
-    test_same_cell_collision_unconditional_error,
+    test_same_cell_conflicting_assignments_never_apply,
     test_whole_array_equality_rejected,
-    test_all_instances_collide_hard_error,
+    test_all_instances_conflicting_never_apply,
     test_oob_initial_state_assignment_dropped,
     test_whole_array_assignment_rejected,
     test_fluent_index_in_goal_rejected,
