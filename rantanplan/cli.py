@@ -35,6 +35,27 @@ Use --list-strategies to see available strategies and their descriptions.
     parser.add_argument("-p", "--problem", type=str,
                        help="Path to the PDDL problem file")
 
+    # List strategies
+    parser.add_argument("--list-strategies", action="store_true",
+                       help="List available strategies and exit")
+
+    add_planner_arguments(parser)
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"RantanPlan {metadata.version('rantanplan')}"
+    )
+
+    return parser.parse_args()
+
+
+def add_planner_arguments(parser):
+    """Add the options that configure the planner and its output.
+
+    Shared with other commands that solve a problem but build it in Python
+    instead of reading PDDL files.
+    """
     # Strategy selection
     parser.add_argument("--strategy", type=str, default="els",
                        help="Planning strategy to use (default: els)")
@@ -45,10 +66,6 @@ Use --list-strategies to see available strategies and their descriptions.
                             "optimal (cost-optimal with proof), "
                             "anytime (keep improving, report intermediate plans)")
 
-    # List strategies
-    parser.add_argument("--list-strategies", action="store_true",
-                       help="List available strategies and exit")
-    
     # Optional global parameters
     parser.add_argument("--timeout", type=int, default=None,
                        help="Timeout in seconds (default: None)")
@@ -99,14 +116,6 @@ Use --list-strategies to see available strategies and their descriptions.
     parser.add_argument('--no-numeric-grounding', action='store_true',
                         help='Disable numeric interval bounds in reachability '
                              'grounder (enabled by default)')
-
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"RantanPlan {metadata.version('rantanplan')}"
-    )
-    
-    return parser.parse_args()
 
 
 
@@ -203,6 +212,28 @@ def solve_problem(problem, args):
 
 
 
+def report_result(result, args) -> int:
+    """Print the status and the plan (unless --silent), and return the exit
+    code: 0 if there is a plan, 1 otherwise."""
+    if not result:
+        return 1
+
+    # Print result (unless --silent)
+    if not args.silent:
+        print(f"Status: {result.status}")
+    if result.plan and hasattr(result.plan, 'actions'):
+        if not args.silent:
+            print(f"Plan found with {len(result.plan.actions)} actions")
+            for i, action in enumerate(result.plan.actions):
+                params = ", ".join(map(str, action.actual_parameters))
+                print(f"  {i+1}. {action.action.name}({params})")
+
+        # Plan files are written by the C++ backend in IPC format
+        return 0
+    if not args.silent:
+        print("No plan found")
+    return 1
+
 
 
 
@@ -251,24 +282,7 @@ def main():
 
     # Solve
     result = solve_problem(problem, args)
-    if not result:
-        sys.exit(1)
-
-    # Print result (unless --silent)
-    if not args.silent:
-        print(f"Status: {result.status}")
-    if result.plan and hasattr(result.plan, 'actions'):
-        if not args.silent:
-            print(f"Plan found with {len(result.plan.actions)} actions")
-            for i, action in enumerate(result.plan.actions):
-                params = ", ".join(map(str, action.actual_parameters))
-                print(f"  {i+1}. {action.action.name}({params})")
-
-        # Plan files are written by the C++ backend in IPC format
-    else:
-        if not args.silent:
-            print("No plan found")
-        sys.exit(1)
+    sys.exit(report_result(result, args))
 
 
 if __name__ == "__main__":
