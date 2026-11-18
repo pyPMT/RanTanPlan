@@ -33,17 +33,22 @@ void AbstractSuffixEncoder::initialize() {
     const auto& actions = problem_.actions();
     const auto& fluents = problem_.grounded_fluents();
 
-    // One abstract Bool per action
+    // One abstract Bool per GROUND action. z3 interns constants by name, so the
+    // name must be unique per grounding: action.name() is the schema name, and
+    // "abs_" + name() made all groundings of a schema share one variable (one
+    // grounding could not be used without every grounding's preconditions and
+    // costs). '!' never occurs in planning identifiers, so neither these names
+    // nor mod!<i> can collide with state/action variables ("<name>_<args>_<t>").
     action_abs_.reserve(actions.size());
     for (const auto& action : actions) {
-        std::string name = "abs_" + action.name();
+        std::string name = "abs!" + std::to_string(action.id()) + "!" + action.label();
         action_abs_.push_back(ctx_.bool_const(name.c_str()));
     }
 
     // One mod_v Bool per grounded fluent
     mod_vars_.reserve(fluents.size());
     for (size_t i = 0; i < fluents.size(); ++i) {
-        std::string name = "mod_" + std::to_string(i);
+        std::string name = "mod!" + std::to_string(i);
         mod_vars_.push_back(ctx_.bool_const(name.c_str()));
         fluent_to_mod_index_[fluents[i]] = i;
     }
