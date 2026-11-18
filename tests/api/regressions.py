@@ -684,9 +684,9 @@ def test_landmark_residual_counts_every_contributor():
     mass per step from the achievers of x >= 10 alone (`small`, 1 a step), so
     its depth bound was 10 and, under max_steps 5, a problem with a two-step
     plan came back UNSOLVABLE_INCOMPLETELY. Counting `big` gives 10 a step and
-    a bound of 1. cgb also builds its deficit budgets from the contributors."""
+    a bound of 1."""
     p = _residual_contributor_problem()
-    for params in ({}, {"strategy": "cgb"}, {"strategy": "elsc"}):
+    for params in ({}, {"strategy": "elsc"}):
         r = _solve_with(p, max_steps=5, **params)
         assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
             f"{params}: {r.status}"
@@ -826,7 +826,7 @@ def test_declared_bounds_on_a_non_grounded_encoder_are_unsupported():
 # every encoder and parallelism path, without the semantic-interference
 # strategies on the Grounded encoder.
 NORMALIZATION_STRATEGIES = ("seq", "e", "f", "r2e", "egsc", "fgsc",
-                            "elsc", "flsc", "cgb", "elsc-dt")
+                            "elsc", "flsc", "elsc-dt")
 
 
 def _registered(*names):

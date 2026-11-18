@@ -16,7 +16,6 @@
 #include "../planners/incremental_horizon_planner.hpp"
 #include "../planners/double_tail_planner.hpp"
 #include "../planners/branch_and_bound_planner.hpp"
-#include "../planners/cgb_planner.hpp"
 
 #include "../planners/propagators/modules/exists_cycle_module.hpp"
 #include "../planners/propagators/modules/forall_mutex_module.hpp"
@@ -58,12 +57,12 @@ void StrategyFactory::validate(const StrategySpec& spec,
     }
 
     if (spec.propagator.count(PropagatorModuleKind::FrameAxiom) &&
-        (spec.planner == PlannerKind::CGB || uses_double_tail(spec))) {
+        uses_double_tail(spec)) {
         throw std::invalid_argument(
             "FrameAxiom propagator module is only validated with the "
-            "Sequential planner (incompatible with CGB and DoubleTail). "
+            "Sequential planner (incompatible with DoubleTail). "
             "It registers transitions contiguously by stride arithmetic, "
-            "which those planners violate.");
+            "which that planner violates.");
     }
 
     if (horizon_schedule != "linear" && uses_double_tail(spec)) {
@@ -257,16 +256,13 @@ std::unique_ptr<BasePlanner> StrategyFactory::create_planner(
             planner = std::make_unique<BranchAndBoundPlanner>(
                 problem, encoder, ctx, interference, spec.semantics);
             break;
-        case PlannerKind::CGB:
-            planner = std::make_unique<CGBPlanner>(problem, encoder, ctx);
-            break;
     }
     if (!planner) {
         throw std::invalid_argument("Unknown planner kind");
     }
 
     // Route preprocessing artifacts: profile for all planners, then
-    // planner-declared consumption (achievers for CGB, SDAC bounds for B&B).
+    // planner-declared consumption (SDAC bounds for B&B).
     planner->set_arithmetic_profile(pre.arithmetic_profile);
     planner->consume_artifacts(pre);
     return planner;

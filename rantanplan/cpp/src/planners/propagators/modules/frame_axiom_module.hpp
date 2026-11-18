@@ -223,8 +223,8 @@ namespace rantanplan {
  *  (2) GroundedEncoder only — the module no-ops for any other encoder.
  *  (3) TRANSITIONS REGISTER CONTIGUOUSLY FROM 0.  The layout is stride
  *      arithmetic, so a first call with t=40 would fabricate 39 phantom
- *      blocks.  StrategyFactory::validate rejects this module with the CGB
- *      and DoubleTail planners (the only non-contiguous registrars), and
+ *      blocks.  StrategyFactory::validate rejects this module with the
+ *      DoubleTail planner (the only non-contiguous registrar), and
  *      register_transition() THROWS if the contract is violated anyway — a
  *      throw and not an assert, because a release build must fail loudly too.
  *  (4) Registration happens at base level, between check() calls.

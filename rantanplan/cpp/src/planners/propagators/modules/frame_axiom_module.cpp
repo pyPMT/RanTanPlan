@@ -231,7 +231,7 @@ void FrameAxiomModule::register_transition(int t) {
             std::to_string(num_transitions_) + " already registered). "
             "The slot layout is stride arithmetic; a gap would fabricate "
             "phantom blocks. StrategyFactory::validate rejects this module "
-            "with the CGB and DoubleTail planners for exactly this reason.");
+            "with the DoubleTail planner for exactly this reason.");
 
     // f^t and f^{t+1} are both needed.  The latter is also f^t of transition
     // t+1 and shares its slot, so the tail block is created ahead of time.

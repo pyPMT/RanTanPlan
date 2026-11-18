@@ -19,8 +19,7 @@ namespace rantanplan {
  *   - state_constraints.conservations: discovered f + g == C invariants
  *   - state_constraints.domains: reachable object-fluent value sets
  *     (MutexAnalysisPass later adds state_constraints.mutexes)
- *   - achievers: goal-relevant achiever analysis (for the CGB planner and
- *     LandmarkAnalysisPass)
+ *   - achievers: goal-relevant achiever analysis (for LandmarkAnalysisPass)
  *   - sdac_cost_lower_bounds: cost bounds on the FINAL action set
  *
  * Always runs: the published bounds/domains are unconditionally injected at

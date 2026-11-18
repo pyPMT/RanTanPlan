@@ -152,8 +152,8 @@ private:
 
     // Conditional-effect guard conditions (see action_to_effect_conditions_).
     // Fed into achiever computation so pruning can find their establishers, but
-    // kept out of pre_conditions_ / get_all_conditions() so the landmark, cgb
-    // and init-satisfaction consumers are unaffected.
+    // kept out of pre_conditions_ / get_all_conditions() so the landmark and
+    // init-satisfaction consumers are unaffected.
     std::unordered_set<ExprID> effect_conditions_;
 
     // Cached set of all conditions (computed once for performance)

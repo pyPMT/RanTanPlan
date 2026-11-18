@@ -66,8 +66,7 @@ public:
         const Problem& problem, BaseEncoder& encoder);
 
     /// Create the planner and route its artifacts: arithmetic profile,
-    /// then BasePlanner::consume_artifacts (CGB takes achievers, B&B
-    /// takes SDAC cost bounds).
+    /// then BasePlanner::consume_artifacts (B&B takes SDAC cost bounds).
     static std::unique_ptr<BasePlanner> create_planner(
         const StrategySpec& spec, PreprocessedProblem& pre,
         BaseEncoder& encoder, z3::context& ctx);
