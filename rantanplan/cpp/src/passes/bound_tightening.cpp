@@ -163,15 +163,11 @@ static bool verify_lower_bound(ExprID fluent_id, const Problem& problem) {
             if (ee.is_conditional()) return false;
 
             if (ee.is_increase()) {
-                if (ee.is_constant_value()) {
-                    ExprID val = ee.value_id();
-                    double v = 0.0;
-                    if (pool.payload_is_int(val))
-                        v = static_cast<double>(pool.payload_int(val));
-                    else if (pool.payload_is_double(val))
-                        v = pool.payload_double(val);
-                    if (v < 0.0) return false;
-                }
+                // Only a constant amount >= 0 is known not to lower f; a negative
+                // or non-constant one may (sailing-wind's moves increase y by
+                // (* (v ?b) -0.71)).
+                double v = extract_constant(ee.value_id(), pool);
+                if (!std::isfinite(v) || v < 0.0) return false;
                 continue;
             }
 
@@ -215,6 +211,10 @@ static double verify_upper_bound(ExprID fluent_id, const Problem& problem) {
             if (ee.is_conditional()) return INFINITY;
 
             if (ee.is_decrease()) {
+                // Only a constant amount >= 0 is known not to raise f; a negative
+                // or non-constant one may (the mirror image of verify_lower_bound).
+                double d = extract_constant(ee.value_id(), pool);
+                if (!std::isfinite(d) || d < 0.0) return INFINITY;
                 continue;
             }
 

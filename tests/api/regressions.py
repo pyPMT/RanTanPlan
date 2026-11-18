@@ -6,7 +6,7 @@ They live in the API suite so they run on every invocation, including
 """
 from unified_planning.shortcuts import (
     Fluent, InstantaneousAction, Problem, BoolType, IntType, UserType, Object,
-    Equals, GE, Not,
+    Equals, GE, LE, Not, Times,
 )
 from unified_planning.engines import PlanGenerationResultStatus
 
@@ -533,6 +533,49 @@ def test_ground_atoms_have_exactly_one_expr_id():
         f"{aliased} ground state variable(s) have more than one ExprID"
 
 
+def test_a_non_constant_amount_does_not_bound_its_fluent():
+    """tighten_bounds_syntactically (bound_tightening.cpp) took an increase by
+    an amount that is not a constant as never lowering its fluent, so a fluent
+    that starts at 0 got the lower bound 0. On sailing-wind-sat a move
+    increases y by (* (v ?b) -0.71): y got the lower bound 0, goal relevance
+    dropped the only action that saves the person at y = -71, and two solvable
+    problems came out UNSOLVABLE_PROVEN. verify_upper_bound had the mirror
+    image: every decrease was taken as never raising its fluent.
+
+        y : Int, initially 0        v : Int, initially 1
+        speed : v += 1               (so v is not static and the amount is not folded)
+        move  : y += v * -1          (or y -= v * -1)
+        save  : y <= -2 -> saved     (or y >= 2)
+        goal  : saved                (solvable: move twice, save)"""
+    for direction in ("increase", "decrease"):
+        y, v = Fluent("y", IntType()), Fluent("v", IntType())
+        saved = Fluent("saved", BoolType())
+        p = Problem(f"non_constant_{direction}")
+        p.add_fluent(y, default_initial_value=0)
+        p.add_fluent(v, default_initial_value=1)
+        p.add_fluent(saved, default_initial_value=False)
+        speed = InstantaneousAction("speed")
+        speed.add_increase_effect(v(), 1)
+        move = InstantaneousAction("move")
+        save = InstantaneousAction("save")
+        if direction == "increase":
+            move.add_increase_effect(y(), Times(v(), -1))
+            save.add_precondition(LE(y(), -2))
+        else:
+            move.add_decrease_effect(y(), Times(v(), -1))
+            save.add_precondition(GE(y(), 2))
+        save.add_effect(saved(), True)
+        for a in (speed, move, save):
+            p.add_action(a)
+        p.add_goal(saved())
+
+        r = solve(p)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{direction}: expected SOLVED, got {r.status} (a bound from a " \
+            f"non-constant amount again?)"
+        assert_valid(p, r.plan)
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -545,4 +588,5 @@ CASES = [
     test_object_fluent_default_initial_value,
     test_object_fluent_assign_from_fluent_reachability,
     test_axioms_rejected_as_unsupported,
+    test_a_non_constant_amount_does_not_bound_its_fluent,
 ]
