@@ -234,8 +234,9 @@ z3::expr LiftedEncodingVisitor::convert_node_pool(ExprID id) {
         if (std::holds_alternative<int64_t>(node.payload)) {
             return ctx_.int_val(std::get<int64_t>(node.payload));
         }
-        if (std::holds_alternative<double>(node.payload)) {
-            return ctx_.real_val(std::to_string(std::get<double>(node.payload)).c_str());
+        if (std::holds_alternative<Rational>(node.payload)) {
+            const Rational& r = std::get<Rational>(node.payload);
+            return ctx_.real_val(r.num, r.den);
         }
         if (std::holds_alternative<bool>(node.payload)) {
             return ctx_.bool_val(std::get<bool>(node.payload));

@@ -4,9 +4,11 @@ reproduces one historical bug in the smallest form that fails without the fix.
 They live in the API suite so they run on every invocation, including
 ``--quick`` (the full PDDL sweep that also covers them is skipped there).
 """
+from fractions import Fraction
+
 from unified_planning.shortcuts import (
-    Fluent, InstantaneousAction, Problem, ArrayType, BoolType, IntType, UserType,
-    Object, And, Count, Equals, GE, GT, Iff, Int, LE, LT, Not, Or, Plus, Times,
+    Fluent, InstantaneousAction, Problem, ArrayType, BoolType, IntType, RealType,
+    UserType, Object, And, Count, Equals, GE, GT, Iff, Int, LE, LT, Not, Or, Plus, Times,
 )
 from unified_planning.engines import PlanGenerationResultStatus
 
@@ -1697,6 +1699,90 @@ def test_fluents_named_like_operators_keep_their_names():
         assert_valid(p, r.plan)
 
 
+def _real_problem(name, fluents, actions, goal):
+    p = Problem(name)
+    for f, initial in fluents:
+        p.add_fluent(f, default_initial_value=initial)
+    for a in actions:
+        p.add_action(a)
+    p.add_goal(goal)
+    return p
+
+
+def test_reals_are_exact():
+    """A real constant reaches the solver as the exact fraction UP gives. A
+    third added three times is 1, and 10^-7 is not 0. Through a double and a
+    6-decimal string both would be unsolvable: 0.333333 * 3 < 1, and
+    y = 0.000000 is not above 0."""
+    x = Fluent("x", RealType())
+    inc = InstantaneousAction("inc")
+    inc.add_increase_effect(x(), Fraction(1, 3))
+    thirds = _real_problem("thirds", [(x, 0)], [inc], Equals(x(), 1))
+    r = solve(thirds)
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert len(r.plan.actions) == 3, r.plan
+    assert_valid(thirds, r.plan)
+
+    y = Fluent("y", RealType())
+    set_y = InstantaneousAction("set_y")
+    set_y.add_effect(y(), Fraction(1, 10**7))
+    small = _real_problem("small", [(y, 0)], [set_y], GT(y(), 0))
+    r = solve(small)
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert_valid(small, r.plan)
+
+
+def test_reals_equal_to_six_decimals_are_two_nodes():
+    """The interning key holds a real exactly, so two reals that agree to 6
+    decimals are two nodes, and z := 2 * 10^-7 is above y := 10^-7."""
+    y, z = Fluent("y", RealType()), Fluent("z", RealType())
+    a = InstantaneousAction("a")
+    a.add_effect(y(), Fraction(1, 10**7))
+    a.add_effect(z(), Fraction(2, 10**7))
+    p = _real_problem("close_reals", [(y, 0), (z, 0)], [a], GT(z(), y()))
+    reals = sorted(text for kind, type_name, text in _pool_nodes(p)
+                   if kind == _KIND.CONSTANT and type_name == "up:real")
+    assert reals == ["1/10000000", "1/5000000"], reals
+    r = solve(p)
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert_valid(p, r.plan)
+
+
+def test_declared_real_bounds_keep_their_decimals():
+    """A declared bound reaches the solver as its shortest decimal: the upper
+    bound 10^-7 of x is 0.0000001, not 0.000000, so x can take it."""
+    x = Fluent("x", RealType(0, Fraction(1, 10**7)))
+    set_x = InstantaneousAction("set_x")
+    set_x.add_effect(x(), Fraction(1, 10**7))
+    p = _real_problem("small_bound", [(x, 0)], [set_x], GT(x(), 0))
+    r = solve(p, strategy=GROUNDED)
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert_valid(p, r.plan)
+
+
+def test_real_folding_is_exact():
+    """Folding computes with fractions: static a + b with a = 1/10 and
+    b = 2/10 is 3/10, and so are y += 1/10 and y += 2/10 merged into one
+    write. In double, 0.1 + 0.2 is 0.30000000000000004."""
+    a, b = Fluent("a", RealType()), Fluent("b", RealType())
+    x, y = Fluent("x", RealType()), Fluent("y", RealType())
+    set_x = InstantaneousAction("set_x")
+    set_x.add_effect(x(), Plus(a(), b()))
+    inc_y = InstantaneousAction("inc_y")
+    inc_y.add_increase_effect(y(), Fraction(1, 10))
+    inc_y.add_increase_effect(y(), Fraction(2, 10))
+    p = _real_problem("real_folding",
+                      [(a, Fraction(1, 10)), (b, Fraction(2, 10)), (x, 0), (y, 0)],
+                      [set_x, inc_y],
+                      And(Equals(x(), Fraction(3, 10)), Equals(y(), Fraction(3, 10))))
+    reals = {text for kind, type_name, text in _pool_nodes(p)
+             if kind == _KIND.CONSTANT and type_name == "up:real"}
+    assert "3/10" in reals, reals
+    r = solve(p)
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert_valid(p, r.plan)
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -1735,4 +1821,8 @@ CASES = [
     test_unsupported_expression_kinds_are_rejected,
     test_a_conjunction_is_one_node_whoever_builds_it,
     test_fluents_named_like_operators_keep_their_names,
+    test_reals_are_exact,
+    test_reals_equal_to_six_decimals_are_two_nodes,
+    test_declared_real_bounds_keep_their_decimals,
+    test_real_folding_is_exact,
 ]

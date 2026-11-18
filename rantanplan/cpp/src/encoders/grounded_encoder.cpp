@@ -422,7 +422,7 @@ z3::expr GroundedEncoder::encode_state_constraints(int t) {
         z3::expr fluent = convert_expr_id_to_z3(bound.fluent_id, t + 1);
         z3::expr val = fluent.is_int()
             ? ctx_.int_val(static_cast<int64_t>(bound.bound))
-            : ctx_.real_val(std::to_string(bound.bound).c_str());
+            : variable_factory_.real_val(bound.bound);
         if (bound.is_lower) {
             conjuncts.push_back(fluent >= val);
         } else {
@@ -451,7 +451,7 @@ z3::expr GroundedEncoder::encode_state_constraints(int t) {
         z3::expr g = convert_expr_id_to_z3(cons.fluent2_id, t);
         z3::expr c = f.is_int()
             ? ctx_.int_val(static_cast<int64_t>(cons.constant))
-            : ctx_.real_val(std::to_string(cons.constant).c_str());
+            : variable_factory_.real_val(cons.constant);
         conjuncts.push_back((f + g) == c);
     }
 

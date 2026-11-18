@@ -35,8 +35,8 @@ static Interval evaluate_constant_expr_range(
     if (!eid.valid()) return Interval::unbounded();
 
     if (pool.is_constant(eid)) {
-        if (pool.payload_is_double(eid))
-            return Interval(pool.payload_double(eid));
+        if (pool.payload_is_real(eid))
+            return Interval(pool.payload_real(eid).to_double());
         if (pool.payload_is_int(eid))
             return Interval(static_cast<double>(pool.payload_int(eid)));
         return Interval::unbounded();
@@ -93,8 +93,8 @@ NumericBoundsIndex::NumericBoundsIndex(const Problem& problem)
         if (fluent.is_array() || !fluent.is_function()) continue;
         auto dv = fluent.declared_default();
         if (!dv) continue;
-        if (pool.payload_is_double(*dv)) {
-            declared_default_by_schema_[fluent.id()] = pool.payload_double(*dv);
+        if (pool.payload_is_real(*dv)) {
+            declared_default_by_schema_[fluent.id()] = pool.payload_real(*dv).to_double();
         } else if (pool.payload_is_int(*dv)) {
             declared_default_by_schema_[fluent.id()] =
                 static_cast<double>(pool.payload_int(*dv));
@@ -111,8 +111,8 @@ void NumericBoundsIndex::initialize_from_initial_state() {
 
         // Extract numeric value from the CONSTANT payload.
         double val = 0.0;
-        if (pool.payload_is_double(value_eid)) {
-            val = pool.payload_double(value_eid);
+        if (pool.payload_is_real(value_eid)) {
+            val = pool.payload_real(value_eid).to_double();
         } else if (pool.payload_is_int(value_eid)) {
             val = static_cast<double>(pool.payload_int(value_eid));
         } else {
@@ -294,8 +294,8 @@ void NumericBoundsIndex::precompute_freezes() {
             if (it != constant_ranges.end()) {
                 double val = 0.0;
                 ExprID vid = assignment.value_id();
-                if (pool.payload_is_double(vid))
-                    val = pool.payload_double(vid);
+                if (pool.payload_is_real(vid))
+                    val = pool.payload_real(vid).to_double();
                 else if (pool.payload_is_int(vid))
                     val = static_cast<double>(pool.payload_int(vid));
                 it->second = it->second.convex_union(Interval(val));

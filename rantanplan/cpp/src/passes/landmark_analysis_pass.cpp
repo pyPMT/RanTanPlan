@@ -19,7 +19,7 @@ namespace {
 std::optional<double> eval_const_num(const ExprPool& pool, ExprID eid) {
     if (!eid.valid()) return std::nullopt;
     if (pool.is_constant(eid)) {
-        if (pool.payload_is_double(eid)) return pool.payload_double(eid);
+        if (pool.payload_is_real(eid)) return pool.payload_real(eid).to_double();
         if (pool.payload_is_int(eid))
             return static_cast<double>(pool.payload_int(eid));
         return std::nullopt;

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -11,6 +10,7 @@
 #include <cassert>
 #include <span>
 #include "expr_enums.hpp"
+#include "rational.hpp"
 
 // Optional Improvements
 // ---------------------
@@ -53,8 +53,9 @@ struct hash<rantanplan::ExprID> : hash<int32_t> {
 
 namespace rantanplan {
 
-/// Payload carried by leaf nodes in the expression pool.
-using ExprPayload = std::variant<std::monostate, bool, int64_t, double, std::string>;
+/// Payload carried by leaf nodes in the expression pool. A real constant is an
+/// exact Rational.
+using ExprPayload = std::variant<std::monostate, bool, int64_t, Rational, std::string>;
 
 /// A single node in the expression pool (internal representation). Two
 /// kinds (FUNCTION_APPLICATION, STATE_VARIABLE) use a head+arguments child
@@ -298,11 +299,11 @@ public:
     int64_t payload_int(ExprID id) const {
         return std::get<int64_t>(get(id).payload);
     }
-    bool payload_is_double(ExprID id) const {
-        return std::holds_alternative<double>(get(id).payload);
+    bool payload_is_real(ExprID id) const {
+        return std::holds_alternative<Rational>(get(id).payload);
     }
-    double payload_double(ExprID id) const {
-        return std::get<double>(get(id).payload);
+    const Rational& payload_real(ExprID id) const {
+        return std::get<Rational>(get(id).payload);
     }
     bool payload_is_string(ExprID id) const {
         return std::holds_alternative<std::string>(get(id).payload);
@@ -327,23 +328,20 @@ public:
     }
 
     /// Intern a real constant and return its ExprID.
-    ExprID intern_double_constant(double value) {
+    ExprID intern_real_constant(const Rational& value) {
         ExprNode node;
         node.kind = ExprKind::CONSTANT;
         node.payload = value;
         return intern(std::move(node));
     }
 
-    /// Intern the result of folding arithmetic, which is computed in double:
-    /// an integer constant if `integer` (every operand was an integer and the
-    /// operation keeps integers) and the value fits one, else a real one. So
-    /// folded 2 + 3 is the node of the literal 5.
-    ExprID intern_folded_constant(double value, bool integer) {
-        // Whole and below 2^63 in magnitude, so the cast is exact.
-        if (integer && std::trunc(value) == value && std::fabs(value) < 0x1p63) {
-            return intern_int_constant(static_cast<int64_t>(value));
-        }
-        return intern_double_constant(value);
+    /// Intern the result of folding arithmetic: an integer constant if
+    /// `integer` (every operand was an integer and the operation keeps
+    /// integers), else a real one. So folded 2 + 3 is the node of the literal
+    /// 5, and folded 2.0 + 3.0 the node of the real 5.0.
+    ExprID intern_folded_constant(const Rational& value, bool integer) {
+        if (integer && value.is_integer()) return intern_int_constant(value.num);
+        return intern_real_constant(value);
     }
 
     /// Intern a boolean constant and return its ExprID.

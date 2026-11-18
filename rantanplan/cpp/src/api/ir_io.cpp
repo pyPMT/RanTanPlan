@@ -107,9 +107,13 @@ static void intern_nodes(IRLoadContext& ctx) {
         } else if (ir_node.int_value) {
             node.payload = *ir_node.int_value;
         } else if (ir_node.real_value) {
-            double val = static_cast<double>(ir_node.real_value->first) /
-                         static_cast<double>(ir_node.real_value->second);
-            node.payload = val;
+            auto [num, den] = *ir_node.real_value;
+            auto value = Rational::make(num, den);
+            if (!value) {
+                throw std::runtime_error("Real constant " + std::to_string(num) + "/" +
+                                         std::to_string(den) + " in IR input is not a number");
+            }
+            node.payload = *value;
         } else if (ir_node.bool_value) {
             node.payload = *ir_node.bool_value;
         }

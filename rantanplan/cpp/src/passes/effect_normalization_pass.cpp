@@ -36,10 +36,10 @@ bool same_assignment(const EffectExpression& a, const EffectExpression& b) {
 }
 
 /// The value of a numeric constant, or nothing.
-std::optional<double> numeric_constant(const ExprPool& pool, ExprID id) {
+std::optional<Rational> numeric_constant(const ExprPool& pool, ExprID id) {
     if (!id.valid() || !pool.is_constant(id)) return std::nullopt;
-    if (pool.payload_is_int(id)) return static_cast<double>(pool.payload_int(id));
-    if (pool.payload_is_double(id)) return pool.payload_double(id);
+    if (pool.payload_is_int(id)) return Rational::of(pool.payload_int(id));
+    if (pool.payload_is_real(id)) return pool.payload_real(id);
     return std::nullopt;
 }
 
@@ -456,20 +456,29 @@ private:
                                          const std::vector<const EffectExpression*>& writes,
                                          ExprID guard) {
         const int type_id = pool_.type_id(fid);
-        double constant = 0.0;
+        Rational constant = Rational::of(0);
         bool integer = true;  // every constant summed is an integer
         std::vector<ExprID> added, subtracted;
         for (const EffectExpression* e : writes) {
             const bool increase = e->kind() == EffectExpression::Kind::INCREASE;
-            if (auto c = numeric_constant(pool_, e->value_id())) {
-                constant += increase ? *c : -*c;
+            auto c = numeric_constant(pool_, e->value_id());
+            // A constant joins the sum unless the sum would not fit in 64 bits;
+            // then it stays a term of its own.
+            auto sum = c ? (increase ? add(constant, *c) : sub(constant, *c)) : std::nullopt;
+            if (sum) {
+                constant = *sum;
                 integer = integer && pool_.payload_is_int(e->value_id());
             } else {
                 (increase ? added : subtracted).push_back(e->value_id());
             }
         }
-        if (constant > 0) added.push_back(pool_.intern_folded_constant(constant, integer));
-        if (constant < 0) subtracted.push_back(pool_.intern_folded_constant(-constant, integer));
+        if (constant.num > 0) added.push_back(pool_.intern_folded_constant(constant, integer));
+        if (constant.num < 0) {
+            if (auto minus = neg(constant))  // only -2^63 has no negation
+                subtracted.push_back(pool_.intern_folded_constant(*minus, integer));
+            else
+                added.push_back(pool_.intern_folded_constant(constant, integer));
+        }
         if (added.empty() && subtracted.empty()) return std::nullopt;
 
         auto sum = [&](const std::vector<ExprID>& terms) {

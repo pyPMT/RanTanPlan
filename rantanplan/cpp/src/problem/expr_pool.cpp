@@ -24,9 +24,11 @@ std::string ExprNode::canonical_key() const {
         } else if constexpr (std::is_same_v<T, int64_t>) {
             key += "i:";
             key += std::to_string(val);
-        } else if constexpr (std::is_same_v<T, double>) {
-            key += "d:";
-            key += std::to_string(val);
+        } else if constexpr (std::is_same_v<T, Rational>) {
+            key += "r:";
+            key += std::to_string(val.num);
+            key += '/';
+            key += std::to_string(val.den);
         } else if constexpr (std::is_same_v<T, std::string>) {
             key += "s:";
             key += std::to_string(val.size());
@@ -101,7 +103,7 @@ ExprID ExprPool::intern(ExprNode node) {
     if (node.kind == ExprKind::CONSTANT) {
         if (std::holds_alternative<bool>(node.payload)) node.type_id = BOOL_TYPE_ID;
         else if (std::holds_alternative<int64_t>(node.payload)) node.type_id = INT_TYPE_ID;
-        else if (std::holds_alternative<double>(node.payload)) node.type_id = REAL_TYPE_ID;
+        else if (std::holds_alternative<Rational>(node.payload)) node.type_id = REAL_TYPE_ID;
     }
 
     std::string key = node.canonical_key();
@@ -149,8 +151,8 @@ std::string ExprPool::to_string(ExprID id) const {
                 return val ? "true" : "false";
             } else if constexpr (std::is_same_v<T, int64_t>) {
                 return std::to_string(val);
-            } else if constexpr (std::is_same_v<T, double>) {
-                return std::to_string(val);
+            } else if constexpr (std::is_same_v<T, Rational>) {
+                return val.to_string();
             } else if constexpr (std::is_same_v<T, std::string>) {
                 return val;
             }

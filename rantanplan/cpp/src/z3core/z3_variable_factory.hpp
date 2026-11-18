@@ -2,6 +2,7 @@
 
 #include "../problem/fluent.hpp"
 #include "../problem/action.hpp"
+#include "../problem/rational.hpp"
 #include <z3++.h>
 #include <string>
 #include <unordered_map>
@@ -97,7 +98,12 @@ public:
     
     // Numeric constant creation (Int or Real depending on all_integer mode)
     z3::expr make_numeric_val(int64_t v) const;
+    z3::expr make_numeric_val(const Rational& v) const;
+    /// An estimate an analysis computed, as its shortest decimal (see
+    /// shortest_decimal); Int in integer mode.
     z3::expr make_numeric_val(double v) const;
+    /// A Real, whatever the integer mode, for a fluent of sort Real.
+    z3::expr real_val(double v) const;
     z3::expr make_zero() const;
 
     // Timestep management queries

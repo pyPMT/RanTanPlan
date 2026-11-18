@@ -14,10 +14,10 @@ namespace rantanplan {
 // Helpers: extract numeric value from a CONSTANT ExprID
 // ============================================================================
 
-static std::optional<double> try_get_numeric(const ExprPool& pool, ExprID id) {
+static std::optional<Rational> try_get_numeric(const ExprPool& pool, ExprID id) {
     if (!id.valid() || !pool.is_constant(id)) return std::nullopt;
-    if (pool.payload_is_double(id)) return pool.payload_double(id);
-    if (pool.payload_is_int(id))    return static_cast<double>(pool.payload_int(id));
+    if (pool.payload_is_real(id)) return pool.payload_real(id);
+    if (pool.payload_is_int(id))  return Rational::of(pool.payload_int(id));
     return std::nullopt;
 }
 
@@ -26,16 +26,16 @@ static std::optional<double> try_get_numeric(const ExprPool& pool, ExprID id) {
 // ============================================================================
 
 // Try to fold a FUNCTION_APPLICATION whose arguments (children[1..]) are all
-// numeric constants. Returns a folded CONSTANT ExprID or EXPR_NULL. The result
-// is an integer if every argument is one and the operation keeps integers (all
-// but division).
+// numeric constants, exactly. Returns a folded CONSTANT ExprID, or EXPR_NULL if
+// the arguments are not all constants, a value does not fit in 64 bits, or the
+// operation is undefined (division by 0). The result is an integer if every
+// argument is one and the operation keeps integers (all but division).
 static ExprID try_fold_arithmetic(ExprPool& pool, ExprOperator op,
                                    const std::vector<ExprID>& children) {
     // children[0] = head symbol; children[1..] = arguments
     if (children.size() < 2) return EXPR_NULL;
 
-    // Collect numeric values from arguments
-    std::vector<double> vals;
+    std::vector<Rational> vals;
     bool integer = op != ExprOperator::DIVIDE;
     for (size_t i = 1; i < children.size(); ++i) {
         auto v = try_get_numeric(pool, children[i]);
@@ -44,44 +44,47 @@ static ExprID try_fold_arithmetic(ExprPool& pool, ExprOperator op,
         integer = integer && pool.payload_is_int(children[i]);
     }
 
-    double result;
+    std::optional<Rational> result;
     switch (op) {
         case ExprOperator::PLUS:
-            result = 0.0;
-            for (double v : vals) result += v;
+            result = Rational::of(0);
+            for (const Rational& v : vals) if (result) result = add(*result, v);
             break;
         case ExprOperator::MINUS:
-            if (vals.size() == 1) { result = -vals[0]; break; }
-            result = vals[0] - vals[1];
+            result = vals.size() == 1 ? neg(vals[0]) : sub(vals[0], vals[1]);
             break;
         case ExprOperator::MULTIPLY:
-            result = 1.0;
-            for (double v : vals) result *= v;
+            result = Rational::of(1);
+            for (const Rational& v : vals) if (result) result = mul(*result, v);
             break;
         case ExprOperator::DIVIDE:
-            if (vals.size() < 2 || vals[1] == 0.0) return EXPR_NULL;
-            result = vals[0] / vals[1];
+            if (vals.size() < 2) return EXPR_NULL;
+            result = div(vals[0], vals[1]);
             break;
         case ExprOperator::MODULO:
-            if (vals.size() < 2 || vals[1] == 0.0) return EXPR_NULL;
-            result = std::fmod(vals[0], vals[1]);
+            // Integers only, truncating like C++'s %.
+            if (vals.size() < 2 || !vals[0].is_integer() || !vals[1].is_integer() ||
+                vals[1].num == 0 || (vals[0].num == INT64_MIN && vals[1].num == -1)) {
+                return EXPR_NULL;
+            }
+            result = Rational::of(vals[0].num % vals[1].num);
             break;
         case ExprOperator::ABSOLUTE:
-            result = std::abs(vals[0]);
+            result = vals[0].num < 0 ? neg(vals[0]) : vals[0];
             break;
         case ExprOperator::MAXIMUM:
-            result = vals[0];
-            for (size_t i = 1; i < vals.size(); ++i) result = std::max(result, vals[i]);
-            break;
         case ExprOperator::MINIMUM:
             result = vals[0];
-            for (size_t i = 1; i < vals.size(); ++i) result = std::min(result, vals[i]);
+            for (size_t i = 1; i < vals.size(); ++i) {
+                const int c = compare(vals[i], *result);
+                if (op == ExprOperator::MAXIMUM ? c > 0 : c < 0) result = vals[i];
+            }
             break;
         default:
             return EXPR_NULL;
     }
-
-    return pool.intern_folded_constant(result, integer);
+    if (!result) return EXPR_NULL;
+    return pool.intern_folded_constant(*result, integer);
 }
 
 // ============================================================================
@@ -96,13 +99,14 @@ static ExprID try_fold_comparison(ExprPool& pool, ExprOperator op,
     auto rhs = try_get_numeric(pool, children[2]);
     if (!lhs || !rhs) return EXPR_NULL;
 
+    const int c = compare(*lhs, *rhs);
     bool result;
     switch (op) {
-        case ExprOperator::EQUALS:        result = (*lhs == *rhs); break;
-        case ExprOperator::LESS_EQUAL:    result = (*lhs <= *rhs); break;
-        case ExprOperator::LESS_THAN:     result = (*lhs <  *rhs); break;
-        case ExprOperator::GREATER_EQUAL: result = (*lhs >= *rhs); break;
-        case ExprOperator::GREATER_THAN:  result = (*lhs >  *rhs); break;
+        case ExprOperator::EQUALS:        result = c == 0; break;
+        case ExprOperator::LESS_EQUAL:    result = c <= 0; break;
+        case ExprOperator::LESS_THAN:     result = c <  0; break;
+        case ExprOperator::GREATER_EQUAL: result = c >= 0; break;
+        case ExprOperator::GREATER_THAN:  result = c >  0; break;
         default: return EXPR_NULL;
     }
 

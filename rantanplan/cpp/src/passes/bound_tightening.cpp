@@ -11,7 +11,7 @@ namespace rantanplan {
 static double extract_constant(ExprID id, const ExprPool& pool) {
     if (!id.valid() || !pool.is_constant(id)) return std::nan("");
     if (pool.payload_is_int(id)) return static_cast<double>(pool.payload_int(id));
-    if (pool.payload_is_double(id)) return pool.payload_double(id);
+    if (pool.payload_is_real(id)) return pool.payload_real(id).to_double();
     return std::nan("");
 }
 
@@ -271,8 +271,8 @@ int tighten_bounds_syntactically(
         ExprID vid = assignment.value_id();
         if (pool.payload_is_int(vid))
             initial_values[fid] = static_cast<double>(pool.payload_int(vid));
-        else if (pool.payload_is_double(vid))
-            initial_values[fid] = pool.payload_double(vid);
+        else if (pool.payload_is_real(vid))
+            initial_values[fid] = pool.payload_real(vid).to_double();
     }
 
     int tightened = 0;

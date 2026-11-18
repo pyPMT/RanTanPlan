@@ -244,8 +244,8 @@ z3::expr GroundedEncodingVisitor::convert_node(ExprID id) {
         if (std::holds_alternative<int64_t>(node.payload)) {
             return variable_factory_->make_numeric_val(std::get<int64_t>(node.payload));
         }
-        if (std::holds_alternative<double>(node.payload)) {
-            return variable_factory_->make_numeric_val(std::get<double>(node.payload));
+        if (std::holds_alternative<Rational>(node.payload)) {
+            return variable_factory_->make_numeric_val(std::get<Rational>(node.payload));
         }
         if (std::holds_alternative<bool>(node.payload)) {
             return ctx_.bool_val(std::get<bool>(node.payload));
@@ -321,9 +321,9 @@ z3::expr GroundedEncodingVisitor::convert_node(ExprID id) {
                 if (std::holds_alternative<int64_t>(n.payload)) {
                     return std::get<int64_t>(n.payload);
                 }
-                if (std::holds_alternative<double>(n.payload)) {
-                    double d = std::get<double>(n.payload);
-                    if (d == static_cast<int64_t>(d)) return static_cast<int64_t>(d);
+                if (std::holds_alternative<Rational>(n.payload)) {
+                    const Rational& r = std::get<Rational>(n.payload);
+                    if (r.is_integer()) return r.num;
                 }
                 return std::nullopt;
             };

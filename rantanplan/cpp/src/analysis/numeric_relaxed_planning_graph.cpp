@@ -26,8 +26,8 @@ static Interval evaluate_constant_expr_range(
     if (!eid.valid()) return Interval::unbounded();
 
     if (pool.is_constant(eid)) {
-        if (pool.payload_is_double(eid))
-            return Interval(pool.payload_double(eid));
+        if (pool.payload_is_real(eid))
+            return Interval(pool.payload_real(eid).to_double());
         if (pool.payload_is_int(eid))
             return Interval(static_cast<double>(pool.payload_int(eid)));
         return Interval::unbounded();
@@ -302,8 +302,8 @@ void NumericRelaxedPlanningGraph::initialize_layer_0() {
                 double numeric_value = 0.0;
                 if (pool.payload_is_int(val_eid)) {
                     numeric_value = static_cast<double>(pool.payload_int(val_eid));
-                } else if (pool.payload_is_double(val_eid)) {
-                    numeric_value = pool.payload_double(val_eid);
+                } else if (pool.payload_is_real(val_eid)) {
+                    numeric_value = pool.payload_real(val_eid).to_double();
                 } else {
                     std::cerr << "Warning: Numeric fluent has non-numeric value in initial state: "
                               << pool.to_string(fluent_eid) << std::endl;
@@ -767,8 +767,8 @@ Interval NumericRelaxedPlanningGraph::evaluate_interval(ExprID eid, int layer) c
 
     // Constants -> point interval
     if (pool.is_constant(eid)) {
-        if (pool.payload_is_double(eid))
-            return Interval(pool.payload_double(eid));
+        if (pool.payload_is_real(eid))
+            return Interval(pool.payload_real(eid).to_double());
         if (pool.payload_is_int(eid))
             return Interval(static_cast<double>(pool.payload_int(eid)));
         {
@@ -988,8 +988,8 @@ void NumericRelaxedPlanningGraph::precompute_freezes() {
         if (it != constant_ranges.end()) {
             double val = 0.0;
             ExprID vid = assignment.value_id();
-            if (pool.payload_is_double(vid))
-                val = pool.payload_double(vid);
+            if (pool.payload_is_real(vid))
+                val = pool.payload_real(vid).to_double();
             else if (pool.payload_is_int(vid))
                 val = static_cast<double>(pool.payload_int(vid));
             it->second = it->second.convex_union(Interval(val));
@@ -1206,10 +1206,10 @@ void NumericRelaxedPlanningGraph::add_numeric_constraints(z3::solver& solver, in
         z3::expr fluent_z3 = grounded_visitor_.convert_from_pool(fluent_eid, layer);
 
         if (!std::isinf(bounds.lower)) {
-            solver.add(fluent_z3 >= ctx_.real_val(std::to_string(bounds.lower).c_str()));
+            solver.add(fluent_z3 >= variable_factory_.real_val(bounds.lower));
         }
         if (!std::isinf(bounds.upper)) {
-            solver.add(fluent_z3 <= ctx_.real_val(std::to_string(bounds.upper).c_str()));
+            solver.add(fluent_z3 <= variable_factory_.real_val(bounds.upper));
         }
     }
 }
