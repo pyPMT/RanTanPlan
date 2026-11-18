@@ -275,7 +275,7 @@ private:
         } while (action_->has_parameter(name));
 
         ExprNode node;
-        node.kind = static_cast<int>(ExprKind::PARAMETER);
+        node.kind = ExprKind::PARAMETER;
         node.type_id = problem_.type_id_of(vt);
         node.payload = name;
         ExprID param = pool_.intern(std::move(node));

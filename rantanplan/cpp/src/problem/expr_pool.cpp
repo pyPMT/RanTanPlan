@@ -7,9 +7,9 @@ namespace rantanplan {
 std::string ExprNode::canonical_key() const {
     // Format: "kind:op:type_id|payload_tag:payload_val|c0,c1,..."
     std::string key;
-    key += std::to_string(kind);
+    key += std::to_string(static_cast<int>(kind));
     key += ':';
-    key += std::to_string(op);
+    key += std::to_string(static_cast<int>(op));
     key += ':';
     key += std::to_string(type_id);
     key += '|';
@@ -44,7 +44,7 @@ std::string ExprNode::canonical_key() const {
 }
 
 std::string ExprPool::state_variable_signature(const ExprNode& node) const {
-    if (static_cast<ExprKind>(node.kind) != ExprKind::STATE_VARIABLE) return {};
+    if (node.kind != ExprKind::STATE_VARIABLE) return {};
     if (node.children.empty()) return {};
 
     // GROUND atoms only: children[0] a fluent symbol, children[1..] all
@@ -54,7 +54,7 @@ std::string ExprPool::state_variable_signature(const ExprNode& node) const {
     // against. Without that restriction the signature also over-merges: a schema
     // `next(?t1, ?t2)` and the ground `next(t1, t2)` have identical payloads and
     // would be reported as aliases of each other, which is noise, not a hazard.
-    if (static_cast<ExprKind>(nodes_[node.children[0].id].kind) != ExprKind::FLUENT_SYMBOL) {
+    if (nodes_[node.children[0].id].kind != ExprKind::FLUENT_SYMBOL) {
         return {};
     }
     std::string signature;
@@ -62,7 +62,7 @@ std::string ExprPool::state_variable_signature(const ExprNode& node) const {
         ExprID child = node.children[i];
         if (!child.valid() || static_cast<size_t>(child.id) >= nodes_.size()) return {};
         const ExprNode& arg = nodes_[child.id];
-        if (i > 0 && static_cast<ExprKind>(arg.kind) != ExprKind::CONSTANT) return {};
+        if (i > 0 && arg.kind != ExprKind::CONSTANT) return {};
         if (std::holds_alternative<std::string>(arg.payload)) {
             signature += std::get<std::string>(arg.payload);
         } else if (i > 0 && std::holds_alternative<int64_t>(arg.payload)) {
@@ -77,19 +77,28 @@ std::string ExprPool::state_variable_signature(const ExprNode& node) const {
 }
 
 ExprID ExprPool::intern(ExprNode node) {
-    // The types of these leaves follow from what they are, not from the
-    // caller, so that no producer can give one atom or value a second type.
+    assert(node.kind != ExprKind::UNKNOWN);
+
+    // These fields follow from the node's head or value, not from the caller,
+    // so that no producer can give one atom or value a second type, or an
+    // application an operator other than its head's.
+    const ExprNode* head = nullptr;
+    if (!node.children.empty() && node.children[0].valid() &&
+        static_cast<size_t>(node.children[0].id) < nodes_.size()) {
+        head = &nodes_[node.children[0].id];
+    }
     // A state variable has its head's type: the fluent's value type.
-    if (static_cast<ExprKind>(node.kind) == ExprKind::STATE_VARIABLE && !node.children.empty()) {
-        ExprID head = node.children[0];
-        if (head.valid() && static_cast<size_t>(head.id) < nodes_.size() &&
-            static_cast<ExprKind>(nodes_[head.id].kind) == ExprKind::FLUENT_SYMBOL) {
-            node.type_id = nodes_[head.id].type_id;
-        }
+    if (node.kind == ExprKind::STATE_VARIABLE && head && head->kind == ExprKind::FLUENT_SYMBOL) {
+        node.type_id = head->type_id;
+    }
+    // An application has its head's operator.
+    if (node.kind == ExprKind::FUNCTION_APPLICATION && head &&
+        head->kind == ExprKind::FUNCTION_SYMBOL) {
+        node.op = head->op;
     }
     // A constant has its value's type. An object constant (a string payload)
     // keeps the object's type, which only the caller knows.
-    if (static_cast<ExprKind>(node.kind) == ExprKind::CONSTANT) {
+    if (node.kind == ExprKind::CONSTANT) {
         if (std::holds_alternative<bool>(node.payload)) node.type_id = BOOL_TYPE_ID;
         else if (std::holds_alternative<int64_t>(node.payload)) node.type_id = INT_TYPE_ID;
         else if (std::holds_alternative<double>(node.payload)) node.type_id = REAL_TYPE_ID;

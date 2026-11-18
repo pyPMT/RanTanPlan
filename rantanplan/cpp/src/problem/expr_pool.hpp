@@ -60,8 +60,8 @@ using ExprPayload = std::variant<std::monostate, bool, int64_t, double, std::str
 /// kinds (FUNCTION_APPLICATION, STATE_VARIABLE) use a head+arguments child
 /// layout — see the ExprPool class comment below for the convention.
 struct ExprNode {
-    int kind = 0;     // ExprKind as int
-    int op = -1;      // ExprOperator as int, -1 if N/A
+    ExprKind kind = ExprKind::UNKNOWN;
+    ExprOperator op = ExprOperator::NONE;  // an application's is its head's (intern())
     int type_id = -1; // index into Problem's types_ vector, -1 if null
 
     std::vector<ExprID> children;
@@ -184,8 +184,8 @@ public:
     // Kind / Operator / Type accessors
     // ========================================================================
 
-    ExprKind kind(ExprID id) const { return static_cast<ExprKind>(get(id).kind); }
-    ExprOperator op(ExprID id) const { return static_cast<ExprOperator>(get(id).op); }
+    ExprKind kind(ExprID id) const { return get(id).kind; }
+    ExprOperator op(ExprID id) const { return get(id).op; }
     int type_id(ExprID id) const { return get(id).type_id; }
 
     // ========================================================================
@@ -321,7 +321,7 @@ public:
     /// Intern an integer constant and return its ExprID.
     ExprID intern_int_constant(int64_t value) {
         ExprNode node;
-        node.kind = static_cast<int>(ExprKind::CONSTANT);
+        node.kind = ExprKind::CONSTANT;
         node.payload = value;
         return intern(std::move(node));
     }
@@ -329,7 +329,7 @@ public:
     /// Intern a real constant and return its ExprID.
     ExprID intern_double_constant(double value) {
         ExprNode node;
-        node.kind = static_cast<int>(ExprKind::CONSTANT);
+        node.kind = ExprKind::CONSTANT;
         node.payload = value;
         return intern(std::move(node));
     }
@@ -349,7 +349,7 @@ public:
     /// Intern a boolean constant and return its ExprID.
     ExprID intern_bool_constant(bool value) {
         ExprNode node;
-        node.kind = static_cast<int>(ExprKind::CONSTANT);
+        node.kind = ExprKind::CONSTANT;
         node.payload = value;
         return intern(std::move(node));
     }
@@ -363,13 +363,13 @@ public:
     ExprID intern_state_variable(const std::string& fluent_name, int type_id,
                                  const std::vector<ExprID>& args = {}) {
         ExprNode head;
-        head.kind = static_cast<int>(ExprKind::FLUENT_SYMBOL);
+        head.kind = ExprKind::FLUENT_SYMBOL;
         head.type_id = type_id;
         head.payload = fluent_name;
         ExprID head_id = intern(std::move(head));
 
         ExprNode sv;
-        sv.kind = static_cast<int>(ExprKind::STATE_VARIABLE);
+        sv.kind = ExprKind::STATE_VARIABLE;
         sv.type_id = type_id;
         sv.children.reserve(1 + args.size());
         sv.children.push_back(head_id);
@@ -381,8 +381,7 @@ public:
     bool is_true_constant(ExprID id) const {
         if (!id.valid()) return false;
         const auto& n = get(id);
-        return n.children.empty() &&
-               static_cast<ExprKind>(n.kind) == ExprKind::CONSTANT &&
+        return n.children.empty() && n.kind == ExprKind::CONSTANT &&
                std::holds_alternative<bool>(n.payload) &&
                std::get<bool>(n.payload) == true;
     }
@@ -391,8 +390,7 @@ public:
     bool is_false_constant(ExprID id) const {
         if (!id.valid()) return false;
         const auto& n = get(id);
-        return n.children.empty() &&
-               static_cast<ExprKind>(n.kind) == ExprKind::CONSTANT &&
+        return n.children.empty() && n.kind == ExprKind::CONSTANT &&
                std::holds_alternative<bool>(n.payload) &&
                std::get<bool>(n.payload) == false;
     }

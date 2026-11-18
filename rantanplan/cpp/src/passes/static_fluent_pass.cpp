@@ -185,8 +185,8 @@ static ExprID simplify_expr(ExprPool& pool, ExprBuilder& builder, ExprID expr,
 
     // Copy needed fields before recursing (pool.intern may reallocate nodes_)
     auto orig_children = node_ref.children;
-    int orig_kind = node_ref.kind;
-    int orig_op = node_ref.op;
+    ExprKind orig_kind = node_ref.kind;
+    ExprOperator orig_op = node_ref.op;
     int orig_type_id = node_ref.type_id;
     // node_ref may be dangling after this point
 
@@ -203,8 +203,8 @@ static ExprID simplify_expr(ExprPool& pool, ExprBuilder& builder, ExprID expr,
     if (!any_changed) return expr;
 
     // Try constant folding on FUNCTION_APPLICATION nodes
-    if (static_cast<ExprKind>(orig_kind) == ExprKind::FUNCTION_APPLICATION) {
-        auto op = static_cast<ExprOperator>(orig_op);
+    if (orig_kind == ExprKind::FUNCTION_APPLICATION) {
+        ExprOperator op = orig_op;
 
         if (is_arithmetic_operator(op)) {
             ExprID folded = try_fold_arithmetic(pool, op, new_children);

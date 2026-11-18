@@ -47,15 +47,18 @@ static void intern_nodes(IRLoadContext& ctx) {
 
     for (size_t index = 0; index < ctx.in.nodes.size(); ++index) {
         const ir::ExprNodeIR& ir_node = ctx.in.nodes[index];
-        if (ir_node.kind == 8) {
-            throw std::runtime_error("Unsupported expression kind CONTAINER_ID (8) in IR input");
+        // The one place a kind arrives as a number (see ExprKind).
+        if (ir_node.kind < static_cast<int>(ExprKind::CONSTANT) ||
+            ir_node.kind > static_cast<int>(ExprKind::VARIABLE)) {
+            throw std::runtime_error("Unsupported expression kind " +
+                                     std::to_string(ir_node.kind) + " in IR input");
         }
+        const auto kind = static_cast<ExprKind>(ir_node.kind);
 
         ExprNode node;
-        node.kind = ir_node.kind;
+        node.kind = kind;
         node.type_id = resolve_type_id(ir_node.type_name, ctx.types, ctx.type_map);
 
-        auto kind = static_cast<ExprKind>(ir_node.kind);
         if (ir_node.symbol) {
             std::string symbol = *ir_node.symbol;
             if (kind == ExprKind::FUNCTION_SYMBOL || kind == ExprKind::FLUENT_SYMBOL) {
@@ -63,7 +66,7 @@ static void intern_nodes(IRLoadContext& ctx) {
             }
             node.payload = symbol;
             if (kind == ExprKind::FUNCTION_SYMBOL) {
-                node.op = static_cast<int>(string_to_expr_operator(symbol));
+                node.op = string_to_expr_operator(symbol);  // its application's too
             }
         } else if (ir_node.int_value) {
             node.payload = *ir_node.int_value;
@@ -76,22 +79,11 @@ static void intern_nodes(IRLoadContext& ctx) {
         }
 
         node.children.reserve(ir_node.children.size());
-        for (size_t i = 0; i < ir_node.children.size(); ++i) {
-            uint32_t child_index = ir_node.children[i];
+        for (uint32_t child_index : ir_node.children) {
             if (child_index >= index) {
                 throw std::runtime_error("IR node pool is not topologically ordered");
             }
             node.children.push_back(ctx.expr_ids[child_index]);
-
-            // A function application takes its operator from its head symbol
-            // (same deduction the protobuf loader made on the child atom).
-            if (i == 0 && kind == ExprKind::FUNCTION_APPLICATION) {
-                const ir::ExprNodeIR& head = ctx.in.nodes[child_index];
-                if (head.kind == static_cast<int>(ExprKind::FUNCTION_SYMBOL) && head.symbol) {
-                    node.op = static_cast<int>(
-                        string_to_expr_operator(map_up_operator(*head.symbol)));
-                }
-            }
         }
 
         ctx.expr_ids.push_back(ctx.pool.intern(std::move(node)));

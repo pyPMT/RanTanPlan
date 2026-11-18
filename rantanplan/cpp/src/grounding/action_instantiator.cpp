@@ -13,9 +13,7 @@ static ExprID make_object_constant(ExprPool& pool,
     const Object& obj = problem.object(obj_idx);
 
     ExprNode node;
-    node.kind = static_cast<int>(ExprKind::CONSTANT);
-    // NOTE: Leave node.op as default (-1) to match intern_nodes() in ir_io.cpp,
-    // which does NOT set op for CONSTANT nodes.
+    node.kind = ExprKind::CONSTANT;
 
     node.type_id = problem.type_id_of(obj.type());
     node.payload = obj.name();

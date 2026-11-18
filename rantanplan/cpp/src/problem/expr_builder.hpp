@@ -17,8 +17,9 @@ namespace rantanplan {
 ///
 /// Head symbols use the standard operator spelling (`expr_operator_to_string`),
 /// which is the form the IR loader normalises to (ir_io map_up_operator) — so
-/// nodes built here dedup with the loaded formula's nodes. The op *field* is the
-/// authoritative operator; the head string is display/dedup only.
+/// nodes built here dedup with the loaded formula's nodes. The head's op *field*
+/// is the authoritative operator (intern() copies it onto the application); the
+/// head string is display/dedup only.
 class ExprBuilder {
 public:
     explicit ExprBuilder(ExprPool& pool) : pool_(pool) {}
@@ -89,8 +90,7 @@ public:
     /// operator head symbol.
     ExprID make_app(ExprOperator op, std::vector<ExprID> args, int type_id = -1) {
         ExprNode node;
-        node.kind = static_cast<int>(ExprKind::FUNCTION_APPLICATION);
-        node.op = static_cast<int>(op);
+        node.kind = ExprKind::FUNCTION_APPLICATION;
         node.type_id = type_id;
         node.children.reserve(args.size() + 1);
         node.children.push_back(op_head(op));
@@ -101,7 +101,7 @@ public:
     /// An object constant (CONSTANT kind, string payload = object name).
     ExprID object_constant(const std::string& name, int type_id) {
         ExprNode node;
-        node.kind = static_cast<int>(ExprKind::CONSTANT);
+        node.kind = ExprKind::CONSTANT;
         node.type_id = type_id;
         node.payload = name;
         return pool_.intern(std::move(node));
@@ -111,8 +111,8 @@ public:
     /// (the substitute()/structural-rewrite idiom).
     ExprID reintern(ExprID id, std::vector<ExprID> children) {
         ExprNode node;
-        node.kind = static_cast<int>(pool_.kind(id));
-        node.op = static_cast<int>(pool_.op(id));
+        node.kind = pool_.kind(id);
+        node.op = pool_.op(id);
         node.type_id = pool_.type_id(id);
         node.payload = pool_.payload(id);
         node.children = std::move(children);
@@ -121,19 +121,19 @@ public:
 
 private:
     ExprID op_head(ExprOperator op) {
-        auto it = op_heads_.find(static_cast<int>(op));
+        auto it = op_heads_.find(op);
         if (it != op_heads_.end()) return it->second;
         ExprNode node;
-        node.kind = static_cast<int>(ExprKind::FUNCTION_SYMBOL);
-        node.op = static_cast<int>(op);
+        node.kind = ExprKind::FUNCTION_SYMBOL;
+        node.op = op;
         node.payload = expr_operator_to_string(op);
         ExprID id = pool_.intern(std::move(node));
-        op_heads_.emplace(static_cast<int>(op), id);
+        op_heads_.emplace(op, id);
         return id;
     }
 
     ExprPool& pool_;
-    std::unordered_map<int, ExprID> op_heads_;
+    std::unordered_map<ExprOperator, ExprID> op_heads_;
 };
 
 } // namespace rantanplan

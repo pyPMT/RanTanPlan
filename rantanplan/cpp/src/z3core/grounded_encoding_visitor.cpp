@@ -223,7 +223,7 @@ z3::expr GroundedEncodingVisitor::convert_from_pool(ExprID id, int timestep) {
 z3::expr GroundedEncodingVisitor::convert_node(ExprID id) {
     const ExprPool& pool = problem_->pool();
     const ExprNode& node = pool.get(id);
-    auto kind = static_cast<ExprKind>(node.kind);
+    ExprKind kind = node.kind;
 
     // ---- Leaf nodes (no children) ----
     if (node.children.empty()) {
@@ -308,7 +308,7 @@ z3::expr GroundedEncodingVisitor::convert_node(ExprID id) {
 
     // ---- Function application ----
     if (kind == ExprKind::FUNCTION_APPLICATION) {
-        auto op = static_cast<ExprOperator>(node.op);
+        ExprOperator op = node.op;
 
         // Cardinality fast path: a comparison between a Count and an
         // integer constant becomes a native Z3 pseudo-boolean constraint
@@ -370,7 +370,7 @@ z3::expr GroundedEncodingVisitor::convert_node(ExprID id) {
         }
     }
 
-    throw std::runtime_error("Unhandled ExprNode kind in convert_node: " + std::to_string(node.kind));
+    throw std::runtime_error("Unhandled ExprNode kind in convert_node: " + std::to_string(static_cast<int>(node.kind)));
 }
 
 } // namespace rantanplan

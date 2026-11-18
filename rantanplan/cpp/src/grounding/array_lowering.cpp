@@ -248,7 +248,7 @@ private:
         // is assigned in mint order; resolve_access rebuilds the identical
         // id via dedup.
         ExprNode head;
-        head.kind = static_cast<int>(ExprKind::FLUENT_SYMBOL);
+        head.kind = ExprKind::FLUENT_SYMBOL;
         head.type_id = elem_type_id;
         head.payload = cell_name;
         ExprID head_id = pool_.intern(std::move(head));
@@ -309,7 +309,7 @@ private:
         // fluent's object args (empty for a nullary array -> dedups to the
         // pre-interned cell). Mirrors ExprPool::intern_state_variable's layout.
         ExprNode sv;
-        sv.kind = static_cast<int>(ExprKind::STATE_VARIABLE);
+        sv.kind = ExprKind::STATE_VARIABLE;
         sv.type_id = info.elem_type_id;
         sv.children.reserve(1 + base_args.size());
         sv.children.push_back(cit->second);

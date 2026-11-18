@@ -12,7 +12,7 @@ ValueKind classify_value_kind(ExprID value_id, const ExprPool& pool) {
     if (!value_id.valid()) return ValueKind::CONSTANT;
 
     const ExprNode& node = pool.get(value_id);
-    ExprKind kind = static_cast<ExprKind>(node.kind);
+    ExprKind kind = node.kind;
 
     // Leaf nodes
     if (node.children.empty()) {
@@ -35,7 +35,7 @@ ValueKind classify_value_kind(ExprID value_id, const ExprPool& pool) {
     }
 
     // Function application — classify based on operator
-    ExprOperator op = static_cast<ExprOperator>(node.op);
+    ExprOperator op = node.op;
 
     // Classify operand children only
     ValueKind max_child = ValueKind::CONSTANT;

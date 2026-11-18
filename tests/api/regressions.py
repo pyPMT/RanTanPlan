@@ -1614,6 +1614,24 @@ def test_folded_integers_are_integer_constants():
     assert_valid(p, r.plan)
 
 
+def test_unsupported_expression_kinds_are_rejected():
+    """The IR carries a node's kind as UP's ExpressionKind number, and the
+    loader is the one place it becomes an ExprKind. A number with no supported
+    kind (0 is UNKNOWN, 8 CONTAINER_ID) is an error there. Before, only 8 was:
+    any other number became a node of no kind."""
+    for kind in (0, 8, 9):
+        ir = convert_problem(_two_writes_to_one_fluent_problem())
+        nodes = ir.nodes
+        nodes[-1].kind = kind
+        ir.nodes = nodes
+        try:
+            _rantanplan.preprocess(ir, ["--strategy", "seq", "--verbosity", "silent"])
+        except RuntimeError as e:
+            assert f"Unsupported expression kind {kind} " in str(e), str(e)
+        else:
+            raise AssertionError(f"kind {kind} was accepted")
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -1649,4 +1667,5 @@ CASES = [
     test_integer_declarations_and_nodes_have_one_type,
     test_boolean_constants_have_one_node_each,
     test_folded_integers_are_integer_constants,
+    test_unsupported_expression_kinds_are_rejected,
 ]

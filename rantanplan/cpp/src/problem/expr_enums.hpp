@@ -8,7 +8,7 @@ namespace rantanplan {
  * @brief Expression structural kinds
  */
 enum class ExprKind {
-    UNKNOWN = 0,                // Default value, should not be used
+    UNKNOWN = 0,                // An unset node's kind; the loader rejects it
     CONSTANT = 1,               // Constant atom (e.g., `true`, `3`, `kitchen`)
     PARAMETER = 2,              // Parameter from outer scope (e.g., `from` in `(move from to)`)
     FLUENT_SYMBOL = 3,          // Fluent symbol (e.g., `at-robot`)
@@ -16,15 +16,21 @@ enum class ExprKind {
     STATE_VARIABLE = 5,         // Fluent application (e.g., `(at-robot l1)`)
     FUNCTION_APPLICATION = 6,   // Function application (e.g., `(+ 1 3)`)
     VARIABLE = 7                // Variable from outer scope (existential/universal)
-    // NOTE: UP's ExpressionKind also defines CONTAINER_ID = 8.
-    // This internal representation does not support it; the loader rejects
-    // it explicitly in ir_io.cpp with a runtime error.
+    // The values are UP's ExpressionKind numbers, which the IR carries as an
+    // int. UP also defines CONTAINER_ID = 8, which is not supported; ir_io.cpp
+    // rejects any number outside CONSTANT..VARIABLE.
 };
 
 /**
  * @brief Operator types for type safety and consistency
  */
 enum class ExprOperator {
+    // The operator of a node that has none (any kind but FUNCTION_SYMBOL and
+    // FUNCTION_APPLICATION) and of one whose name is none of the below. The
+    // kind tells the two apart, so one value does for both. First, so that a
+    // value-initialised ExprOperator is NONE.
+    NONE,
+
     // Arithmetic operators
     PLUS, MINUS, MULTIPLY, DIVIDE, MODULO, ABSOLUTE, MAXIMUM, MINIMUM,
 
@@ -58,10 +64,7 @@ enum class ExprOperator {
     // a set literal `{c1..ck}` (zero children = the empty set).
     SET_MEMBER, SET_SUBSETEQ, SET_DISJOINT, SET_CARDINALITY,
     SET_ADD, SET_REMOVE, SET_UNION, SET_INTERSECT, SET_DIFFERENCE,
-    SET_CONSTANT,
-
-    // Unknown operator
-    UNKNOWN
+    SET_CONSTANT
 };
 
 // ============================================================================
@@ -137,7 +140,7 @@ inline ExprOperator string_to_expr_operator(const std::string& op_string) {
     if (op_string == "set_difference") return ExprOperator::SET_DIFFERENCE;
     if (op_string == "set_constant") return ExprOperator::SET_CONSTANT;
 
-    return ExprOperator::UNKNOWN;
+    return ExprOperator::NONE;
 }
 
 inline std::string expr_operator_to_string(ExprOperator op) {
@@ -180,7 +183,7 @@ inline std::string expr_operator_to_string(ExprOperator op) {
 
 inline std::string map_up_operator(const std::string& up_function_name) {
     ExprOperator op = string_to_expr_operator(up_function_name);
-    if (op == ExprOperator::UNKNOWN) {
+    if (op == ExprOperator::NONE) {
         return up_function_name;
     }
     return expr_operator_to_string(op);
@@ -213,10 +216,6 @@ inline bool is_set_operator(ExprOperator op) {
            op == ExprOperator::SET_ADD || op == ExprOperator::SET_REMOVE ||
            op == ExprOperator::SET_UNION || op == ExprOperator::SET_INTERSECT ||
            op == ExprOperator::SET_DIFFERENCE || op == ExprOperator::SET_CONSTANT;
-}
-
-inline bool is_standard_operator(const std::string& op) {
-    return string_to_expr_operator(op) != ExprOperator::UNKNOWN;
 }
 
 } // namespace rantanplan

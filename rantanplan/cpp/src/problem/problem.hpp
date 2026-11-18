@@ -253,7 +253,7 @@ public:
     bool is_object_constant(ExprID eid) const {
         if (!eid.valid()) return false;
         const ExprNode& node = pool_->get(eid);
-        return static_cast<ExprKind>(node.kind) == ExprKind::CONSTANT &&
+        return node.kind == ExprKind::CONSTANT &&
                std::holds_alternative<std::string>(node.payload) &&
                is_object_type(eid);
     }
