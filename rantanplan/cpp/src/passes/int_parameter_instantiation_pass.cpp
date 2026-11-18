@@ -3,6 +3,7 @@
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
 #include "../util/stats.hpp"
+#include "../util/unsupported_problem_error.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -53,7 +54,7 @@ void expand_action(const Action& action, ExprPool& pool,
     for (size_t k = 0; k < int_indices.size(); ++k) {
         const Parameter& p = action.parameter(int_indices[k]);
         if (!p.lower_bound() || !p.upper_bound()) {
-            throw std::invalid_argument(
+            throw UnsupportedProblemError(
                 "Unbounded integer action parameter '" + p.name() + "' in action '" +
                 action.name() + "' cannot be instantiated (needs both bounds).");
         }

@@ -180,6 +180,8 @@ enum class SolveStatusIR : int {
     UNSOLVABLE_PROVEN = 2,
     UNSOLVABLE_INCOMPLETELY = 3,
     TIMEOUT = 4,
+    /// The problem asks for something the planner does not handle (an
+    /// UnsupportedProblemError); the reason is an ERROR log message.
     UNSUPPORTED_PROBLEM = 5,
 };
 

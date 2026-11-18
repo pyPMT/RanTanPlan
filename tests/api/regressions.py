@@ -8,10 +8,12 @@ from fractions import Fraction
 
 from unified_planning.shortcuts import (
     Fluent, InstantaneousAction, Problem, ArrayType, BoolType, IntType, RealType,
-    UserType, Object, And, Count, Equals, GE, GT, Iff, Int, LE, LT, Not, Or, Plus, Times,
+    UserType, Object, Always, And, Count, Equals, GE, GT, Iff, Int, LE, LT, Not, Or, Plus,
+    Times,
 )
 from unified_planning.model.metrics import MinimizeActionCosts
 from unified_planning.engines import PlanGenerationResultStatus
+from unified_planning.engines.results import LogLevel
 
 from rantanplan import _rantanplan
 from rantanplan.converter import convert_problem
@@ -2325,6 +2327,63 @@ def test_a_derived_bound_near_int64_max_is_not_cast():
         assert_valid(p, r.plan)
 
 
+# ---------------------------------------------------------------------------
+# Refusals: a problem the planner does not handle comes back as
+# UNSUPPORTED_PROBLEM, with the reason as an ERROR log message, never as an
+# exception out of solve() or as INTERNAL_ERROR.
+# ---------------------------------------------------------------------------
+
+def _refusal_reason(result):
+    return " ".join(m.message for m in result.log_messages or []
+                    if m.level == LogLevel.ERROR)
+
+
+def _ordered_counters_problem():
+    """inc_x and inc_y add 1 to x and to y; the goal is x = y = 3, and the
+    declared invariant `always x <= y` holds in every state of a valid plan,
+    so y must lead. (pddl/invariants-test/counters/problem-invariant.pddl.)"""
+    x, y = Fluent("value_x", IntType()), Fluent("value_y", IntType())
+    p = Problem("ordered_counters")
+    for f in (x, y):
+        p.add_fluent(f, default_initial_value=0)
+        inc = InstantaneousAction(f"inc_{f.name[-1]}")
+        inc.add_precondition(LE(f(), 10))
+        inc.add_increase_effect(f(), 1)
+        p.add_action(inc)
+    p.add_goal(And(Equals(x(), 3), Equals(y(), 3)))
+    p.add_trajectory_constraint(Always(LE(x(), y())))
+    return p
+
+
+def test_r2e_refuses_declared_invariants():
+    """The R2E encoder asserts no state constraints, so r2e refuses a problem
+    with declared invariants (it raised a plain exception, reported as
+    INTERNAL_ERROR); seq keeps them."""
+    p = _ordered_counters_problem()
+    r = solve(p, strategy="r2e")
+    assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, r.status
+    assert r.plan is None
+    assert "declared state invariants" in _refusal_reason(r), r.log_messages
+    r = solve(p, strategy="seq")
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert_valid(p, r.plan)
+
+
+def test_a_converter_refusal_is_unsupported_problem():
+    """The converter refuses a boolean fluent whose default is true (it would
+    invert the closed-world assumption). Its UPException escaped solve()."""
+    b = Fluent("b", BoolType())
+    p = Problem("bool_default_true")
+    p.add_fluent(b, default_initial_value=True)
+    flip = InstantaneousAction("flip")
+    flip.add_effect(b(), False)
+    p.add_action(flip)
+    p.add_goal(Not(b()))
+    r = solve(p)
+    assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, r.status
+    assert "default_initial_value=True" in _refusal_reason(r), r.log_messages
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -2381,4 +2440,6 @@ CASES = [
     test_split_instances_are_distinct_actions,
     test_a_product_with_an_unbounded_factor_is_not_pruned,
     test_a_derived_bound_near_int64_max_is_not_cast,
+    test_r2e_refuses_declared_invariants,
+    test_a_converter_refusal_is_unsupported_problem,
 ]

@@ -14,8 +14,8 @@ UP *can* validate:
     a hand-written array-free equivalent with the same action signatures and
     conditional effects, validated exactly like tests/api/range_variables.py.
 
-Error cases assert the ill-formed model is rejected (a hard C++ error surfaces
-as INTERNAL_ERROR, or an unsatisfiable bound as UNSOLVABLE_PROVEN). The 2x2
+Error cases assert the model is refused: UNSUPPORTED_PROBLEM, with the reason as
+an ERROR log message (an unsatisfiable bound is UNSOLVABLE_PROVEN). The 2x2
 sliding-puzzle integration test replays the plan through a tiny domain-specific
 simulator (the paper's running example). See docs/native-arrays-plan.md.
 """
@@ -26,7 +26,7 @@ from unified_planning.shortcuts import (
 from unified_planning.engines import (
     CompilationKind, ValidationResultStatus, PlanGenerationResultStatus,
 )
-from unified_planning.exceptions import UPException
+from unified_planning.engines.results import LogLevel
 from unified_planning.plans import SequentialPlan, ActionInstance
 from unified_planning.model.int_variable import IntVariable
 
@@ -95,15 +95,14 @@ def _ref_check(p_native, p_ref, strategy=None):
 
 
 def _assert_rejected(build):
-    """The model is ill-formed: solving raises, or returns no plan with a
-    non-SOLVED status."""
-    try:
-        r = solve(build())
-    except UPException:
-        return
-    assert r.plan is None, "expected no plan for an ill-formed array model"
-    assert r.status not in (PlanGenerationResultStatus.SOLVED_SATISFICING,
-                            PlanGenerationResultStatus.SOLVED_OPTIMALLY), r.status
+    """The planner refuses the model: UNSUPPORTED_PROBLEM and no plan, with
+    the reason as an ERROR log message (it was INTERNAL_ERROR, from a plain
+    C++ exception, or a UPException raised out of solve())."""
+    r = solve(build())
+    assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, r.status
+    assert r.plan is None, "expected no plan for a refused array model"
+    assert any(m.level == LogLevel.ERROR for m in r.log_messages or []), \
+        "the refusal carries no reason"
 
 
 # ═══════════════════════ base semantics (AR oracle) ══════════════════════════
@@ -1209,7 +1208,17 @@ def test_same_cell_conflicting_assignments_never_apply():
         p.add_action(bad)
         p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 1))
         return p
-    _assert_rejected(build)
+    _assert_never_applicable_removed(build(), 1)
+
+
+def _assert_never_applicable_removed(problem, removed):
+    """EffectNormalizationPass removed `removed` ground actions as never
+    applicable, and the goal is then unreachable. (_assert_rejected would also
+    take a hard error, the behaviour these cases had before the pass.)"""
+    r = solve(problem)
+    assert r.status == PlanGenerationResultStatus.UNSOLVABLE_PROVEN, r.status
+    stat = (r.metrics or {}).get("effect_normalization.actions_removed_never_applicable")
+    assert stat is not None and float(stat) == removed, stat
 
 
 def test_whole_array_equality_rejected():
@@ -1252,7 +1261,7 @@ def test_all_instances_conflicting_never_apply():
         p.add_action(bad)
         p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 1))
         return p
-    _assert_rejected(build)
+    _assert_never_applicable_removed(build(), 4)
 
 
 def test_oob_initial_state_assignment_dropped():
@@ -1315,8 +1324,9 @@ def test_fluent_index_in_goal_rejected():
     p.add_goal(Equals(em.ArrayIndex(a(), f()), Int(2)))  # fluent as index
     r = solve(p)
     assert r.plan is None, "a state-dependent goal index must not solve"
-    assert r.status == PlanGenerationResultStatus.INTERNAL_ERROR, \
-        f"expected the C++ rejection to surface as INTERNAL_ERROR, got {r.status}"
+    assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, r.status
+    assert any("State-dependent array index in a goal" in m.message
+               for m in r.log_messages or []), r.log_messages
 
 
 def test_up_grounding_flag_rejected():
@@ -1338,7 +1348,7 @@ def test_up_grounding_flag_rejected():
     try:
         _rantanplan.preprocess(ir, ["--strategy", "seq", "--verbosity", "silent",
                                     "--up-grounding"])
-    except Exception as e:
+    except _rantanplan.UnsupportedProblemError as e:
         assert "native grounding" in str(e), str(e)
         return
     raise AssertionError("preprocess accepted an array problem with --up-grounding")

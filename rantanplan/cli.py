@@ -188,8 +188,15 @@ def solve_problem(problem, args):
     try:
         PlannerClass: Any = OneshotPlanner
 
+        # skip_checks: Unified Planning's own check of the problem kind, made
+        # when an engine is picked by name, only warns ("We cannot establish
+        # whether rantanplan can solve this problem!"). The engine checks the
+        # kind itself, for its search mode, and refuses with
+        # UNSUPPORTED_PROBLEM and the features it lacks, which
+        # report_result prints.
         if args.mode == "anytime":
             with AnytimePlanner(name='rantanplan-anytime', params=planner_params) as planner:
+                planner.skip_checks = True
                 last_result = None
                 for result in planner.get_solutions(problem, timeout=args.timeout):
                     if result.status == PlanGenerationResultStatus.INTERMEDIATE:
@@ -199,11 +206,13 @@ def solve_problem(problem, args):
                 return last_result
         elif args.mode == "optimal":
             with PlannerClass(name='rantanplan-optimal', params=planner_params) as planner:
+                planner.skip_checks = True
                 result = planner.solve(problem, timeout=args.timeout)
                 return result
         else:
             # satisficing (default)
             with PlannerClass(name='rantanplan', params=planner_params) as planner:
+                planner.skip_checks = True
                 result = planner.solve(problem, timeout=args.timeout)
                 return result
     except Exception as e:
@@ -214,13 +223,25 @@ def solve_problem(problem, args):
 
 def report_result(result, args) -> int:
     """Print the status and the plan (unless --silent), and return the exit
-    code: 0 if there is a plan, 1 otherwise."""
+    code: 0 if there is a plan, 1 otherwise.
+
+    Without a plan, the result's ERROR log messages (why the problem was
+    refused, or the internal error) go to stderr as "Error: ...", even with
+    --silent, and its WARNING messages as "Warning: ...", unless --silent.
+    The "Status:" and "No plan found" lines stay as they are: scripts read
+    them."""
     if not result:
         return 1
 
     # Print result (unless --silent)
     if not args.silent:
         print(f"Status: {result.status}")
+    if not result.plan:
+        for message in result.log_messages or []:
+            if message.level == LogLevel.ERROR:
+                print(f"Error: {message.message}", file=sys.stderr)
+            elif message.level == LogLevel.WARNING and not args.silent:
+                print(f"Warning: {message.message}", file=sys.stderr)
     if result.plan and hasattr(result.plan, 'actions'):
         if not args.silent:
             print(f"Plan found with {len(result.plan.actions)} actions")

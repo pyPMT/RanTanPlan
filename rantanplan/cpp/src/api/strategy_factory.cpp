@@ -20,8 +20,10 @@
 #include "../planners/propagators/modules/exists_cycle_module.hpp"
 #include "../planners/propagators/modules/forall_mutex_module.hpp"
 #include "../planners/propagators/modules/frame_axiom_module.hpp"
+#include "../config/config.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
+#include "../util/unsupported_problem_error.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -129,21 +131,6 @@ void StrategyFactory::validate(const StrategySpec& spec,
 }
 
 void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
-    // Declared numeric bounds (bounded int/real fluents) hold in every state a
-    // plan passes through. The Grounded encoder asserts them at every concrete
-    // timestep (encode_state_constraints), and the R2E encoder on every chain
-    // variable (encode_declared_bounds). The Chained encoder reasons over
-    // chain-substituted intermediate variables (ζ) that bypass those boundary
-    // constraints, so a plan could transiently violate a declared bound. Bail
-    // out rather than silently drop the bound.
-    if (problem.has_declared_bounds() && spec.encoder == EncoderFamily::Chained) {
-        throw UnsupportedProblemError(
-            "Declared numeric bounds (bounded int/real fluent types) are not "
-            "supported by the Chained encoder: its intermediate variables can "
-            "violate the bounds. Use a strategy on another encoder, such as e, "
-            "f, seq or r2e.");
-    }
-
     if (uses_branch_and_bound(spec) &&
         problem.has_metric() && problem.has_state_dependent_costs() &&
         sdac_unsafe(spec)) {
@@ -162,6 +149,37 @@ void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
         problem.has_metric() && problem.has_state_dependent_costs()) {
         Logger::instance().info(
             "SDAC detected: abstract suffix uses RPG-derived cost lower bounds.");
+    }
+
+    check_supported(spec, problem, Config::instance().planner.strategy);
+}
+
+void StrategyFactory::check_supported(const StrategySpec& spec, const Problem& problem,
+                                      const std::string& name) {
+    // Declared numeric bounds (bounded int/real fluents) hold in every state a
+    // plan passes through. The Grounded encoder asserts them at every concrete
+    // timestep (encode_state_constraints), and the R2E encoder on every chain
+    // variable (encode_declared_bounds). The Chained encoder reasons over
+    // chain-substituted intermediate variables (ζ) that bypass those boundary
+    // constraints, so a plan could transiently violate a declared bound. Bail
+    // out rather than silently drop the bound.
+    if (problem.has_declared_bounds() && spec.encoder == EncoderFamily::Chained) {
+        throw UnsupportedProblemError(
+            "Declared numeric bounds (bounded int/real fluent types) are not "
+            "supported by the Chained encoder: its intermediate variables can "
+            "violate the bounds. Use a strategy on another encoder, such as e, "
+            "f, seq or r2e.");
+    }
+
+    // Declared state invariants are trusted plan requirements asserted at
+    // every state. The R2E encoder deliberately skips state constraints
+    // (chain-substituted intermediate states), so accepting the problem
+    // would silently drop a requirement.
+    if (!problem.state_invariants().empty() && spec.encoder == EncoderFamily::R2E) {
+        throw UnsupportedProblemError(
+            "Strategy '" + name + "' (R2E encoder) does not support declared "
+            "state invariants ((:constraints (always ...))). Use a "
+            "Grounded-encoder strategy such as seq, f or e instead.");
     }
 }
 

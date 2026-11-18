@@ -5,6 +5,7 @@
 #include "../problem/expr_enums.hpp"
 #include "../problem/expr_walk.hpp"
 #include "../util/logger.hpp"
+#include "../util/unsupported_problem_error.hpp"
 
 #include <map>
 #include <optional>
@@ -57,7 +58,7 @@ public:
             AccessResult r = resolve_access(eid, cell, context);
             if (r == AccessResult::OutOfBounds) {
                 if (discard_on_oob) { out_discard = true; return eid; }
-                throw std::runtime_error(
+                throw UnsupportedProblemError(
                     "Array access out of bounds or on an undefined position in " +
                     context + " (" + pool_.to_string(eid) + ")");
             }
@@ -71,7 +72,7 @@ public:
             if (pool_.is_fluent_symbol(head)) {
                 const Fluent* f = problem_.find_fluent(pool_.payload_string(head));
                 if (f && f->is_array()) {
-                    throw std::runtime_error(
+                    throw UnsupportedProblemError(
                         "Whole-array operation on array fluent '" + f->name() +
                         "' is not supported (only per-cell constant-index access "
                         "is lowered); appeared in " + context);
@@ -128,7 +129,7 @@ public:
             if (pool_.is_fluent_symbol(head)) {
                 const Fluent* f = problem_.find_fluent(pool_.payload_string(head));
                 if (f && f->is_array())
-                    throw std::runtime_error(
+                    throw UnsupportedProblemError(
                         "Whole-array operation on array fluent '" + f->name() +
                         "' is not supported (only per-cell constant-index access "
                         "is lowered); appeared in " + context);
@@ -271,13 +272,13 @@ private:
         const ArrayInfo& info = it->second;
 
         if (coords.size() < info.sizes.size()) {
-            throw std::runtime_error(
+            throw UnsupportedProblemError(
                 "Partial indexing of array fluent '" + base->name() +
                 "' (whole-row/slice access) is not supported; appeared in " +
                 context);
         }
         if (coords.size() > info.sizes.size()) {
-            throw std::runtime_error(
+            throw UnsupportedProblemError(
                 "Array fluent '" + base->name() + "' has " +
                 std::to_string(info.sizes.size()) + " dimension(s) but was "
                 "accessed with " + std::to_string(coords.size()) +
@@ -319,7 +320,7 @@ private:
             ExprID idx = pool_.argument(eid, 1);
             auto c = fold_const_int(idx, pool_);
             if (!c) {
-                throw std::runtime_error(
+                throw UnsupportedProblemError(
                     "Array index did not fold to a constant in " + context +
                     " (" + pool_.to_string(idx) +
                     "); symbolic indices are not supported in Phase 1.");

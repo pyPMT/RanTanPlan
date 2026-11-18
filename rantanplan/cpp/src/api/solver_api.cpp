@@ -17,6 +17,7 @@
 #include "util/scoped_timer.hpp"
 #include "util/stats.hpp"
 #include "util/logger.hpp"
+#include "util/unsupported_problem_error.hpp"
 #include "planners/propagators/modules/logging_module.hpp"
 #include "passes/pipeline.hpp"
 #include "passes/action_pruning_pass.hpp"
@@ -89,17 +90,27 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     // driver runs once per process; in-process callers run many times.)
     rantanplan::Stats::instance().clear();
 
+    // A strategy that would get the problem wrong refuses it before any work
+    // is spent on it. solve() checks again, on the spec as adjusted to the
+    // preprocessed problem (and its arguments may name another strategy).
+    {
+        const auto& config = rantanplan::Config::instance();
+        rantanplan::StrategyFactory::check_supported(
+            rantanplan::StrategyRegistry::get(config.planner.strategy), problem,
+            config.planner.strategy);
+    }
+
     // Array cells minted by ArrayLoweringPass have only been validated through
     // the native grounder's fixpoint; the UP-grounding path (--up-grounding)
     // has never been exercised with them, so reject the combination up front.
     if (!options.enable_grounding && rantanplan::has_array_fluents(problem)) {
-        throw std::invalid_argument(
+        throw UnsupportedProblemError(
             "Array fluents require native grounding; --up-grounding is "
             "unsupported for array problems.");
     }
     // Set membership cells are likewise only validated through native grounding.
     if (!options.enable_grounding && rantanplan::has_set_fluents(problem)) {
-        throw std::invalid_argument(
+        throw UnsupportedProblemError(
             "Set fluents require native grounding; --up-grounding is "
             "unsupported for set problems.");
     }
@@ -109,7 +120,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     if (!options.enable_grounding &&
         (rantanplan::has_nested_fluent_terms(problem) ||
          rantanplan::has_state_dependent_indices(problem))) {
-        throw std::invalid_argument(
+        throw UnsupportedProblemError(
             "Nested fluent terms / state-dependent indices require native "
             "grounding; --up-grounding is unsupported for such problems.");
     }
@@ -295,8 +306,8 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
     const auto& problem = pipeline_result.problem;
 
     // Resolve the strategy spec: registry lookup, planner kind for the search
-    // mode, problem-specific adjustments (e.g. SDAC + exists-step downgrade),
-    // then validation of the adjusted spec.
+    // mode, problem-specific adjustments (e.g. SDAC + exists-step downgrade)
+    // and the refusals (check_supported), then validation of the adjusted spec.
     rantanplan::StrategySpec spec = rantanplan::StrategyRegistry::get(config.planner.strategy);
     rantanplan::SearchMode mode = rantanplan::parse_search_mode(config.planner.mode);
     spec.planner = rantanplan::resolve_planner_kind(mode, spec);
@@ -310,18 +321,6 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
     }
     rantanplan::StrategyFactory::validate(spec, config.planner.strategy,
                                           config.planner.horizon_schedule);
-
-    // Declared state invariants are trusted plan requirements asserted at
-    // every state.  The R2E encoder deliberately skips state constraints
-    // (chain-substituted intermediate states), so accepting the problem
-    // would silently drop a requirement — reject instead.
-    if (!problem.state_invariants().empty() &&
-        spec.encoder == rantanplan::EncoderFamily::R2E) {
-        throw std::invalid_argument(
-            "Strategy '" + config.planner.strategy + "' (R2E encoder) does not "
-            "support declared state invariants ((:constraints (always ...))). "
-            "Use a grounded/chained strategy instead.");
-    }
 
     ir::ResultIR result;
     auto add_info = [&result](const std::string& message) {

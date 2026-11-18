@@ -486,11 +486,8 @@ class _RantanPlanBase(Engine):
                 final_plan = self._build_plan(result_ir.plan, compiled_problem,
                                               compilation_result)
             except Exception as e:
-                self._log_error(f"Error mapping plan back: {e}")
-                return PlanGenerationResult(
-                    PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                    log_messages=[LogMessage(level=LogLevel.ERROR, message=f"Error mapping plan back: {e}")]
-                )
+                return self._internal_error(
+                    RuntimeError(f"Error mapping plan back: {e}"))
         self._log(f"Status from planner: {status.name}")
 
         # Validate the plan if one was found
@@ -531,13 +528,35 @@ class _RantanPlanBase(Engine):
         if problem.kind <= supported:
             return None
         unsupported = problem.kind.features - supported.features
+        return self._refused(
+            "RantanPlan does not support these problem features"
+            + (f" in {self._mode} mode" if self._mode else "") + ": "
+            + ", ".join(sorted(unsupported)))
+
+    def _refused(self, reason: str) -> PlanGenerationResult:
+        """UNSUPPORTED_PROBLEM, with @p reason as an ERROR log message: the
+        problem asks for something the planner does not handle (a feature
+        outside supported_kind(), a converter refusal, or an
+        UnsupportedProblemError from the planner's passes or strategy)."""
         return PlanGenerationResult(
             PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, None, self.name,
-            log_messages=[LogMessage(
-                LogLevel.ERROR,
-                "RantanPlan does not support these problem features"
-                + (f" in {self._mode} mode" if self._mode else "") + ": "
-                + ", ".join(sorted(unsupported)))])
+            log_messages=[LogMessage(LogLevel.ERROR, reason)])
+
+    def _internal_error(self, error: Exception) -> PlanGenerationResult:
+        """INTERNAL_ERROR, with the exception as an ERROR log message."""
+        return PlanGenerationResult(
+            PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
+            log_messages=[LogMessage(LogLevel.ERROR, str(error))])
+
+    def _prepare_or_refuse(self, problem: Problem):
+        """_prepare_problem, or an UNSUPPORTED_PROBLEM result if the converter
+        or the wrapper's own checks refuse the problem (UPException), e.g. a
+        boolean fluent whose default is true. Returns (prepared, refusal),
+        exactly one of them None."""
+        try:
+            return self._prepare_problem(problem), None
+        except UPException as e:
+            return None, self._refused(str(e))
 
     def _solve_in_process(self, problem: Problem,
                           timeout: Optional[float] = None,
@@ -564,23 +583,25 @@ class _RantanPlanBase(Engine):
                 output_stream.write(text + "\n")
             _rantanplan.set_log_sink(_sink)
         try:
-            compiled_problem, compilation_result, problem_ir = \
-                self._prepare_problem(problem)
+            prepared, refusal = self._prepare_or_refuse(problem)
+            if refusal is not None:
+                return refusal
+            compiled_problem, compilation_result, problem_ir = prepared
 
             args = self._build_args(timeout)
             self._log_verbose(f"Solving in-process: {' '.join(args)}")
 
+            # The reason for a refusal or an error travels as an ERROR log
+            # message in the result; the CLI prints it.
             try:
                 preprocessed = _rantanplan.preprocess(problem_ir, args)
                 result_ir = _rantanplan.solve(preprocessed)
                 return self._convert_result(
                     result_ir, compiled_problem, compilation_result, problem)
+            except _rantanplan.UnsupportedProblemError as e:
+                return self._refused(str(e))
             except Exception as e:
-                self._log_error(f"An error occurred: {e}")
-                return PlanGenerationResult(
-                    PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                    log_messages=[LogMessage(level=LogLevel.ERROR, message=str(e))]
-                )
+                return self._internal_error(e)
         finally:
             if output_stream is not None:
                 _rantanplan.set_log_sink(None)
@@ -686,8 +707,11 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
 
         self._output_stream = output_stream
         try:
-            compiled_problem, compilation_result, problem_ir = \
-                self._prepare_problem(problem)
+            prepared, refusal = self._prepare_or_refuse(problem)
+            if refusal is not None:
+                yield refusal
+                return
+            compiled_problem, compilation_result, problem_ir = prepared
 
             args = self._build_args(timeout)
             self._log_verbose(f"Solving anytime in-process: {' '.join(args)}")
@@ -745,11 +769,10 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
                         return
                     else:  # error
                         worker.join()
-                        self._log_error(f"An error occurred: {payload}")
-                        yield PlanGenerationResult(
-                            PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                            log_messages=[LogMessage(level=LogLevel.ERROR,
-                                                     message=str(payload))])
+                        if isinstance(payload, _rantanplan.UnsupportedProblemError):
+                            yield self._refused(str(payload))
+                        else:
+                            yield self._internal_error(payload)
                         return
             finally:
                 # Runs on GeneratorExit (abandonment) and exceptions as well

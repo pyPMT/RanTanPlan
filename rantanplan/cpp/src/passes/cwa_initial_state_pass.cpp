@@ -1,6 +1,7 @@
 #include "cwa_initial_state_pass.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
+#include "../util/unsupported_problem_error.hpp"
 #include <stdexcept>
 #include <unordered_set>
 
@@ -57,7 +58,7 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
         // enumeration of a fluent's possible values) rely on this totality —
         // don't soften it to a default without revisiting them.
         if (type->is_object()) {
-            throw std::runtime_error(
+            throw UnsupportedProblemError(
                 "Object fluent '" + pool->to_string(eid) + "' has no initial "
                 "value and object fluents have no default; it must be "
                 "initialized explicitly in the problem's initial state.");
