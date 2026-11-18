@@ -1935,7 +1935,7 @@ def test_exists_step_runs_the_affected_action_first():
     """Exists-step semantics orders each step so that an action runs before
     the actions that affect it, whatever their ids: use and spoil share the
     one step of the plan."""
-    for strategy in ("e-p", "elsc"):
+    for strategy in ("e", "e-p", "elsc"):
         for declared_first in ("use", "spoil"):
             problem = _one_way_pair_problem(declared_first)
             r = solve(problem, strategy=strategy)

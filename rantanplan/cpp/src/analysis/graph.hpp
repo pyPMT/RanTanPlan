@@ -23,7 +23,10 @@ public:
     size_t num_nodes() const { return adjacency_list_.size(); } // Get the number of nodes in the graph
     size_t num_edges() const; // Get the total number of edges in the graph
 
-    // Strongly Connected Components (SCC) analysis
+    // Strongly Connected Components (SCC) analysis. Tarjan's algorithm gives
+    // the components in the order it completes them, a component after
+    // every component it has an edge to, and get_scc_mapping numbers them in
+    // that order: an edge u -> v across components has scc[v] < scc[u].
     std::vector<std::vector<int>> compute_strongly_connected_components() const;
     std::vector<int> get_scc_mapping() const; // Returns node_id -> scc_id mapping
 
