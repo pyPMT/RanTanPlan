@@ -111,6 +111,14 @@ ir::ResultIR run_solve(PreprocessedProblem& pre, const api::PlanCallback& on_pla
         result.log_messages.push_back(ir::LogMessageIR{
             1 /* INFO */,
             "Problem proven unsolvable: goals not reachable in " + pre.unsolvable_reason});
+    } else if (pre.no_plan_within_step_limit) {
+        // The same status as a search that runs out of steps (solver_api.cpp).
+        result.status = static_cast<int>(ir::SolveStatusIR::UNSOLVABLE_INCOMPLETELY);
+        result.log_messages.push_back(ir::LogMessageIR{
+            1 /* INFO */,
+            "No plan within the step limit (max_steps = " +
+                std::to_string(config.planner.max_steps) + "): goals not reachable in " +
+                pre.unsolvable_reason + " within that many layers; a longer plan may exist"});
     } else {
         // The pipeline's horizon lower bound drives where the search starts.
         config.planner.start_timestep = pre.lower_bound;

@@ -23,7 +23,8 @@ class AchieversAnalysis;
  * @brief Output contract of the preprocessor — input to any backend.
  *
  * Accumulated by the pass pipeline (each pass reads and updates it; the
- * pipeline short-circuits if any pass sets proven_unsolvable), then handed
+ * pipeline short-circuits if any pass sets proven_unsolvable or
+ * no_plan_within_step_limit), then handed
  * to solve() as the single typed boundary between preprocessing and search.
  * All artifacts are strategy-independent with ExprID/plain-data query
  * surfaces.
@@ -34,7 +35,8 @@ struct PreprocessedProblem {
 
     // Verdict
     bool proven_unsolvable = false;     ///< True if any pass proved unsolvability
-    std::string unsolvable_reason;      ///< Name of the pass that proved unsolvability
+    bool no_plan_within_step_limit = false; ///< True if a pass showed no plan within max_steps; a longer one may exist
+    std::string unsolvable_reason;      ///< Name of the pass that set either of the two above
     int lower_bound = 0;                ///< Max horizon lower bound across all passes (drives start_timestep)
 
     // Artifacts

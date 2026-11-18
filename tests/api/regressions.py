@@ -576,6 +576,77 @@ def test_a_non_constant_amount_does_not_bound_its_fluent():
         assert_valid(p, r.plan)
 
 
+def _solve_with(problem, **params):
+    """Solve with the default engine and extra planner parameters."""
+    from unified_planning.shortcuts import OneshotPlanner
+    with OneshotPlanner(name="rantanplan",
+                        params={"verbosity": "silent", **params}) as planner:
+        return planner.solve(problem, timeout=20)
+
+
+def _chain_problem():
+    """A walk along l0 - l1 - ... - l5; the goal at(l5) needs five steps."""
+    Location = UserType("Location")
+    at = Fluent("at", BoolType(), l=Location)
+    link = Fluent("link", BoolType(), a=Location, b=Location)
+    move = InstantaneousAction("move", a=Location, b=Location)
+    a, b = move.parameters
+    move.add_precondition(at(a))
+    move.add_precondition(link(a, b))
+    move.add_effect(at(a), False)
+    move.add_effect(at(b), True)
+    p = Problem("chain")
+    p.add_fluent(at, default_initial_value=False)
+    p.add_fluent(link, default_initial_value=False)
+    p.add_action(move)
+    locations = [Object(f"l{i}", Location) for i in range(6)]
+    p.add_objects(locations)
+    for x, y in zip(locations, locations[1:]):
+        p.set_initial_value(link(x, y), True)
+    p.set_initial_value(at(locations[0]), True)
+    p.add_goal(at(locations[-1]))
+    return p
+
+
+def _capped_problem():
+    """x only ever holds 0 or 3, and the goal is x >= 10: unsolvable."""
+    x = Fluent("x", IntType())
+    set_x = InstantaneousAction("set_x")
+    set_x.add_effect(x, 3)
+    p = Problem("capped")
+    p.add_fluent(x, default_initial_value=0)
+    p.add_action(set_x)
+    p.add_goal(GE(x, 10))
+    return p
+
+
+def test_step_limit_is_not_a_proof_of_unsolvability():
+    """ActionPruning's planning graph stops at max_steps layers. Goals it has
+    not reached by then may be reached later, yet a solvable problem came
+    back UNSOLVABLE_PROVEN under a small max_steps. That case is now
+    UNSOLVABLE_INCOMPLETELY, the status a search that runs out of steps
+    returns. Unreachable at the graph's fixpoint stays a proof."""
+    INCOMPLETELY = PlanGenerationResultStatus.UNSOLVABLE_INCOMPLETELY
+    PROVEN = PlanGenerationResultStatus.UNSOLVABLE_PROVEN
+
+    chain = _chain_problem()
+    assert _solve_with(chain, max_steps=4).status == INCOMPLETELY
+    solved = _solve_with(chain, max_steps=5)
+    assert solved.status == PlanGenerationResultStatus.SOLVED_SATISFICING
+    assert_valid(chain, solved.plan)
+
+    capped = _capped_problem()
+    # Grounding proves it at its own fixpoint, which no step limit cuts short.
+    assert _solve_with(capped, max_steps=1).status == PROVEN
+    # Without numeric grounding the planning graph has to: it sees its
+    # fixpoint at the second layer, so a limit of 1 proves nothing.
+    result = _solve_with(capped, numeric_grounding=False)
+    assert result.status == PROVEN
+    assert any("action-pruning" in m.message for m in result.log_messages), \
+        result.log_messages
+    assert _solve_with(capped, numeric_grounding=False, max_steps=1).status == INCOMPLETELY
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -589,4 +660,5 @@ CASES = [
     test_object_fluent_assign_from_fluent_reachability,
     test_axioms_rejected_as_unsupported,
     test_a_non_constant_amount_does_not_bound_its_fluent,
+    test_step_limit_is_not_a_proof_of_unsolvability,
 ]

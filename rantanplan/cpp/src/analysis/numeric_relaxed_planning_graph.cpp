@@ -345,8 +345,11 @@ bool NumericRelaxedPlanningGraph::build() {
     // Debug: Print initial layer (layer 0)
     print_layer_summary(0);
 
-    // Layer-by-layer construction until fixpoint or max_layers
-    for (int layer = 0; layer < max_layers_; ++layer) {
+    // Layer-by-layer construction until fixpoint or max_layers. Every other
+    // way out of the loop is a break, so layer == max_layers_ afterwards
+    // means the limit stopped it.
+    int layer = 0;
+    for (; layer < max_layers_; ++layer) {
         // Compute applicable actions using SMT-based checking
         std::vector<const Action*> applicable_actions = compute_applicable_actions(layer);
 
@@ -436,6 +439,7 @@ bool NumericRelaxedPlanningGraph::build() {
             break;
         }
     }
+    hit_layer_limit_ = (layer == max_layers_);
 
     build_time_ms_ = timer.elapsed_ms();
     double end_memory = MemoryTracker::instance().get_current_memory_mb();

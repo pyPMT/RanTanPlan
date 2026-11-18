@@ -46,7 +46,14 @@ void ActionPruningPass::apply(PreprocessedProblem& result) const {
         bool goals_reachable = rpg->build();
 
         if (!goals_reachable) {
-            result.proven_unsolvable = true;
+            // Unreachable at the fixpoint: no plan of any length. Unreachable
+            // only at the layer limit: no plan within the step limit, which
+            // proves nothing about longer plans.
+            if (rpg->hit_layer_limit()) {
+                result.no_plan_within_step_limit = true;
+            } else {
+                result.proven_unsolvable = true;
+            }
             result.unsolvable_reason = name();
             return;
         }

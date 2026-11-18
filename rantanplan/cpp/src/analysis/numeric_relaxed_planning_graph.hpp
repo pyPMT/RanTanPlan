@@ -186,6 +186,11 @@ public:
     // QUERY METHODS
     // ========================================================================
 
+    /// True if build() stopped at its layer limit (the step limit, max_steps)
+    /// before reaching a fixpoint. Goals unreachable then means only
+    /// unreachable within that many layers: a longer plan may exist.
+    bool hit_layer_limit() const { return hit_layer_limit_; }
+
     bool are_goals_achievable() const;
     int get_minimum_steps_lower_bound() const;
     const std::vector<const Action*>& get_actions_in_layer(int layer) const;
@@ -315,6 +320,7 @@ private:
 
     int widening_threshold_;
     int max_layers_;
+    bool hit_layer_limit_ = false;  ///< See hit_layer_limit()
     bool stop_when_all_reachable_;  ///< Stop when all actions reachable + goals achieved
     int first_goals_layer_ = -1;   ///< First layer where goals are interval-achievable (-1 = not yet)
 
