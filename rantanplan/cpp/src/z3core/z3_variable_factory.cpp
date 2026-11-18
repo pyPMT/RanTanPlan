@@ -280,7 +280,7 @@ std::vector<std::pair<std::shared_ptr<z3::expr>, int>> Z3VariableFactory::get_al
 z3::expr Z3VariableFactory::make_numeric_val(int64_t v) const {
     return (problem_ && problem_->all_integer())
         ? ctx_.int_val(static_cast<int64_t>(v))
-        : ctx_.real_val(static_cast<int>(v));
+        : ctx_.real_val(static_cast<int64_t>(v));
 }
 
 z3::expr Z3VariableFactory::make_numeric_val(double v) const {

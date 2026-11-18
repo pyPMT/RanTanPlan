@@ -236,7 +236,7 @@ z3::expr LiftedEncodingVisitor::convert_node_pool(ExprID id) {
             return create_int_variable(symbol);
         }
         if (std::holds_alternative<int64_t>(node.payload)) {
-            return ctx_.int_val(static_cast<int>(std::get<int64_t>(node.payload)));
+            return ctx_.int_val(std::get<int64_t>(node.payload));
         }
         if (std::holds_alternative<double>(node.payload)) {
             return ctx_.real_val(std::to_string(std::get<double>(node.payload)).c_str());
