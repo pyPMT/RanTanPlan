@@ -778,7 +778,7 @@ def test_interference_sees_every_dependency():
     breaker-then-needer, which is invalid (see _breaker_and_needer_problem)."""
     from rantanplan import _rantanplan
     registered = set(_rantanplan.list_strategies())
-    for strategy in ("e", "e-p", "f", "f-p", "el", "fl", "e-dt", "f-dt"):
+    for strategy in ("e", "e-lin", "e-p", "f", "f-p", "el", "fl", "e-dt", "f-dt"):
         if strategy not in registered:
             continue
         for case in ("computed", "iff", "both_polarities", "value_read", "count"):
@@ -1935,7 +1935,7 @@ def test_exists_step_runs_the_affected_action_first():
     """Exists-step semantics orders each step so that an action runs before
     the actions that affect it, whatever their ids: use and spoil share the
     one step of the plan."""
-    for strategy in ("e", "e-p", "elsc"):
+    for strategy in ("e", "e-lin", "e-p", "elsc"):
         for declared_first in ("use", "spoil"):
             problem = _one_way_pair_problem(declared_first)
             r = solve(problem, strategy=strategy)
@@ -1945,6 +1945,53 @@ def test_exists_step_runs_the_affected_action_first():
             assert_valid(problem, r.plan)
             assert _metric(r, "planner.solution_horizon") == 1, \
                 f"{case}: {[a.action.name for a in r.plan.actions]}"
+
+
+# The domains test_exists_step_encodings_agree solves besides the quick ones:
+# delivery, whose components are complete graphs, depots and drone, whose
+# components are small, and cave-diving and hiking, the two where the step
+# order forbids one-way pairs.
+EXISTS_STEP_DOMAINS = ("delivery", "depots", "drone",
+                       "cave-diving-sequential-optimal", "hiking-sequential-optimal")
+
+
+def test_exists_step_encodings_agree():
+    """e and e-lin forbid the same pairs of actions in a step, those of the
+    same step order: e with one clause for each pair, e-lin with Rintanen's
+    linear chains. So they find a valid plan at the same horizon, and e-lin
+    writes clauses exactly when a step forbids a pair. e-p allows every step
+    whose actions can run in some order, not only in the fixed one, so its
+    horizon is at most theirs."""
+    from pathlib import Path
+    from unified_planning.io import PDDLReader
+    from .. import pddl_suite
+    names = [Path(d).name for d in pddl_suite.QUICK_TEST_DIRS] + list(EXISTS_STEP_DOMAINS)
+    for name in names:
+        _, domain, problem_file = pddl_suite.find_instance(name)
+        problem = PDDLReader(force_up_pddl_reader=True).parse_problem(
+            str(domain), str(problem_file))
+        horizon = {}
+        for strategy in ("e", "e-lin", "e-p"):
+            case = f"{name}, {strategy}"
+            r = _solve_with(problem, strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"{case}: {r.status}"
+            try:
+                assert_valid(problem, r.plan)
+            except AssertionError as e:
+                raise AssertionError(f"{case}: {e}")
+            horizon[strategy] = _metric(r, "planner.solution_horizon")
+            # A plan at horizon 0 has no step, so no step's clauses are
+            # encoded or reported (hydropower).
+            if strategy == "e-lin" and horizon[strategy] > 0:
+                forbidden = _metric(r, "estep.forbidden_pairs_per_step")
+                clauses = _metric(r, "estep.clauses_per_step")
+                assert forbidden is not None and clauses is not None, \
+                    f"{case}: estep stats not reported"
+                assert (clauses > 0) == (forbidden > 0), \
+                    f"{case}: {clauses} clauses, {forbidden} forbidden pairs per step"
+        assert horizon["e"] == horizon["e-lin"], f"{name}: {horizon}"
+        assert horizon["e-p"] <= horizon["e-lin"], f"{name}: {horizon}"
 
 
 def _plan_cost(problem, plan):
@@ -2264,6 +2311,7 @@ CASES = [
     test_derived_bound_reaches_the_solver_as_its_exact_double,
     test_conservation_constant_is_exact,
     test_exists_step_runs_the_affected_action_first,
+    test_exists_step_encodings_agree,
     test_bb_optimality_proof_covers_longer_plans,
     test_bb_abstract_actions_are_per_grounding,
     test_bb_loop_formulas_keep_external_support,

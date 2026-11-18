@@ -36,6 +36,12 @@ enum class PropagatorModuleKind { ForallEager, ForallLazy, ExistsCycle, FrameAxi
 
 using PropagatorFlags = std::set<PropagatorModuleKind>;
 
+/// How Exists semantics writes the pairs its step order forbids: Pairs (one
+/// clause per pair) or Chains (Rintanen's linear encoding, one chain per
+/// interference unit). Chains need eager syntactic interference and no
+/// module that manages parallelism (StrategyFactory::validate).
+enum class EstepMutexes { Pairs, Chains };
+
 /// A named, validated combination of encoder/semantics/interference/
 /// propagator/planner — the contributor unit for adding a new backend
 /// configuration (see StrategyRegistry).
@@ -45,6 +51,7 @@ struct StrategySpec {
     InterferenceKind interference;
     PropagatorFlags propagator;
     PlannerKind planner;
+    EstepMutexes estep_mutexes = EstepMutexes::Pairs;
 };
 
 // ---------------------------------------------------------------------------

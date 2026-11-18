@@ -96,6 +96,40 @@ public:
         return actions_interfere(a1, a2);
     }
 
+    /// One way a write to one fluent can affect another action: the fluent
+    /// made true, made false, or written numerically. `writers` write the
+    /// fluent that way and `affected` are the actions such a write affects
+    /// (Rintanen's E_m and R_m, with both directions of a numeric write in
+    /// one unit). An action can be in both.
+    struct InterferenceUnit {
+        std::vector<int> writers;   ///< action ids
+        std::vector<int> affected;  ///< action ids
+    };
+
+    /**
+     * @brief The syntactic interference relation, split by fluent
+     *
+     * Over all units, the pairs (a, b) with a in writers, b in affected and
+     * a != b are exactly the pairs actions_interfere(a, b) accepts. The
+     * exists-step chains forbid pairs one unit at a time. For example:
+     *
+     *     use   : pre p    eff q := true
+     *     spoil :          eff p := false, x += 1
+     *     link  :          eff q := false, x += 1
+     *
+     *     unit            writers        affected
+     *     p made false    spoil          use            (use needs p)
+     *     q made true     use            link           (link makes q false)
+     *     q made false    link           use            (use makes q true)
+     *     x written       spoil, link    spoil, link    (two writes of x)
+     *
+     *     pairs: spoil -> use, use -> link, link -> use, spoil -> link,
+     *            link -> spoil; the same as actions_interfere's.
+     *
+     * Nothing makes p true, so that unit has no writers and is left out.
+     */
+    std::vector<InterferenceUnit> interference_units() const;
+
 protected:
     // Common data structures for action analysis results
     struct ActionAnalysis {

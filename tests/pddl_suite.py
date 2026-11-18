@@ -45,6 +45,7 @@ QUICK_STRATEGIES = [
     "f",          # No module: forall mutex clauses up front (eager syntactic)
     "f-p",        # ForallEager module (eager syntactic)
     "e",          # No module: exists step-order clauses up front (eager syntactic)
+    "e-lin",      # No module: exists step-order linear chains up front (eager syntactic)
     "flsc",       # ForallLazy module (lazy semantic, chained)
     "flsc-dt",    # ForallLazy module + DoubleTail planner
     "elsc",       # ExistsCycle module (lazy semantic, chained)

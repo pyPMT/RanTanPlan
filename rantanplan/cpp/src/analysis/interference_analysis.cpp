@@ -1,4 +1,6 @@
 #include "interference_analysis.hpp"
+#include <map>
+#include <utility>
 
 namespace rantanplan {
 
@@ -132,6 +134,63 @@ bool InterferenceOracle::actions_interfere(const Action& a1, const Action& a2) c
     }
 
     return false;
+}
+
+std::vector<InterferenceOracle::InterferenceUnit> InterferenceOracle::interference_units() const {
+    // The units follow the tests of actions_interfere. A write of each kind
+    // affects the preconditions it can falsify (test 1) and the writes it
+    // conflicts with (test 4). A write of any kind affects the fluent's reads
+    // in effect conditions and effect values (tests 2 and 3), as all_effects
+    // is the union of the three effect sets. For a fluent p:
+    //
+    //     kind          writers               affected
+    //     made true     write p true          need ~p, write p false, read p
+    //     made false    write p false         need p,  write p true,  read p
+    //     numeric       write p               have p in a precondition, write p,
+    //                                         read p
+    //
+    // "Read p": p occurs in an effect condition or an effect value. A
+    // computed write p := q writes p both true and false, so it is in both
+    // Boolean units.
+    enum Kind { MadeTrue, MadeFalse, Numeric };
+    // Ordered, so that the units, and with them the clauses and the chain
+    // variables, come in the same order on every run.
+    std::map<std::pair<ExprID, Kind>, InterferenceUnit> units;
+
+    for (const Action& action : problem_->actions()) {
+        const ActionAnalysis& a = action_analysis_.at(action);
+        const int id = action.id();
+        // Each set holds a fluent once, so an action is a unit's writer once.
+        for (ExprID f : a.positive_boolean_effects) units[{f, MadeTrue}].writers.push_back(id);
+        for (ExprID f : a.negative_boolean_effects) units[{f, MadeFalse}].writers.push_back(id);
+        for (ExprID f : a.numeric_effects) units[{f, Numeric}].writers.push_back(id);
+
+        // An action can be affected through several of its sets. All of
+        // them are added here, one action after another, so a repeat is the
+        // last entry of the list.
+        auto affected_by = [&](ExprID f, Kind kind) {
+            std::vector<int>& affected = units[{f, kind}].affected;
+            if (affected.empty() || affected.back() != id) affected.push_back(id);
+        };
+        for (ExprID f : a.negative_boolean_preconditions) affected_by(f, MadeTrue);
+        for (ExprID f : a.positive_boolean_preconditions) affected_by(f, MadeFalse);
+        for (ExprID f : a.numeric_preconditions) affected_by(f, Numeric);
+        for (const auto* reads : {&a.conditional_effect_fluents, &a.effect_value_dependencies}) {
+            for (ExprID f : *reads) {
+                for (Kind kind : {MadeTrue, MadeFalse, Numeric}) affected_by(f, kind);
+            }
+        }
+        for (ExprID f : a.negative_boolean_effects) affected_by(f, MadeTrue);
+        for (ExprID f : a.positive_boolean_effects) affected_by(f, MadeFalse);
+        for (ExprID f : a.numeric_effects) affected_by(f, Numeric);
+    }
+
+    // A unit without writers or without affected actions forbids nothing.
+    std::vector<InterferenceUnit> result;
+    for (auto& [key, unit] : units) {
+        if (!unit.writers.empty() && !unit.affected.empty()) result.push_back(std::move(unit));
+    }
+    return result;
 }
 
 } // namespace rantanplan

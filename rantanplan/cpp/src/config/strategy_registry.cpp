@@ -35,6 +35,9 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
         // Exists variants
         {"e",         {{E::Grounded, S::Exists,     I::EagerSyntactic,  {},                       K::Sequential},
                        "Exists-step, eager syntactic interference, step-order clauses up front"}},
+        {"e-lin",     {{E::Grounded, S::Exists,     I::EagerSyntactic,  {},                       K::Sequential,
+                        EstepMutexes::Chains},
+                       "Exists-step, eager syntactic interference, Rintanen's linear step-order chains up front"}},
         {"e-p",       {{E::Grounded, S::Exists,     I::EagerSyntactic,  {M::ExistsCycle},         K::Sequential},
                        "Exists-step, eager syntactic interference, cycle propagator"}},
         {"el",        {{E::Grounded, S::Exists,     I::LazySyntactic,   {M::ExistsCycle},         K::Sequential},

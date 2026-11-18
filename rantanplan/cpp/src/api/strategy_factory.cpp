@@ -42,6 +42,14 @@ static bool is_semantic(InterferenceKind kind) {
            kind == InterferenceKind::LazySemantic;
 }
 
+/// The modules whose manages_parallelism_constraints() is true: with one of
+/// them the planner never calls encode_parallelism.
+static bool manages_parallelism(PropagatorModuleKind kind) {
+    return kind == PropagatorModuleKind::ForallEager ||
+           kind == PropagatorModuleKind::ForallLazy ||
+           kind == PropagatorModuleKind::ExistsCycle;
+}
+
 void StrategyFactory::validate(const StrategySpec& spec,
                                const std::string& strategy_name,
                                const std::string& horizon_schedule) {
@@ -78,6 +86,29 @@ void StrategyFactory::validate(const StrategySpec& spec,
         throw std::invalid_argument(
             "No interference analysis requires Sequential semantics "
             "(Forall/Exists semantics need interference for mutex constraints)");
+    }
+
+    // The exists-step chains forbid the pairs of the step order unit by unit
+    // (InterferenceOracle::interference_units), which split the syntactic
+    // interference relation, and the order is built from the eager graph.
+    // encode_parallelism writes them, which the planner skips when a module
+    // manages parallelism.
+    if (spec.estep_mutexes == EstepMutexes::Chains) {
+        if (spec.semantics != SemanticsKind::Exists) {
+            throw std::invalid_argument(
+                "Exists-step chains require Exists semantics");
+        }
+        if (spec.interference != InterferenceKind::EagerSyntactic) {
+            throw std::invalid_argument(
+                "Exists-step chains require eager syntactic interference: "
+                "they split the syntactic interference relation by fluent, "
+                "and the step order is built from the eager graph");
+        }
+        if (std::any_of(spec.propagator.begin(), spec.propagator.end(), manages_parallelism)) {
+            throw std::invalid_argument(
+                "Exists-step chains are encoded up front, and a propagator "
+                "module that manages parallelism would replace them");
+        }
     }
 
     if (spec.propagator.count(PropagatorModuleKind::FrameAxiom) &&
@@ -120,6 +151,7 @@ void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
             "SDAC detected with exists-step semantics — downgrading to "
             "forall semantics for sound cost evaluation.");
         spec.semantics = SemanticsKind::Forall;
+        spec.estep_mutexes = EstepMutexes::Pairs;  // validate: chains are exists-step only
         if (spec.propagator.count(PropagatorModuleKind::ExistsCycle)) {
             spec.propagator.erase(PropagatorModuleKind::ExistsCycle);
             spec.propagator.insert(PropagatorModuleKind::ForallLazy);
@@ -181,7 +213,8 @@ static std::unique_ptr<ParallelismStrategy> create_parallelism(
                                                      interference.graph);
         case SemanticsKind::Exists:
             return std::make_unique<ExistsSemantics>(std::move(interference.oracle),
-                                                     interference.graph);
+                                                     interference.graph,
+                                                     spec.estep_mutexes);
     }
     throw std::invalid_argument("Unknown semantics kind");
 }
