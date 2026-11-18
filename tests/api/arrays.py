@@ -922,6 +922,66 @@ def test_guarded_nested_index():
             assert names.index("lower") < names.index("copy"), (case, names)
 
 
+def _cell_name_collision_problem(case):
+    """A cell's readable name is already taken.
+
+        int, bool:  cc_a : array[2] of int[0,9] = [5, 6], and a scalar fluent
+                    named "cc_a[0]" (int[0,9] = 0, or bool = false)
+                    w : "cc_a[0]" := 1 (true)
+                    s : PRE cc_a[0] = 5 and "cc_a[0]" = 1 (true);  done := true
+        cells:      cc_b : array[2][2] = [[1, 2], [3, 4]] and a 1-D array
+                    named "cc_b[0]" = [7, 8]; both have a cell "cc_b[0][0]"
+                    s : PRE cc_b[0][0] = 1 and "cc_b[0]"[0] = 7;  done := true
+        goal : done
+    """
+    em = _em()
+    done = Fluent(f"cc_{case}_done", BoolType())
+    p = Problem(f"cell_name_collision_{case}")
+    p.add_fluent(done, default_initial_value=False)
+    s = InstantaneousAction("s")
+    s.add_effect(done(), True)
+    if case == "cells":
+        b2 = Fluent("cc_b", ArrayType(2, ArrayType(2, IntType(0, 9))))
+        b1 = Fluent("cc_b[0]", ArrayType(2, IntType(0, 9)))
+        p.add_fluent(b2, default_initial_value=0)
+        p.add_fluent(b1, default_initial_value=0)
+        p.set_initial_value(b2, [[1, 2], [3, 4]])
+        p.set_initial_value(b1, [7, 8])
+        s.add_precondition(Equals(em.ArrayIndex(em.ArrayIndex(b2(), Int(0)), Int(0)), 1))
+        s.add_precondition(Equals(em.ArrayIndex(b1(), Int(0)), 7))
+    else:
+        a = Fluent("cc_a", ArrayType(2, IntType(0, 9)))
+        x = Fluent("cc_a[0]", IntType(0, 9) if case == "int" else BoolType())
+        p.add_fluent(a, default_initial_value=0)
+        p.add_fluent(x, default_initial_value=0 if case == "int" else False)
+        p.set_initial_value(a, [5, 6])
+        w = InstantaneousAction("w")
+        w.add_effect(x(), 1 if case == "int" else True)
+        p.add_action(w)
+        s.add_precondition(Equals(em.ArrayIndex(a(), Int(0)), 5))
+        s.add_precondition(Equals(x(), 1) if case == "int" else x())
+    p.add_action(s)
+    p.add_goal(done())
+    return p
+
+
+def test_cells_do_not_take_a_declared_name():
+    """Cells were named a[i] whatever else had that name, and fluents are
+    identified by name, so a cell and a fluent (or two cells) of one name were
+    merged: with one type, the task came out UNSOLVABLE_PROVEN (s needs the
+    two values to differ); with two, preprocessing stopped on one atom with
+    two ExprIDs, INTERNAL_ERROR. A taken name now gets a suffix, a[i]!k. The
+    plan is checked against UP's array-free compilation."""
+    for strategy in ("seq", "e", "e-lin"):
+        for case in ("int", "bool", "cells"):
+            p = _cell_name_collision_problem(case)
+            r = solve(p, strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"{strategy}/{case}: {r.status}"
+            p_ar = _ar_compile(p)
+            _assert_valid(p_ar, _map_plan(p_ar, r.plan), f"{strategy}/{p.name}")
+
+
 def test_state_invariant_with_cell_read():
     """A declared state invariant containing a cell read is lowered and
     enforced: the action violating it cannot be used."""
@@ -1495,6 +1555,7 @@ CASES = [
     test_guarded_undefined_effect_blocks_where_condition_holds,
     test_guarded_undefined_effect_never_applicable_when_condition_static,
     test_guarded_nested_index,
+    test_cells_do_not_take_a_declared_name,
     test_state_invariant_with_cell_read,
     test_action_cost_with_cell_read,
     test_same_cell_collision_instance_dependent,
