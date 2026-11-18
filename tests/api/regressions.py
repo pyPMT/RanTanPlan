@@ -1699,6 +1699,29 @@ def test_fluents_named_like_operators_keep_their_names():
         assert_valid(p, r.plan)
 
 
+def test_function_symbols_carry_an_operator():
+    """A FUNCTION_SYMBOL names its operator with an Operator, not a string,
+    and the loader refuses a FUNCTION_SYMBOL without one."""
+    try:
+        _rantanplan.ExprNodeIR().op = "up:plus"
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("a string was accepted as an operator")
+    ir = convert_problem(_breaker_and_needer_problem("iff"))
+    nodes = ir.nodes
+    head = next(n for n in nodes if n.kind == _KIND.FUNCTION_SYMBOL)
+    assert isinstance(head.op, _rantanplan.Operator), head.op
+    head.op = None
+    ir.nodes = nodes
+    try:
+        _rantanplan.preprocess(ir, ["--strategy", "seq", "--verbosity", "silent"])
+    except RuntimeError as e:
+        assert "Function symbol without an operator" in str(e), str(e)
+    else:
+        raise AssertionError("a function symbol without an operator was accepted")
+
+
 def _real_problem(name, fluents, actions, goal):
     p = Problem(name)
     for f, initial in fluents:
@@ -1821,6 +1844,7 @@ CASES = [
     test_unsupported_expression_kinds_are_rejected,
     test_a_conjunction_is_one_node_whoever_builds_it,
     test_fluents_named_like_operators_keep_their_names,
+    test_function_symbols_carry_an_operator,
     test_reals_are_exact,
     test_reals_equal_to_six_decimals_are_two_nodes,
     test_declared_real_bounds_keep_their_decimals,

@@ -11,15 +11,14 @@ namespace rantanplan {
 
 /// A small, stateful helper for building interned expression nodes in one
 /// ExprPool. Centralises the boolean/relational/count construction that several
-/// passes (quantifier expansion, set lowering, …) each used to re-implement:
+/// passes (quantifier expansion, set lowering, …) need:
 /// cached operator head symbols, the and/or/not/implies/iff/eq/count builders
 /// with constant folding, object constants, and child reinterning.
 ///
 /// Head symbols use the standard operator spelling (`expr_operator_to_string`),
-/// which is the form the IR loader normalises to (ir_io map_up_operator) — so
-/// nodes built here dedup with the loaded formula's nodes. The head's op *field*
-/// is the authoritative operator (intern() copies it onto the application); the
-/// head string is display/dedup only.
+/// as the IR loader's do, so nodes built here dedup with the loaded formula's
+/// nodes. The head's op *field* is the authoritative operator (intern() copies
+/// it onto the application); the head string is display/dedup only.
 class ExprBuilder {
 public:
     explicit ExprBuilder(ExprPool& pool) : pool_(pool) {}

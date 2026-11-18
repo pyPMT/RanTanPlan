@@ -38,11 +38,24 @@ enum class ExprKindIR : int {
     VARIABLE = 7,
 };
 
+/// The UP operators the converter sends, under their OperatorKind names (the
+/// converter maps each OperatorKind to the member of the same name).
+enum class OperatorIR : int {
+    PLUS, MINUS, TIMES, DIV,
+    LE, LT, EQUALS,
+    AND, OR, NOT, IMPLIES, IFF,
+    COUNT, EXISTS, FORALL, ARRAY_INDEX,
+    SET_MEMBER, SET_SUBSETEQ, SET_DISJOINT, SET_CARDINALITY,
+    SET_ADD, SET_REMOVE, SET_UNION, SET_INTERSECT, SET_DIFFERENCE, SET_CONSTANT,
+};
+
 struct ExprNodeIR {
     ExprKindIR kind = ExprKindIR::UNKNOWN;
     /// UP type string ("up:bool", "up:integer", user type name) or ""
     std::string type_name;
-    // Payload: at most one is set (atoms only; applications have children)
+    // Payload: at most one is set (atoms only; applications have children).
+    // A FUNCTION_SYMBOL has `op`; other named atoms have `symbol`.
+    std::optional<OperatorIR> op;
     std::optional<std::string> symbol;
     std::optional<int64_t> int_value;
     std::optional<std::pair<int64_t, int64_t>> real_value;  ///< numerator/denominator

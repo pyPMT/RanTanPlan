@@ -67,82 +67,6 @@ enum class ExprOperator {
     SET_CONSTANT
 };
 
-// ============================================================================
-// Static utility methods (formerly on Expression)
-// ============================================================================
-
-inline ExprOperator string_to_expr_operator(const std::string& op_string) {
-    // UP notation
-    if (op_string == "up:plus") return ExprOperator::PLUS;
-    if (op_string == "up:minus") return ExprOperator::MINUS;
-    if (op_string == "up:times") return ExprOperator::MULTIPLY;
-    if (op_string == "up:div") return ExprOperator::DIVIDE;
-    if (op_string == "up:mod") return ExprOperator::MODULO;
-    if (op_string == "up:abs") return ExprOperator::ABSOLUTE;
-    if (op_string == "up:max") return ExprOperator::MAXIMUM;
-    if (op_string == "up:min") return ExprOperator::MINIMUM;
-    if (op_string == "up:equals") return ExprOperator::EQUALS;
-    if (op_string == "up:le") return ExprOperator::LESS_EQUAL;
-    if (op_string == "up:lt") return ExprOperator::LESS_THAN;
-    if (op_string == "up:ge") return ExprOperator::GREATER_EQUAL;
-    if (op_string == "up:gt") return ExprOperator::GREATER_THAN;
-    if (op_string == "up:and") return ExprOperator::AND;
-    if (op_string == "up:or") return ExprOperator::OR;
-    if (op_string == "up:not") return ExprOperator::NOT;
-    if (op_string == "up:implies") return ExprOperator::IMPLIES;
-    if (op_string == "up:iff") return ExprOperator::IFF;
-    if (op_string == "up:forall") return ExprOperator::FORALL;
-    if (op_string == "up:exists") return ExprOperator::EXISTS;
-    if (op_string == "up:count") return ExprOperator::COUNT;
-    if (op_string == "up:array_index") return ExprOperator::ARRAY_INDEX;
-    if (op_string == "up:set_member") return ExprOperator::SET_MEMBER;
-    if (op_string == "up:set_subseteq") return ExprOperator::SET_SUBSETEQ;
-    if (op_string == "up:set_disjoint") return ExprOperator::SET_DISJOINT;
-    if (op_string == "up:set_cardinality") return ExprOperator::SET_CARDINALITY;
-    if (op_string == "up:set_add") return ExprOperator::SET_ADD;
-    if (op_string == "up:set_remove") return ExprOperator::SET_REMOVE;
-    if (op_string == "up:set_union") return ExprOperator::SET_UNION;
-    if (op_string == "up:set_intersect") return ExprOperator::SET_INTERSECT;
-    if (op_string == "up:set_difference") return ExprOperator::SET_DIFFERENCE;
-    if (op_string == "up:set_constant") return ExprOperator::SET_CONSTANT;
-
-    // Standard notation
-    if (op_string == "+") return ExprOperator::PLUS;
-    if (op_string == "-") return ExprOperator::MINUS;
-    if (op_string == "*") return ExprOperator::MULTIPLY;
-    if (op_string == "/") return ExprOperator::DIVIDE;
-    if (op_string == "mod") return ExprOperator::MODULO;
-    if (op_string == "abs") return ExprOperator::ABSOLUTE;
-    if (op_string == "max") return ExprOperator::MAXIMUM;
-    if (op_string == "min") return ExprOperator::MINIMUM;
-    if (op_string == "=" || op_string == "==") return ExprOperator::EQUALS;
-    if (op_string == "<=") return ExprOperator::LESS_EQUAL;
-    if (op_string == "<") return ExprOperator::LESS_THAN;
-    if (op_string == ">=") return ExprOperator::GREATER_EQUAL;
-    if (op_string == ">") return ExprOperator::GREATER_THAN;
-    if (op_string == "and") return ExprOperator::AND;
-    if (op_string == "or") return ExprOperator::OR;
-    if (op_string == "not") return ExprOperator::NOT;
-    if (op_string == "=>") return ExprOperator::IMPLIES;
-    if (op_string == "<=>") return ExprOperator::IFF;
-    if (op_string == "forall") return ExprOperator::FORALL;
-    if (op_string == "exists") return ExprOperator::EXISTS;
-    if (op_string == "count") return ExprOperator::COUNT;
-    if (op_string == "array_index") return ExprOperator::ARRAY_INDEX;
-    if (op_string == "set_member") return ExprOperator::SET_MEMBER;
-    if (op_string == "set_subseteq") return ExprOperator::SET_SUBSETEQ;
-    if (op_string == "set_disjoint") return ExprOperator::SET_DISJOINT;
-    if (op_string == "set_cardinality") return ExprOperator::SET_CARDINALITY;
-    if (op_string == "set_add") return ExprOperator::SET_ADD;
-    if (op_string == "set_remove") return ExprOperator::SET_REMOVE;
-    if (op_string == "set_union") return ExprOperator::SET_UNION;
-    if (op_string == "set_intersect") return ExprOperator::SET_INTERSECT;
-    if (op_string == "set_difference") return ExprOperator::SET_DIFFERENCE;
-    if (op_string == "set_constant") return ExprOperator::SET_CONSTANT;
-
-    return ExprOperator::NONE;
-}
-
 inline std::string expr_operator_to_string(ExprOperator op) {
     switch (op) {
         case ExprOperator::PLUS: return "+";
@@ -179,14 +103,6 @@ inline std::string expr_operator_to_string(ExprOperator op) {
         case ExprOperator::SET_CONSTANT: return "set_constant";
         default: return "";
     }
-}
-
-inline std::string map_up_operator(const std::string& up_function_name) {
-    ExprOperator op = string_to_expr_operator(up_function_name);
-    if (op == ExprOperator::NONE) {
-        return up_function_name;
-    }
-    return expr_operator_to_string(op);
 }
 
 inline bool is_arithmetic_operator(ExprOperator op) {

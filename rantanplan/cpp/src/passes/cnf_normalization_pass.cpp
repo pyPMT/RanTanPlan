@@ -24,9 +24,8 @@ constexpr size_t kMaxClauseBudget = 4096;  ///< absolute cap regardless of input
 class CnfConverter {
 public:
     // The builder's op_head interns the standard operator spelling ("and"/…),
-    // which dedups with the loader's normalised heads — so rebuilt applications
-    // intern identically to loader-built ones (the guarantee the old head-symbol
-    // harvest gave, now for free).
+    // as the loader's heads do, so rebuilt applications intern identically to
+    // loader-built ones.
     explicit CnfConverter(ExprPool& pool) : pool_(pool), builder_(pool) {}
 
     /// CNF-normalize expr; returns expr unchanged when it is already in CNF

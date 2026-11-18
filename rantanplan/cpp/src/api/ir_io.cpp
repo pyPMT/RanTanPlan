@@ -45,6 +45,41 @@ ir::ExprKindIR to_ir_kind(ExprKind kind) {
     return ir::ExprKindIR::UNKNOWN;
 }
 
+/// The planner's operator for an IR one. IFF becomes EQUALS: = on two
+/// booleans is iff, as in SMT-LIB, which has no iff of its own.
+static ExprOperator to_expr_operator(ir::OperatorIR op) {
+    switch (op) {
+        case ir::OperatorIR::PLUS: return ExprOperator::PLUS;
+        case ir::OperatorIR::MINUS: return ExprOperator::MINUS;
+        case ir::OperatorIR::TIMES: return ExprOperator::MULTIPLY;
+        case ir::OperatorIR::DIV: return ExprOperator::DIVIDE;
+        case ir::OperatorIR::LE: return ExprOperator::LESS_EQUAL;
+        case ir::OperatorIR::LT: return ExprOperator::LESS_THAN;
+        case ir::OperatorIR::EQUALS: return ExprOperator::EQUALS;
+        case ir::OperatorIR::AND: return ExprOperator::AND;
+        case ir::OperatorIR::OR: return ExprOperator::OR;
+        case ir::OperatorIR::NOT: return ExprOperator::NOT;
+        case ir::OperatorIR::IMPLIES: return ExprOperator::IMPLIES;
+        case ir::OperatorIR::IFF: return ExprOperator::EQUALS;
+        case ir::OperatorIR::COUNT: return ExprOperator::COUNT;
+        case ir::OperatorIR::EXISTS: return ExprOperator::EXISTS;
+        case ir::OperatorIR::FORALL: return ExprOperator::FORALL;
+        case ir::OperatorIR::ARRAY_INDEX: return ExprOperator::ARRAY_INDEX;
+        case ir::OperatorIR::SET_MEMBER: return ExprOperator::SET_MEMBER;
+        case ir::OperatorIR::SET_SUBSETEQ: return ExprOperator::SET_SUBSETEQ;
+        case ir::OperatorIR::SET_DISJOINT: return ExprOperator::SET_DISJOINT;
+        case ir::OperatorIR::SET_CARDINALITY: return ExprOperator::SET_CARDINALITY;
+        case ir::OperatorIR::SET_ADD: return ExprOperator::SET_ADD;
+        case ir::OperatorIR::SET_REMOVE: return ExprOperator::SET_REMOVE;
+        case ir::OperatorIR::SET_UNION: return ExprOperator::SET_UNION;
+        case ir::OperatorIR::SET_INTERSECT: return ExprOperator::SET_INTERSECT;
+        case ir::OperatorIR::SET_DIFFERENCE: return ExprOperator::SET_DIFFERENCE;
+        case ir::OperatorIR::SET_CONSTANT: return ExprOperator::SET_CONSTANT;
+    }
+    throw std::runtime_error("Unsupported operator " + std::to_string(static_cast<int>(op)) +
+                             " in IR input");
+}
+
 static EffectExpression::Kind to_effect_kind(ir::EffectKindIR kind) {
     switch (kind) {
         case ir::EffectKindIR::ASSIGN: return EffectExpression::Kind::ASSIGN;
@@ -94,16 +129,16 @@ static void intern_nodes(IRLoadContext& ctx) {
         node.kind = kind;
         node.type_id = resolve_type_id(ir_node.type_name, ctx.types, ctx.type_map);
 
-        if (ir_node.symbol) {
-            std::string symbol = *ir_node.symbol;
-            // An operator takes its standard spelling, and its op from that (an
-            // application's too, see intern()). Any other symbol is a name (of
-            // a fluent, object, parameter or variable) and is kept as it is.
-            if (kind == ExprKind::FUNCTION_SYMBOL) {
-                symbol = map_up_operator(symbol);
-                node.op = string_to_expr_operator(symbol);
+        if (kind == ExprKind::FUNCTION_SYMBOL) {
+            // An operator, under its standard spelling (the one ExprBuilder's
+            // heads use); intern() gives its applications the same op.
+            if (!ir_node.op) {
+                throw std::runtime_error("Function symbol without an operator in IR input");
             }
-            node.payload = std::move(symbol);
+            node.op = to_expr_operator(*ir_node.op);
+            node.payload = expr_operator_to_string(node.op);
+        } else if (ir_node.symbol) {
+            node.payload = *ir_node.symbol;  // a name: fluent, object, parameter or variable
         } else if (ir_node.int_value) {
             node.payload = *ir_node.int_value;
         } else if (ir_node.real_value) {

@@ -36,33 +36,9 @@ _STATE_VARIABLE = _ir.ExprKind.STATE_VARIABLE
 _FUNCTION_APPLICATION = _ir.ExprKind.FUNCTION_APPLICATION
 _VARIABLE = _ir.ExprKind.VARIABLE
 
-_OPERATOR_NAMES = {
-    OperatorKind.PLUS: "up:plus",
-    OperatorKind.MINUS: "up:minus",
-    OperatorKind.TIMES: "up:times",
-    OperatorKind.DIV: "up:div",
-    OperatorKind.LE: "up:le",
-    OperatorKind.LT: "up:lt",
-    OperatorKind.EQUALS: "up:equals",
-    OperatorKind.AND: "up:and",
-    OperatorKind.OR: "up:or",
-    OperatorKind.NOT: "up:not",
-    OperatorKind.IMPLIES: "up:implies",
-    OperatorKind.IFF: "up:iff",
-    OperatorKind.COUNT: "up:count",
-    OperatorKind.EXISTS: "up:exists",
-    OperatorKind.FORALL: "up:forall",
-    OperatorKind.ARRAY_INDEX: "up:array_index",
-    OperatorKind.SET_MEMBER: "up:set_member",
-    OperatorKind.SET_SUBSETEQ: "up:set_subseteq",
-    OperatorKind.SET_DISJOINT: "up:set_disjoint",
-    OperatorKind.SET_CARDINALITY: "up:set_cardinality",
-    OperatorKind.SET_ADD: "up:set_add",
-    OperatorKind.SET_REMOVE: "up:set_remove",
-    OperatorKind.SET_UNION: "up:set_union",
-    OperatorKind.SET_INTERSECT: "up:set_intersect",
-    OperatorKind.SET_DIFFERENCE: "up:set_difference",
-}
+# The operators the planner supports: ir.hpp's OperatorIR, whose members are
+# named after UP's OperatorKind.
+_OPERATORS = {OperatorKind[name]: op for name, op in _ir.Operator.__members__.items()}
 
 
 def _up_type_str(tpe) -> str:
@@ -138,11 +114,13 @@ class _FNodeToIR:
 
     # ── node construction ────────────────────────────────────────────────
 
-    def _add(self, kind, type_name="", symbol=None, int_value=None,
+    def _add(self, kind, type_name="", op=None, symbol=None, int_value=None,
              real_value=None, bool_value=None, children=()):
         node = _ir.ExprNodeIR()
         node.kind = kind
         node.type_name = type_name
+        if op is not None:
+            node.op = op
         if symbol is not None:
             node.symbol = symbol
         if int_value is not None:
@@ -161,6 +139,15 @@ class _FNodeToIR:
         idx = self._head_memo.get(key)
         if idx is None:
             idx = self._add(kind, type_name=type_name, symbol=symbol)
+            self._head_memo[key] = idx
+        return idx
+
+    def _operator(self, op):
+        """The FUNCTION_SYMBOL head of an application of `op`."""
+        key = (_FUNCTION_SYMBOL, op)
+        idx = self._head_memo.get(key)
+        if idx is None:
+            idx = self._add(_FUNCTION_SYMBOL, op=op)
             self._head_memo[key] = idx
         return idx
 
@@ -212,11 +199,11 @@ class _FNodeToIR:
             # A set literal `{c1..ck}` (empty for `{}`). Its elements live in the
             # payload (an ordered tuple) -- `args` is empty and `constant_value()`
             # is an *unordered* set -- so they are walked from the payload.
-            # Emitted as an ordinary
-            # up:set_constant application (element-constant children, no payload);
-            # the SetLoweringPass rewrites it away. Not in _OPERATOR_NAMES because
-            # the generic path reads `args`, which is empty here.
-            head = self._head(_FUNCTION_SYMBOL, "up:set_constant", "up:operator")
+            # Emitted as an ordinary SET_CONSTANT application (element-constant
+            # children, no payload), which the SetLoweringPass rewrites away.
+            # Handled here rather than by the generic path below, which reads
+            # `args`.
+            head = self._operator(_ir.Operator.SET_CONSTANT)
             children = [head] + [self.walk(e) for e in expression._content.payload]
             return self._add(_FUNCTION_APPLICATION, "", children=children)
 
@@ -242,10 +229,10 @@ class _FNodeToIR:
 
         # Operator application (and/or/not/implies/iff, arithmetic, relations,
         # array_index)
-        operator_name = _OPERATOR_NAMES.get(expression.node_type)
-        if operator_name is None:
+        op = _OPERATORS.get(expression.node_type)
+        if op is None:
             raise UPException(f"Unsupported operator: {expression.node_type}")
-        head = self._head(_FUNCTION_SYMBOL, operator_name, "up:operator")
+        head = self._operator(op)
         children = [head]
         # forall/exists: declared variables precede the arguments
         if expression.is_exists() or expression.is_forall():
