@@ -6,7 +6,7 @@ They live in the API suite so they run on every invocation, including
 """
 from unified_planning.shortcuts import (
     Fluent, InstantaneousAction, Problem, BoolType, IntType, UserType, Object,
-    Equals, GE, LE, Not, Times,
+    And, Count, Equals, GE, Iff, LE, Not, Or, Times,
 )
 from unified_planning.engines import PlanGenerationResultStatus
 
@@ -647,6 +647,100 @@ def test_step_limit_is_not_a_proof_of_unsolvability():
     assert _solve_with(capped, numeric_grounding=False, max_steps=1).status == INCOMPLETELY
 
 
+def _breaker_and_needer_problem(case):
+    """One step can run `breaker` and `needer` only as needer-then-breaker:
+    breaker changes something needer depends on. breaker is declared first,
+    so it has the lower id, and with no interference edge between the two
+    the step is extracted in id order, breaker first. Each case hides the
+    dependency from InterferenceOracle in a different way:
+
+      computed         breaker: p := q        needer requires p
+      iff              breaker: p := true     needer requires p <-> q
+      both_polarities  breaker: p := false    needer requires (p or r) and (not p or s)
+      value_read       breaker: q := true     needer: p := q
+      count            breaker: p := true     needer requires count(p, q) <= 1
+
+    `computed` and `value_read` are a boolean write whose value is not a
+    constant, which the analysis did not record as making its fluent true or
+    false, nor its value's fluents as read. `iff` (UP's Iff arrives as =) and
+    `count` hid the fluents under an operator the polarity collector took as
+    positive, and in `both_polarities` the second occurrence of p overwrote
+    the first. Each fluent breaker does not write gets a writer, so that it is
+    not static and folded away."""
+    p, q, r, s, g = (Fluent(name) for name in "pqrsg")
+    breaker = InstantaneousAction("breaker")
+    needer = InstantaneousAction("needer")
+    needer.add_effect(g(), True)
+    initially_true = []
+    goal = [g()]
+    if case == "computed":
+        initially_true = [p]
+        breaker.add_effect(p(), q())
+        needer.add_precondition(p())
+        goal.append(Not(p()))
+    elif case == "iff":
+        breaker.add_effect(p(), True)
+        needer.add_precondition(Iff(p(), q()))
+        goal.append(p())
+    elif case == "both_polarities":
+        initially_true = [p, s]
+        breaker.add_effect(p(), False)
+        needer.add_precondition(Or(p(), r()))
+        needer.add_precondition(Or(Not(p()), s()))
+        goal.append(Not(p()))
+    elif case == "value_read":
+        initially_true = [p]
+        breaker.add_effect(q(), True)
+        needer.add_effect(p(), q())
+        goal += [Not(p()), q()]
+    elif case == "count":
+        initially_true = [q]
+        breaker.add_effect(p(), True)
+        needer.add_precondition(LE(Count(p(), q()), 1))
+        goal.append(p())
+    problem = Problem(f"breaker_and_needer_{case}")
+    for f in (p, q, r, s, g):
+        problem.add_fluent(f, default_initial_value=False)
+    for f in initially_true:
+        problem.set_initial_value(f(), True)
+    problem.add_action(breaker)
+    problem.add_action(needer)
+    for f in (q, r, s):
+        writer = InstantaneousAction(f"write_{f.name}")
+        writer.add_effect(f(), f not in initially_true)
+        problem.add_action(writer)
+    problem.add_goal(And(goal))
+    return problem
+
+
+def test_interference_sees_every_dependency():
+    """An effect that can change what another action reads makes the two
+    interfere, however the read is written. Each case gave the strategies
+    with a syntactic interference analysis a one-step plan, extracted as
+    breaker-then-needer, which is invalid (see _breaker_and_needer_problem)."""
+    from rantanplan import _rantanplan
+    registered = set(_rantanplan.list_strategies())
+    for strategy in ("e", "f", "el", "fl", "e-dt", "f-dt"):
+        if strategy not in registered:
+            continue
+        for case in ("computed", "iff", "both_polarities", "value_read", "count"):
+            problem = _breaker_and_needer_problem(case)
+            r = solve(problem, strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"{strategy}/{case}: {r.status}"
+            names = [a.action.name for a in r.plan.actions]
+            if case == "count":
+                # UP's validator does not support count. The plan is valid if
+                # and only if needer runs while p is false, so before breaker.
+                assert names.index("needer") < names.index("breaker"), \
+                    f"{strategy}/{case}: {names}"
+            else:
+                try:
+                    assert_valid(problem, r.plan)
+                except AssertionError as e:
+                    raise AssertionError(f"{strategy}/{case}: {names}: {e}")
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -661,4 +755,5 @@ CASES = [
     test_axioms_rejected_as_unsupported,
     test_a_non_constant_amount_does_not_bound_its_fluent,
     test_step_limit_is_not_a_proof_of_unsolvability,
+    test_interference_sees_every_dependency,
 ]

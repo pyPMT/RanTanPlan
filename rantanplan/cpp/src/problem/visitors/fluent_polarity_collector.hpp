@@ -15,21 +15,28 @@ class Problem;
  * @brief Collects fluents with their polarity information as ExprIDs
  *
  * Walks the ExprPool tree and collects all fluent applications
- * with their polarity (positive/negative) in boolean contexts.
+ * with their polarity in boolean contexts.
  * For numeric fluents, polarity is not relevant.
  */
 class FluentPolarityCollector {
 public:
+    /// Which change of a boolean fluent can falsify the formula: making it
+    /// false (POSITIVE, as `p` in `p or q`), making it true (NEGATIVE, as in
+    /// `not p`), or either (BOTH). Polarity follows and, or, not and implies.
+    /// Under any other operator (=, which is how iff arrives, count, a
+    /// comparison) either change can matter, so a fluent there is BOTH, and
+    /// so is one that occurs with both polarities.
     enum class Polarity {
         POSITIVE,
-        NEGATIVE
+        NEGATIVE,
+        BOTH
     };
 
 private:
     const Problem* problem_ = nullptr;
     std::unordered_map<ExprID, Polarity> boolean_fluents_;
     std::unordered_set<ExprID> numeric_fluents_;
-    bool in_negation_context_ = false;
+    Polarity context_ = Polarity::POSITIVE;  // of the subformula being walked
 
     void collect_fluent_by_id(ExprID eid);
 
@@ -54,7 +61,7 @@ public:
     void clear() {
         boolean_fluents_.clear();
         numeric_fluents_.clear();
-        in_negation_context_ = false;
+        context_ = Polarity::POSITIVE;
     }
 };
 
