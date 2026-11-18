@@ -42,7 +42,9 @@ QUICK_TEST_DIRS = [
 QUICK_STRATEGIES = [
     "seq",        # No parallelism module (baseline)
     "r2e",        # R2E encoder, no parallelism module
-    "f",          # ForallEager module (eager syntactic)
+    "f",          # No module: forall mutex clauses up front (eager syntactic)
+    "f-p",        # ForallEager module (eager syntactic)
+    "e",          # No module: exists step-order clauses up front (eager syntactic)
     "flsc",       # ForallLazy module (lazy semantic, chained)
     "flsc-dt",    # ForallLazy module + DoubleTail planner
     "elsc",       # ExistsCycle module (lazy semantic, chained)
@@ -74,7 +76,7 @@ OPTIMAL_SLOW_FIRST_PLAN = {
 ## Strategies to test with --mode optimal (replaces the old -opt registry entries).
 ## B&B is one planner; what varies is the encoder and the step semantics, so one
 ## strategy per (encoder, semantics) pair: the propagator and lazy-interference
-## variants (f-p, fl, flsc, el) add nothing B&B-specific.
+## variants (f-p, e-p, fl, flsc, el) add nothing B&B-specific.
 OPTIMAL_MODE_STRATEGIES = [
     "seq", "r2e",
     "f",

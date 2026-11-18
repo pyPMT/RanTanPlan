@@ -778,7 +778,7 @@ def test_interference_sees_every_dependency():
     breaker-then-needer, which is invalid (see _breaker_and_needer_problem)."""
     from rantanplan import _rantanplan
     registered = set(_rantanplan.list_strategies())
-    for strategy in ("e", "f", "el", "fl", "e-dt", "f-dt"):
+    for strategy in ("e", "e-p", "f", "f-p", "el", "fl", "e-dt", "f-dt"):
         if strategy not in registered:
             continue
         for case in ("computed", "iff", "both_polarities", "value_read", "count"):
@@ -1935,7 +1935,7 @@ def test_exists_step_runs_the_affected_action_first():
     """Exists-step semantics orders each step so that an action runs before
     the actions that affect it, whatever their ids: use and spoil share the
     one step of the plan."""
-    for strategy in ("e", "elsc"):
+    for strategy in ("e-p", "elsc"):
         for declared_first in ("use", "spoil"):
             problem = _one_way_pair_problem(declared_first)
             r = solve(problem, strategy=strategy)
