@@ -318,7 +318,8 @@ z3::expr AbstractSuffixEncoder::encode_axiom_6(int i) {
     // effect interference, which ignores cost fluents. Under sequential
     // semantics (also r2e) M_a is every other action, which any plan without
     // empty steps satisfies.
-    if (!cost_lower_bounds_.empty() && semantics_ != SemanticsKind::Sequential) {
+    if (semantics_ != SemanticsKind::Sequential &&
+        problem_.has_metric() && problem_.has_state_dependent_costs()) {
         return ctx_.bool_val(true);
     }
 
