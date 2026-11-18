@@ -389,7 +389,8 @@ z3::expr GroundedEncoder::encode_symmetries(int t) {
 // not perturb the measured behavior of every existing strategy; unifying
 // the conventions is fine but needs a suite A/B.
 z3::expr GroundedEncoder::encode_state_constraints(int t) {
-    if (state_constraints_.empty() && problem_.state_invariants().empty()) {
+    if (state_constraints_.empty() && problem_.state_invariants().empty() &&
+        declared_bounded_.empty()) {
         return ctx_.bool_val(true);
     }
 
@@ -399,6 +400,15 @@ z3::expr GroundedEncoder::encode_state_constraints(int t) {
     // timestep t = 0..h, so asserting at t+1 covers states 1..h+1.
     for (ExprID inv : problem_.state_invariants()) {
         conjuncts.push_back(convert_expr_id_to_z3(inv, t + 1));
+    }
+
+    // Declared bounds (bounded int/real types) are state invariants too, and
+    // define which plans are valid: asserted exactly, at t+1 likewise, and
+    // whether or not the preprocessor derived bounds.
+    for (const auto& [eid, fluent] : declared_bounded_) {
+        z3::expr x = convert_expr_id_to_z3(eid, t + 1);
+        if (auto lo = fluent->declared_lower_bound()) conjuncts.push_back(x >= variable_factory_.make_numeric_val(*lo));
+        if (auto hi = fluent->declared_upper_bound()) conjuncts.push_back(x <= variable_factory_.make_numeric_val(*hi));
     }
 
     // Mutex constraints: atmost(members, 1) and optionally atleast(members, 1)
@@ -413,16 +423,16 @@ z3::expr GroundedEncoder::encode_state_constraints(int t) {
         }
     }
 
-    // Numeric bound constraints (RPG-derived and declared bounded types).
+    // Derived numeric bounds (the RPG's, which hold the declared ones too, and
+    // the syntactic ones), rounded outward and asserted as exactly that double.
     // Asserted at t+1: this is called per transition t = 0..h-1, so t+1 covers
-    // states 1..h — including the goal state h, which declared bounds must cover
-    // (state-invariant semantics). State 0 is pinned by encode_initial_state;
-    // RPG bounds are over-approximations, so t+1 is equally sound for them.
+    // states 1..h. State 0 is pinned by encode_initial_state; these bounds are
+    // over-approximations, so t+1 is sound for them.
     for (const auto& bound : state_constraints_.bounds) {
         z3::expr fluent = convert_expr_id_to_z3(bound.fluent_id, t + 1);
         z3::expr val = fluent.is_int()
             ? ctx_.int_val(static_cast<int64_t>(bound.bound))
-            : ctx_.real_val(std::to_string(bound.bound).c_str());
+            : variable_factory_.real_val(bound.bound);
         if (bound.is_lower) {
             conjuncts.push_back(fluent >= val);
         } else {
@@ -449,10 +459,7 @@ z3::expr GroundedEncoder::encode_state_constraints(int t) {
     for (const auto& cons : state_constraints_.conservations) {
         z3::expr f = convert_expr_id_to_z3(cons.fluent1_id, t);
         z3::expr g = convert_expr_id_to_z3(cons.fluent2_id, t);
-        z3::expr c = f.is_int()
-            ? ctx_.int_val(static_cast<int64_t>(cons.constant))
-            : ctx_.real_val(std::to_string(cons.constant).c_str());
-        conjuncts.push_back((f + g) == c);
+        conjuncts.push_back((f + g) == variable_factory_.make_numeric_val(cons.constant));
     }
 
     if (conjuncts.empty()) {
@@ -508,6 +515,15 @@ void GroundedEncoder::build_epc_index() {
         for (const auto& effect : action.effects()) {
             const EffectExpression& eff_expr = effect.effect_expression();
             index_effect_fluents(&action, &eff_expr);
+        }
+    }
+
+    declared_bounded_.clear();
+    if (problem_.has_declared_bounds()) {
+        for (const auto& [eid, writers] : epc_index_) {
+            if (writers.empty()) continue;
+            const Fluent* fluent = problem_.declaration_of(eid);
+            if (fluent && fluent->has_declared_bounds()) declared_bounded_.emplace_back(eid, fluent);
         }
     }
 

@@ -13,13 +13,20 @@ namespace rantanplan {
 /// change, unlike a definition-by-exclusion.
 enum class TypeKind { OBJECT, BOOL, INT, REAL, ARRAY, SET };
 
+/// The built-in types' indices in every problem's type table (an
+/// ExprNode::type_id): the loader registers them first, in this order, under
+/// UP's names up:bool, up:integer and up:real. So there is one int type, and
+/// code that makes a constant needs no lookup.
+inline constexpr int BOOL_TYPE_ID = 0;
+inline constexpr int INT_TYPE_ID = 1;
+inline constexpr int REAL_TYPE_ID = 2;
+
 class Type {
 public:
     Type() = default;
     explicit Type(const std::string& name);
 
     const std::string& name() const;
-    void set_name(const std::string& name);
 
     // Parent type for hierarchy (nullptr if root)
     const Type* parent() const;

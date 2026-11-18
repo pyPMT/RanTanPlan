@@ -25,6 +25,10 @@ from unified_planning.engines.results import PlanGenerationResultStatus
 
 from ..harness import solve, assert_valid
 
+# Bounded types need the Grounded encoder: the default strategy (elsc) refuses
+# declared bounds, so the cases that declare them name a Grounded strategy.
+GROUNDED = "e"
+
 
 Room, Robot, Pkg = UserType("Room"), UserType("Robot"), UserType("Pkg")
 
@@ -347,7 +351,7 @@ def test_state_dependent_index_read():
     a.add_effect(done(), True)
     p.add_action(a)
     p.add_goal(done())
-    res = solve(p)
+    res = solve(p, strategy=GROUNDED)
     assert res.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
         f"expected SOLVED, got {res.status}"
     assert "probe" in [ai.action.name for ai in res.plan.actions]
@@ -427,7 +431,7 @@ def test_boundary_or_absorption():
     a.add_effect(done(), True)
     p.add_action(a)
     p.add_goal(done())
-    res = solve(p)
+    res = solve(p, strategy=GROUNDED)
     assert res.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
         f"expected SOLVED (OR absorbs the ⊥ read), got {res.status}"
 
@@ -452,7 +456,7 @@ def test_inner_state_dependent_index():
     a.add_effect(done(), True)
     p.add_action(a)
     p.add_goal(done())
-    res = solve(p)
+    res = solve(p, strategy=GROUNDED)
     assert res.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
         f"expected SOLVED, got {res.status}"
 
@@ -470,7 +474,7 @@ def test_index_after_pointer_move():
     a.add_effect(done(), True)
     p.add_action(a)
     p.add_goal(done())
-    res = solve(p)
+    res = solve(p, strategy=GROUNDED)
     assert res.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
         f"expected SOLVED, got {res.status}"
     names = [ai.action.name for ai in res.plan.actions]

@@ -2,6 +2,7 @@
 
 #include "../problem/fluent.hpp"
 #include "../problem/action.hpp"
+#include "../problem/rational.hpp"
 #include <z3++.h>
 #include <string>
 #include <unordered_map>
@@ -97,7 +98,14 @@ public:
     
     // Numeric constant creation (Int or Real depending on all_integer mode)
     z3::expr make_numeric_val(int64_t v) const;
+    z3::expr make_numeric_val(const Rational& v) const;
+    /// A bound an analysis computed in floating point (rounded outward), as
+    /// exactly that double: a nearby decimal could fall inside the bound and
+    /// cut off the value it holds. Int in integer mode, truncated toward zero,
+    /// which only weakens a bound on an Int.
     z3::expr make_numeric_val(double v) const;
+    /// As make_numeric_val(double), but a Real whatever the integer mode.
+    z3::expr real_val(double v) const;
     z3::expr make_zero() const;
 
     // Timestep management queries

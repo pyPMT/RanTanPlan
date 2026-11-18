@@ -12,11 +12,6 @@ struct IntegerCheckState {
     bool has_non_integer_constant = false;
 };
 
-/// Check if a double value is exactly representable as an integer.
-static bool is_integer_valued(double v) {
-    return std::isfinite(v) && std::floor(v) == v;
-}
-
 /// Walk an arithmetic expression tree, checking for non-integer constants
 /// and variable division.
 static void check_integer_arith(ExprID id, const ExprPool& pool, IntegerCheckState& state) {
@@ -26,7 +21,7 @@ static void check_integer_arith(ExprID id, const ExprPool& pool, IntegerCheckSta
 
     // Leaf constant — check if integer-valued
     if (kind == ExprKind::CONSTANT) {
-        if (pool.payload_is_double(id) && !is_integer_valued(pool.payload_double(id))) {
+        if (pool.payload_is_real(id) && !pool.payload_real(id).is_integer()) {
             state.has_non_integer_constant = true;
         }
         // int64_t payloads are always integer-valued; bool/string are non-numeric
@@ -371,8 +366,8 @@ ConstraintAnalysisResult NumericConstraintAnalyzer::analyze(const Problem& probl
         if (!istate.has_variable_division && !istate.has_non_integer_constant) {
             for (const auto& assignment : problem.initial_state()) {
                 const ExprNode& val_node = pool.get(assignment.value_id());
-                if (std::holds_alternative<double>(val_node.payload)) {
-                    if (!is_integer_valued(std::get<double>(val_node.payload))) {
+                if (std::holds_alternative<Rational>(val_node.payload)) {
+                    if (!std::get<Rational>(val_node.payload).is_integer()) {
                         istate.has_non_integer_constant = true;
                         break;
                     }

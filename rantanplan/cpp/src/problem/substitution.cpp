@@ -39,8 +39,8 @@ ExprID substitute(ExprPool& pool, ExprID expr, const Substitution& subst) {
     // ---------------------------------------------------------------------------
     // Copy children list and node metadata before recursing.
     std::vector<ExprID> orig_children = node_ref.children;
-    int orig_kind = node_ref.kind;
-    int orig_op = node_ref.op;
+    ExprKind orig_kind = node_ref.kind;
+    ExprOperator orig_op = node_ref.op;
     int orig_type_id = node_ref.type_id;
     ExprPayload orig_payload = node_ref.payload;
     // After this point, node_ref may be dangling — do not use it.

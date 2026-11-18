@@ -1,16 +1,9 @@
 """UP Problem -> ProblemIR converter (the Python side of the C++ contract).
 
-Replaces the protobuf transport: a hand-rolled memoized DFS (see _FNodeToIR)
-flattens every expression into one shared node pool
-(children precede parents, shared subexpressions stored once), and the
-problem structure references nodes by index. The C++ loader (`ir_io.cpp`)
+A memoized DFS (see _FNodeToIR) flattens every expression into one shared
+node pool (children precede parents, shared subexpressions stored once), and
+the problem structure references nodes by index. The C++ loader (`ir_io.cpp`)
 interns the pool in a single forward pass.
-
-The node shapes deliberately mirror what UP's own ``FNode2Protobuf``
-produced, so the C++ loader stayed a port of the protobuf loader. The
-operator/type naming helpers below are small local ports of
-``unified_planning.grpc.proto_writer`` (`map_operator`, `proto_type`) --
-copied rather than imported so this module does not pull in protobuf.
 """
 
 from fractions import Fraction
@@ -27,46 +20,23 @@ from unified_planning.model.operators import OperatorKind
 
 from . import _rantanplan as _ir
 
-# unified_planning ExpressionKind values (must match ir.hpp's ExprKindIR)
-_CONSTANT = 1
-_PARAMETER = 2
-_FLUENT_SYMBOL = 3
-_FUNCTION_SYMBOL = 4
-_STATE_VARIABLE = 5
-_FUNCTION_APPLICATION = 6
-_VARIABLE = 7
+# Node kinds (ir.hpp's ExprKindIR, UP's ExpressionKind numbers)
+_CONSTANT = _ir.ExprKind.CONSTANT
+_PARAMETER = _ir.ExprKind.PARAMETER
+_FLUENT_SYMBOL = _ir.ExprKind.FLUENT_SYMBOL
+_FUNCTION_SYMBOL = _ir.ExprKind.FUNCTION_SYMBOL
+_STATE_VARIABLE = _ir.ExprKind.STATE_VARIABLE
+_FUNCTION_APPLICATION = _ir.ExprKind.FUNCTION_APPLICATION
+_VARIABLE = _ir.ExprKind.VARIABLE
 
-_OPERATOR_NAMES = {
-    OperatorKind.PLUS: "up:plus",
-    OperatorKind.MINUS: "up:minus",
-    OperatorKind.TIMES: "up:times",
-    OperatorKind.DIV: "up:div",
-    OperatorKind.LE: "up:le",
-    OperatorKind.LT: "up:lt",
-    OperatorKind.EQUALS: "up:equals",
-    OperatorKind.AND: "up:and",
-    OperatorKind.OR: "up:or",
-    OperatorKind.NOT: "up:not",
-    OperatorKind.IMPLIES: "up:implies",
-    OperatorKind.IFF: "up:iff",
-    OperatorKind.COUNT: "up:count",
-    OperatorKind.EXISTS: "up:exists",
-    OperatorKind.FORALL: "up:forall",
-    OperatorKind.ARRAY_INDEX: "up:array_index",
-    OperatorKind.SET_MEMBER: "up:set_member",
-    OperatorKind.SET_SUBSETEQ: "up:set_subseteq",
-    OperatorKind.SET_DISJOINT: "up:set_disjoint",
-    OperatorKind.SET_CARDINALITY: "up:set_cardinality",
-    OperatorKind.SET_ADD: "up:set_add",
-    OperatorKind.SET_REMOVE: "up:set_remove",
-    OperatorKind.SET_UNION: "up:set_union",
-    OperatorKind.SET_INTERSECT: "up:set_intersect",
-    OperatorKind.SET_DIFFERENCE: "up:set_difference",
-}
+# The operators the planner supports: ir.hpp's OperatorIR, whose members are
+# named after UP's OperatorKind.
+_OPERATORS = {OperatorKind[name]: op for name, op in _ir.Operator.__members__.items()}
 
 
 def _up_type_str(tpe) -> str:
-    """Port of proto_writer.proto_type."""
+    """The type's name in the IR: up:bool, up:integer, up:real or up:time, an
+    array or set type name, or a user type's own name."""
     if tpe.is_bool_type():
         return "up:bool"
     if tpe.is_time_type():
@@ -83,8 +53,8 @@ def _up_type_str(tpe) -> str:
         # *expression* head symbols (a bare FLUENT_EXP inside ARRAY_INDEX); it
         # must match the name the C++ loader generates from the same structured
         # shape (ir_io.cpp array_type_name), and a mismatch surfaces as a hard
-        # "could not find type" at load. The fluent *declaration* no longer
-        # carries this string -- C++ derives the fluent's value type from
+        # "could not find type" at load. The fluent *declaration* does not
+        # carry this string: C++ derives the fluent's value type from
         # element_type + array_sizes.
         return f"array[{tpe.size}, {_up_type_str(tpe.elements_type)}]"
     if tpe.is_set_type():
@@ -111,6 +81,12 @@ def _array_shape(tpe):
     return _up_type_str(leaf), sizes, leaf
 
 
+def _fraction(value) -> tuple:
+    """A declared bound (an int, or a Fraction for a real) as an exact (numerator, denominator)."""
+    value = Fraction(value)
+    return (value.numerator, value.denominator)
+
+
 class _FNodeToIR:
     """Flattens FNode DAGs into the shared node pool.
 
@@ -128,7 +104,6 @@ class _FNodeToIR:
         self.nodes = []
         self._memo = {}
         self._head_memo = {}
-        self._true_idx = None
 
     def walk(self, expression):
         idx = self._memo.get(expression)
@@ -139,11 +114,13 @@ class _FNodeToIR:
 
     # ── node construction ────────────────────────────────────────────────
 
-    def _add(self, kind, type_name="", symbol=None, int_value=None,
+    def _add(self, kind, type_name="", op=None, symbol=None, int_value=None,
              real_value=None, bool_value=None, children=()):
         node = _ir.ExprNodeIR()
         node.kind = kind
         node.type_name = type_name
+        if op is not None:
+            node.op = op
         if symbol is not None:
             node.symbol = symbol
         if int_value is not None:
@@ -165,27 +142,16 @@ class _FNodeToIR:
             self._head_memo[key] = idx
         return idx
 
-    def true_constant(self):
-        """The synthesized `true` used for empty preconditions (same shape
-        the protobuf loader synthesized)."""
-        if self._true_idx is None:
-            self._true_idx = self._add(_CONSTANT, "up:bool", bool_value=True)
-        return self._true_idx
+    def _operator(self, op):
+        """The FUNCTION_SYMBOL head of an application of `op`."""
+        key = (_FUNCTION_SYMBOL, op)
+        idx = self._head_memo.get(key)
+        if idx is None:
+            idx = self._add(_FUNCTION_SYMBOL, op=op)
+            self._head_memo[key] = idx
+        return idx
 
-    def precondition(self, conditions):
-        """Synthesize the precondition conjunction exactly like the protobuf
-        loader's intern_precondition did (note: plain "and", type up:bool).
-        Takes unwalked FNodes: the "and" head node must be created *before*
-        the condition subtrees to preserve the pool's insertion order."""
-        if not conditions:
-            return self.true_constant()
-        if len(conditions) == 1:
-            return self.walk(conditions[0])
-        head = self._head(_FUNCTION_SYMBOL, "and", "up:bool")
-        children = [head] + [self.walk(cond) for cond in conditions]
-        return self._add(_FUNCTION_APPLICATION, "up:bool", children=children)
-
-    # ── FNode conversion (shapes mirror UP's FNode2Protobuf) ─────────────
+    # ── FNode conversion ─────────────────────────────────────────────────
 
     def _convert(self, expression):
         if expression.is_bool_constant():
@@ -233,11 +199,11 @@ class _FNodeToIR:
             # A set literal `{c1..ck}` (empty for `{}`). Its elements live in the
             # payload (an ordered tuple) -- `args` is empty and `constant_value()`
             # is an *unordered* set -- so they are walked from the payload.
-            # Emitted as an ordinary
-            # up:set_constant application (element-constant children, no payload);
-            # the SetLoweringPass rewrites it away. Not in _OPERATOR_NAMES because
-            # the generic path reads `args`, which is empty here.
-            head = self._head(_FUNCTION_SYMBOL, "up:set_constant", "up:operator")
+            # Emitted as an ordinary SET_CONSTANT application (element-constant
+            # children, no payload), which the SetLoweringPass rewrites away.
+            # Handled here rather than by the generic path below, which reads
+            # `args`.
+            head = self._operator(_ir.Operator.SET_CONSTANT)
             children = [head] + [self.walk(e) for e in expression._content.payload]
             return self._add(_FUNCTION_APPLICATION, "", children=children)
 
@@ -263,10 +229,10 @@ class _FNodeToIR:
 
         # Operator application (and/or/not/implies/iff, arithmetic, relations,
         # array_index)
-        operator_name = _OPERATOR_NAMES.get(expression.node_type)
-        if operator_name is None:
+        op = _OPERATORS.get(expression.node_type)
+        if op is None:
             raise UPException(f"Unsupported operator: {expression.node_type}")
-        head = self._head(_FUNCTION_SYMBOL, operator_name, "up:operator")
+        head = self._operator(op)
         children = [head]
         # forall/exists: declared variables precede the arguments
         if expression.is_exists() or expression.is_forall():
@@ -375,9 +341,8 @@ def _emit_array_cells(walker, expr_manager, array_expr, array_const,
 def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
     """Convert a UP Problem into the ProblemIR the C++ loader consumes.
 
-    Walk order matches the C++ loader's interning order (actions, then
-    initial state, goals, metric costs), so the resulting ExprPool is
-    identical to the one the protobuf path produced.
+    The walk order (actions, then initial state, goals, metric costs) fixes
+    the order of the ExprPool's ids.
     """
     walker = _FNodeToIR()
     out = _ir.ProblemIR()
@@ -415,9 +380,9 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
             # bounded fluents); the grounder mints cells of the element type.
             if leaf.is_int_type() or leaf.is_real_type():
                 if leaf.lower_bound is not None:
-                    ir_fluent.lower_bound = float(leaf.lower_bound)
+                    ir_fluent.lower_bound = _fraction(leaf.lower_bound)
                 if leaf.upper_bound is not None:
-                    ir_fluent.upper_bound = float(leaf.upper_bound)
+                    ir_fluent.upper_bound = _fraction(leaf.upper_bound)
             if fluent.undefined_positions:
                 ir_fluent.undefined_positions = [
                     [int(c) for c in pos] for pos in fluent.undefined_positions]
@@ -438,9 +403,9 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
             ir_fluent.value_type = _up_type_str(ftype)
             if ftype.is_int_type() or ftype.is_real_type():
                 if ftype.lower_bound is not None:
-                    ir_fluent.lower_bound = float(ftype.lower_bound)
+                    ir_fluent.lower_bound = _fraction(ftype.lower_bound)
                 if ftype.upper_bound is not None:
-                    ir_fluent.upper_bound = float(ftype.upper_bound)
+                    ir_fluent.upper_bound = _fraction(ftype.upper_bound)
         fluents.append(ir_fluent)
     # out.fluents assigned last (with out.actions/out.nodes): nanobind copies
     # vector fields on assignment, and the declared-defaults loop below still
@@ -466,16 +431,18 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
         ir_action = _ir.ActionIR()
         ir_action.name = action.name
         ir_action.parameters = _convert_parameters(action.parameters)
-        ir_action.precondition = walker.precondition(action.preconditions)
+        # UP's own conjunction (true for none, the condition itself for one),
+        # so it is the same node as any other And of these conditions.
+        ir_action.precondition = walker.walk(expr_manager.And(action.preconditions))
 
         effects = []
         for effect in action.effects:
             if effect.is_assignment():
-                kind = 0
+                kind = _ir.EffectKind.ASSIGN
             elif effect.is_increase():
-                kind = 1
+                kind = _ir.EffectKind.INCREASE
             elif effect.is_decrease():
-                kind = 2
+                kind = _ir.EffectKind.DECREASE
             else:
                 raise UPException(f"Unsupported effect: {effect}")
 
@@ -551,11 +518,11 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
         state_invariants.append(walker.walk(tc.arg(0)))
     out.state_invariants = state_invariants
 
-    # --- Metric (first supported one wins, like the protobuf loader) ---
-    metric_kind = 0
+    # --- Metric (the first supported one wins) ---
+    metric_kind = _ir.MetricKind.NONE
     for metric in problem.quality_metrics:
         if isinstance(metric, MinimizeActionCosts):
-            metric_kind = 1
+            metric_kind = _ir.MetricKind.MINIMIZE_ACTION_COSTS
             costs_by_name = {a.name: cost for a, cost in metric.costs.items()}
             for action, ir_action in zip(problem.actions, actions):
                 cost = costs_by_name.get(action.name, metric.default)
@@ -563,7 +530,7 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
                     ir_action.cost = walker.walk(cost)
             break
         if isinstance(metric, MinimizeSequentialPlanLength):
-            metric_kind = 2
+            metric_kind = _ir.MetricKind.MINIMIZE_PLAN_LENGTH
             break
     out.metric_kind = metric_kind
 

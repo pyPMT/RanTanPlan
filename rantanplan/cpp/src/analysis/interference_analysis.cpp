@@ -33,12 +33,10 @@ void InterferenceOracle::analyze_preconditions(const Action& action, ActionAnaly
     FluentPolarityCollector collector(*problem_);
     collector.collect_from_id(action.precondition_id());
 
+    using Polarity = FluentPolarityCollector::Polarity;
     for (const auto& [eid, polarity] : collector.get_boolean_fluents()) {
-        if (polarity == FluentPolarityCollector::Polarity::POSITIVE) {
-            analysis.positive_boolean_preconditions.insert(eid);
-        } else {
-            analysis.negative_boolean_preconditions.insert(eid);
-        }
+        if (polarity != Polarity::NEGATIVE) analysis.positive_boolean_preconditions.insert(eid);
+        if (polarity != Polarity::POSITIVE) analysis.negative_boolean_preconditions.insert(eid);
     }
     for (ExprID eid : collector.get_numeric_fluents()) {
         analysis.numeric_preconditions.insert(eid);
@@ -46,40 +44,42 @@ void InterferenceOracle::analyze_preconditions(const Action& action, ActionAnaly
 }
 
 void InterferenceOracle::analyze_effects(const Action& action, ActionAnalysis& analysis) const {
+    const ExprPool& pool = problem_->pool();
+
+    // Every fluent `expr` reads, boolean and numeric alike, into `out`.
+    auto add_reads = [&](ExprID expr, std::unordered_set<ExprID>& out) {
+        FluentPolarityCollector collector(*problem_);
+        collector.collect_from_id(expr);
+        for (const auto& [eid, _] : collector.get_boolean_fluents()) out.insert(eid);
+        for (ExprID eid : collector.get_numeric_fluents()) out.insert(eid);
+    };
+
     for (const Effect& effect : action.effects()) {
         const EffectExpression& eff_expr = effect.effect_expression();
         ExprID fluent_eid = eff_expr.fluent_id();
+        ExprID value_eid = eff_expr.value_id();
         analysis.all_effects.insert(fluent_eid);
 
         if (effect.is_conditional()) {
-            FluentPolarityCollector collector(*problem_);
-            collector.collect_from_id(eff_expr.condition_id());
-            for (const auto& [eid, _] : collector.get_boolean_fluents()) {
-                analysis.conditional_effect_fluents.insert(eid);
-            }
-            for (ExprID eid : collector.get_numeric_fluents()) {
-                analysis.conditional_effect_fluents.insert(eid);
-            }
+            add_reads(eff_expr.condition_id(), analysis.conditional_effect_fluents);
         }
 
         if (effect.kind() == EffectExpression::Kind::ASSIGN && problem_->is_bool_type(fluent_eid)) {
-            ExprID value_eid = eff_expr.value_id();
-            const ExprPool& pool = problem_->pool();
             if (pool.is_constant(value_eid) && pool.payload_is_bool(value_eid)) {
                 if (pool.payload_bool(value_eid)) {
                     analysis.positive_boolean_effects.insert(fluent_eid);
                 } else {
                     analysis.negative_boolean_effects.insert(fluent_eid);
                 }
+            } else {
+                // A computed value (p := q) can make the fluent true or false.
+                analysis.positive_boolean_effects.insert(fluent_eid);
+                analysis.negative_boolean_effects.insert(fluent_eid);
+                add_reads(value_eid, analysis.effect_value_dependencies);
             }
         } else {
             analysis.numeric_effects.insert(fluent_eid);
-
-            FluentPolarityCollector collector(*problem_);
-            collector.collect_from_id(eff_expr.value_id());
-            for (ExprID dep : collector.get_numeric_fluents()) {
-                analysis.numeric_effect_dependencies.insert(dep);
-            }
+            add_reads(value_eid, analysis.effect_value_dependencies);
         }
     }
 }
@@ -119,8 +119,8 @@ bool InterferenceOracle::actions_interfere(const Action& a1, const Action& a2) c
         return true;
     }
 
-    // 3. Check if effects of a1 can affect the RHS of a2's numeric effects
-    if (has_intersection(analysis_a1.all_effects, analysis_a2.numeric_effect_dependencies)) {
+    // 3. Check if effects of a1 can affect the value one of a2's effects writes
+    if (has_intersection(analysis_a1.all_effects, analysis_a2.effect_value_dependencies)) {
         return true;
     }
 

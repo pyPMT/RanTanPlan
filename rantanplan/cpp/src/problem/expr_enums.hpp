@@ -8,7 +8,7 @@ namespace rantanplan {
  * @brief Expression structural kinds
  */
 enum class ExprKind {
-    UNKNOWN = 0,                // Default value, should not be used
+    UNKNOWN = 0,                // An unset node's kind; the loader rejects it
     CONSTANT = 1,               // Constant atom (e.g., `true`, `3`, `kitchen`)
     PARAMETER = 2,              // Parameter from outer scope (e.g., `from` in `(move from to)`)
     FLUENT_SYMBOL = 3,          // Fluent symbol (e.g., `at-robot`)
@@ -16,15 +16,21 @@ enum class ExprKind {
     STATE_VARIABLE = 5,         // Fluent application (e.g., `(at-robot l1)`)
     FUNCTION_APPLICATION = 6,   // Function application (e.g., `(+ 1 3)`)
     VARIABLE = 7                // Variable from outer scope (existential/universal)
-    // NOTE: UP's ExpressionKind also defines CONTAINER_ID = 8.
-    // This internal representation does not support it; the loader rejects
-    // it explicitly in ir_io.cpp with a runtime error.
+    // The values are UP's ExpressionKind numbers, which the IR carries as an
+    // int. UP also defines CONTAINER_ID = 8, which is not supported; ir_io.cpp
+    // rejects any number outside CONSTANT..VARIABLE.
 };
 
 /**
  * @brief Operator types for type safety and consistency
  */
 enum class ExprOperator {
+    // The operator of a node that has none (any kind but FUNCTION_SYMBOL and
+    // FUNCTION_APPLICATION) and of one whose name is none of the below. The
+    // kind tells the two apart, so one value does for both. First, so that a
+    // value-initialised ExprOperator is NONE.
+    NONE,
+
     // Arithmetic operators
     PLUS, MINUS, MULTIPLY, DIVIDE, MODULO, ABSOLUTE, MAXIMUM, MINIMUM,
 
@@ -58,87 +64,8 @@ enum class ExprOperator {
     // a set literal `{c1..ck}` (zero children = the empty set).
     SET_MEMBER, SET_SUBSETEQ, SET_DISJOINT, SET_CARDINALITY,
     SET_ADD, SET_REMOVE, SET_UNION, SET_INTERSECT, SET_DIFFERENCE,
-    SET_CONSTANT,
-
-    // Unknown operator
-    UNKNOWN
+    SET_CONSTANT
 };
-
-// ============================================================================
-// Static utility methods (formerly on Expression)
-// ============================================================================
-
-inline ExprOperator string_to_expr_operator(const std::string& op_string) {
-    // UP notation
-    if (op_string == "up:plus") return ExprOperator::PLUS;
-    if (op_string == "up:minus") return ExprOperator::MINUS;
-    if (op_string == "up:times") return ExprOperator::MULTIPLY;
-    if (op_string == "up:div") return ExprOperator::DIVIDE;
-    if (op_string == "up:mod") return ExprOperator::MODULO;
-    if (op_string == "up:abs") return ExprOperator::ABSOLUTE;
-    if (op_string == "up:max") return ExprOperator::MAXIMUM;
-    if (op_string == "up:min") return ExprOperator::MINIMUM;
-    if (op_string == "up:equals") return ExprOperator::EQUALS;
-    if (op_string == "up:le") return ExprOperator::LESS_EQUAL;
-    if (op_string == "up:lt") return ExprOperator::LESS_THAN;
-    if (op_string == "up:ge") return ExprOperator::GREATER_EQUAL;
-    if (op_string == "up:gt") return ExprOperator::GREATER_THAN;
-    if (op_string == "up:and") return ExprOperator::AND;
-    if (op_string == "up:or") return ExprOperator::OR;
-    if (op_string == "up:not") return ExprOperator::NOT;
-    if (op_string == "up:implies") return ExprOperator::IMPLIES;
-    if (op_string == "up:iff") return ExprOperator::IFF;
-    if (op_string == "up:forall") return ExprOperator::FORALL;
-    if (op_string == "up:exists") return ExprOperator::EXISTS;
-    if (op_string == "up:count") return ExprOperator::COUNT;
-    if (op_string == "up:array_index") return ExprOperator::ARRAY_INDEX;
-    if (op_string == "up:set_member") return ExprOperator::SET_MEMBER;
-    if (op_string == "up:set_subseteq") return ExprOperator::SET_SUBSETEQ;
-    if (op_string == "up:set_disjoint") return ExprOperator::SET_DISJOINT;
-    if (op_string == "up:set_cardinality") return ExprOperator::SET_CARDINALITY;
-    if (op_string == "up:set_add") return ExprOperator::SET_ADD;
-    if (op_string == "up:set_remove") return ExprOperator::SET_REMOVE;
-    if (op_string == "up:set_union") return ExprOperator::SET_UNION;
-    if (op_string == "up:set_intersect") return ExprOperator::SET_INTERSECT;
-    if (op_string == "up:set_difference") return ExprOperator::SET_DIFFERENCE;
-    if (op_string == "up:set_constant") return ExprOperator::SET_CONSTANT;
-
-    // Standard notation
-    if (op_string == "+") return ExprOperator::PLUS;
-    if (op_string == "-") return ExprOperator::MINUS;
-    if (op_string == "*") return ExprOperator::MULTIPLY;
-    if (op_string == "/") return ExprOperator::DIVIDE;
-    if (op_string == "mod") return ExprOperator::MODULO;
-    if (op_string == "abs") return ExprOperator::ABSOLUTE;
-    if (op_string == "max") return ExprOperator::MAXIMUM;
-    if (op_string == "min") return ExprOperator::MINIMUM;
-    if (op_string == "=" || op_string == "==") return ExprOperator::EQUALS;
-    if (op_string == "<=") return ExprOperator::LESS_EQUAL;
-    if (op_string == "<") return ExprOperator::LESS_THAN;
-    if (op_string == ">=") return ExprOperator::GREATER_EQUAL;
-    if (op_string == ">") return ExprOperator::GREATER_THAN;
-    if (op_string == "and") return ExprOperator::AND;
-    if (op_string == "or") return ExprOperator::OR;
-    if (op_string == "not") return ExprOperator::NOT;
-    if (op_string == "=>") return ExprOperator::IMPLIES;
-    if (op_string == "<=>") return ExprOperator::IFF;
-    if (op_string == "forall") return ExprOperator::FORALL;
-    if (op_string == "exists") return ExprOperator::EXISTS;
-    if (op_string == "count") return ExprOperator::COUNT;
-    if (op_string == "array_index") return ExprOperator::ARRAY_INDEX;
-    if (op_string == "set_member") return ExprOperator::SET_MEMBER;
-    if (op_string == "set_subseteq") return ExprOperator::SET_SUBSETEQ;
-    if (op_string == "set_disjoint") return ExprOperator::SET_DISJOINT;
-    if (op_string == "set_cardinality") return ExprOperator::SET_CARDINALITY;
-    if (op_string == "set_add") return ExprOperator::SET_ADD;
-    if (op_string == "set_remove") return ExprOperator::SET_REMOVE;
-    if (op_string == "set_union") return ExprOperator::SET_UNION;
-    if (op_string == "set_intersect") return ExprOperator::SET_INTERSECT;
-    if (op_string == "set_difference") return ExprOperator::SET_DIFFERENCE;
-    if (op_string == "set_constant") return ExprOperator::SET_CONSTANT;
-
-    return ExprOperator::UNKNOWN;
-}
 
 inline std::string expr_operator_to_string(ExprOperator op) {
     switch (op) {
@@ -178,14 +105,6 @@ inline std::string expr_operator_to_string(ExprOperator op) {
     }
 }
 
-inline std::string map_up_operator(const std::string& up_function_name) {
-    ExprOperator op = string_to_expr_operator(up_function_name);
-    if (op == ExprOperator::UNKNOWN) {
-        return up_function_name;
-    }
-    return expr_operator_to_string(op);
-}
-
 inline bool is_arithmetic_operator(ExprOperator op) {
     return op == ExprOperator::PLUS || op == ExprOperator::MINUS ||
            op == ExprOperator::MULTIPLY || op == ExprOperator::DIVIDE ||
@@ -213,10 +132,6 @@ inline bool is_set_operator(ExprOperator op) {
            op == ExprOperator::SET_ADD || op == ExprOperator::SET_REMOVE ||
            op == ExprOperator::SET_UNION || op == ExprOperator::SET_INTERSECT ||
            op == ExprOperator::SET_DIFFERENCE || op == ExprOperator::SET_CONSTANT;
-}
-
-inline bool is_standard_operator(const std::string& op) {
-    return string_to_expr_operator(op) != ExprOperator::UNKNOWN;
 }
 
 } // namespace rantanplan

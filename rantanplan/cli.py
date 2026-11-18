@@ -35,9 +35,30 @@ Use --list-strategies to see available strategies and their descriptions.
     parser.add_argument("-p", "--problem", type=str,
                        help="Path to the PDDL problem file")
 
+    # List strategies
+    parser.add_argument("--list-strategies", action="store_true",
+                       help="List available strategies and exit")
+
+    add_planner_arguments(parser)
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"RantanPlan {metadata.version('rantanplan')}"
+    )
+
+    return parser.parse_args()
+
+
+def add_planner_arguments(parser):
+    """Add the options that configure the planner and its output.
+
+    Shared with other commands that solve a problem but build it in Python
+    instead of reading PDDL files.
+    """
     # Strategy selection
-    parser.add_argument("--strategy", type=str, default="els",
-                       help="Planning strategy to use (default: els)")
+    parser.add_argument("--strategy", type=str, default="elsc",
+                       help="Planning strategy to use (default: elsc)")
     parser.add_argument("--mode",
                        choices=["satisficing", "optimal", "anytime"],
                        default=None,
@@ -45,17 +66,15 @@ Use --list-strategies to see available strategies and their descriptions.
                             "optimal (cost-optimal with proof), "
                             "anytime (keep improving, report intermediate plans)")
 
-    # List strategies
-    parser.add_argument("--list-strategies", action="store_true",
-                       help="List available strategies and exit")
-    
     # Optional global parameters
     parser.add_argument("--timeout", type=int, default=None,
                        help="Timeout in seconds (default: None)")
     parser.add_argument("--max-steps", type=int,
                        help="Maximum planning steps")
-    parser.add_argument("--output-plan", type=str,
-                       help="Base path for plan output in IPC format (files written as <path>.1, .2, etc.)")
+    parser.add_argument("--output-plan", type=str, default="plan.txt",
+                       help="Base path for plan output in IPC format (files written as <path>.1, .2, etc.; "
+                            "default: plan.txt). Used from Unified Planning, the planner writes no files "
+                            "unless the output_plan parameter is set.")
     parser.add_argument("--stats-file", type=str,
                        help="Save statistics to file")
     
@@ -97,14 +116,6 @@ Use --list-strategies to see available strategies and their descriptions.
     parser.add_argument('--no-numeric-grounding', action='store_true',
                         help='Disable numeric interval bounds in reachability '
                              'grounder (enabled by default)')
-
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"RantanPlan {metadata.version('rantanplan')}"
-    )
-    
-    return parser.parse_args()
 
 
 
@@ -201,6 +212,28 @@ def solve_problem(problem, args):
 
 
 
+def report_result(result, args) -> int:
+    """Print the status and the plan (unless --silent), and return the exit
+    code: 0 if there is a plan, 1 otherwise."""
+    if not result:
+        return 1
+
+    # Print result (unless --silent)
+    if not args.silent:
+        print(f"Status: {result.status}")
+    if result.plan and hasattr(result.plan, 'actions'):
+        if not args.silent:
+            print(f"Plan found with {len(result.plan.actions)} actions")
+            for i, action in enumerate(result.plan.actions):
+                params = ", ".join(map(str, action.actual_parameters))
+                print(f"  {i+1}. {action.action.name}({params})")
+
+        # Plan files are written by the C++ backend in IPC format
+        return 0
+    if not args.silent:
+        print("No plan found")
+    return 1
+
 
 
 
@@ -231,10 +264,17 @@ def main():
             print(f"Error: File not found: {file_path}")
             sys.exit(1)
 
-    # Parse problem
+    # Parse problem with Unified Planning's own reader. UP's default reader
+    # parses with the `pddl` package when a domain allows it, and that package
+    # keeps actions, objects and initial facts in sets whose order changes
+    # from one run to the next. The planner numbers everything in the order
+    # it receives and its encodings depend on that numbering (R2E's action
+    # order, for one), so the same problem gave different horizons and plans
+    # in different runs. UP's own reader gives the same order every time,
+    # although it parses some domains more slowly.
     try:
         from unified_planning.io import PDDLReader
-        reader = PDDLReader()
+        reader = PDDLReader(force_up_pddl_reader=True)
         problem = reader.parse_problem(args.domain, args.problem)
     except Exception as e:
         print(f"Error parsing PDDL files: {e}")
@@ -242,24 +282,7 @@ def main():
 
     # Solve
     result = solve_problem(problem, args)
-    if not result:
-        sys.exit(1)
-
-    # Print result (unless --silent)
-    if not args.silent:
-        print(f"Status: {result.status}")
-    if result.plan and hasattr(result.plan, 'actions'):
-        if not args.silent:
-            print(f"Plan found with {len(result.plan.actions)} actions")
-            for i, action in enumerate(result.plan.actions):
-                params = ", ".join(map(str, action.actual_parameters))
-                print(f"  {i+1}. {action.action.name}({params})")
-
-        # Plan files are written by the C++ backend in IPC format
-    else:
-        if not args.silent:
-            print("No plan found")
-        sys.exit(1)
+    sys.exit(report_result(result, args))
 
 
 if __name__ == "__main__":

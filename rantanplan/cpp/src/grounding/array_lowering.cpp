@@ -1,6 +1,7 @@
 #include "array_lowering.hpp"
 
 #include "../problem/const_fold.hpp"
+#include "../problem/expr_builder.hpp"
 #include "../problem/expr_enums.hpp"
 #include "../problem/expr_walk.hpp"
 #include "../util/logger.hpp"
@@ -11,7 +12,6 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace rantanplan {
@@ -26,7 +26,6 @@ struct ArrayInfo {
     std::vector<int64_t> sizes;                       // per-dimension size
     std::set<std::vector<int64_t>> undefined;         // full coordinate tuples
     std::map<std::vector<int64_t>, ExprID> cell_heads;  // defined coords -> cell FLUENT_SYMBOL id
-    int elem_type_id = -1;                            // cell value (element) type
     bool parameterized = false;                       // cells keep the array's object params
 };
 
@@ -169,12 +168,6 @@ public:
         return pool_.intern(std::move(node));
     }
 
-    /// True if `eid` is one of the minted cell state variables.
-    bool is_cell(ExprID eid) const {
-        return pool_.is_state_variable(eid) &&
-               cell_head_ids_.count(pool_.head_symbol_id(eid)) > 0;
-    }
-
 private:
     enum class AccessResult { Ok, OutOfBounds };
 
@@ -182,7 +175,6 @@ private:
     ExprPool& pool_;
     std::vector<Fluent> cell_fluents_;
     std::unordered_map<int, ArrayInfo> arrays_;           // array fluent id -> info
-    std::unordered_set<ExprID> cell_head_ids_;            // FLUENT_SYMBOL ids of all minted cells
 
     /// Mint one scalar cell fluent + state variable per defined array position,
     /// in fluent-declaration order and row-major position order.
@@ -199,7 +191,6 @@ private:
 
             ArrayInfo info;
             info.sizes = f.array_sizes();
-            info.elem_type_id = elem_type_id;
             // Object-parameterised array fluents (e.g. grid(p)[r][c]) mint cell
             // fluents that keep the array's object parameters: grid[r][c](p),
             // resolved to a state variable with the access's object args and
@@ -254,14 +245,8 @@ private:
         // nullary array, also pre-intern the full state variable so its ExprID
         // is assigned in mint order; resolve_access rebuilds the identical
         // id via dedup.
-        ExprNode head;
-        head.kind = static_cast<int>(ExprKind::FLUENT_SYMBOL);
-        head.type_id = elem_type_id;
-        head.payload = cell_name;
-        ExprID head_id = pool_.intern(std::move(head));
-        cell_head_ids_.insert(head_id);
-        if (array_fluent.parameter_count() == 0)
-            pool_.intern_state_variable(cell_name, elem_type_id);
+        ExprID head_id = pool_.intern_fluent_symbol(cell_name, elem_type_id);
+        if (array_fluent.parameter_count() == 0) pool_.intern_state_variable(head_id);
         return head_id;
     }
 
@@ -313,16 +298,10 @@ private:
                                      "defined position of array '" + base->name() +
                                      "' in " + context);
         }
-        // Build the cell state variable from its FLUENT_SYMBOL head plus the base
-        // fluent's object args (empty for a nullary array -> dedups to the
-        // pre-interned cell). Mirrors ExprPool::intern_state_variable's layout.
-        ExprNode sv;
-        sv.kind = static_cast<int>(ExprKind::STATE_VARIABLE);
-        sv.type_id = info.elem_type_id;
-        sv.children.reserve(1 + base_args.size());
-        sv.children.push_back(cit->second);
-        for (ExprID a : base_args) sv.children.push_back(a);
-        out_cell = pool_.intern(std::move(sv));
+        // The cell state variable: its FLUENT_SYMBOL head plus the base fluent's
+        // object args (empty for a nullary array -> dedups to the pre-interned
+        // cell).
+        out_cell = pool_.intern_state_variable(cit->second, base_args);
         return AccessResult::Ok;
     }
 
@@ -367,24 +346,26 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Action lowering (L1 reads + L3 writes + discard/collision handling).
+// Action lowering (L1 reads + L3 writes + discards).
 // ---------------------------------------------------------------------------
 
-/// Why an action instance was discarded during lowering.
-enum class DiscardReason { OutOfBounds, Collision };
-
-/// Lower one action under permissive undefinedness (paper Def. 9). Returns
-/// nullopt (with `out_reason` set) if the whole instance is discarded — the
-/// precondition or cost evaluates to ⊥ (undefined ⇒ never applicable), an
-/// *unconditional* effect writes/reads an out-of-bounds cell, or an intra-action
-/// same-cell write collision (`a[i]:=x; a[j]:=y` at i=j). A *conditional* effect
-/// whose condition, target, or RHS is ⊥ is instead dropped (it can never validly
-/// fire), leaving the rest of the action intact — this is what lets a guarded
-/// out-of-bounds access (`a[i+1]:=v WHEN i<last`) survive at the boundary.
+/// Lower one action under permissive undefinedness. Returns nullopt if the
+/// whole instance is discarded: the precondition or cost evaluates to ⊥
+/// (undefined ⇒ never applicable), or an *unconditional* effect writes/reads an
+/// out-of-bounds cell. A *conditional* effect ⟨C ▷ l := r⟩:
+///   * whose condition C is ⊥ is dropped (it never fires);
+///   * whose target l or value r is ⊥ is dropped and ¬C joins the
+///     precondition: the effect would be invalid where C holds, so the action
+///     must be inapplicable there.
+/// A guarded boundary access (`a[i+1]:=v WHEN i<last` at i = last) keeps its
+/// action: C is false there, so ¬C adds nothing.
+///
+/// Two effects may write one cell (`a[i] += 1; a[j] += 1` at i = j). The
+/// instance is kept: a cell is an ordinary fluent, and EffectNormalizationPass
+/// combines the two writes as it does for any fluent.
 std::optional<Action> lower_action(const Action& action, ArrayLowerer& lowerer,
-                                    ExprPool& pool, DiscardReason& out_reason) {
+                                    ExprPool& pool) {
     const std::string ctx = "action '" + action.name() + "'";
-    out_reason = DiscardReason::OutOfBounds;
 
     Action out(action.name());
     out.set_pool(&pool);
@@ -401,7 +382,10 @@ std::optional<Action> lower_action(const Action& action, ArrayLowerer& lowerer,
         out.set_cost_id(*cost);
     }
 
-    std::vector<ExprID> cell_targets;
+    // Conditions of dropped effects whose target or value is undefined: the
+    // action is inapplicable wherever one of them holds.
+    std::vector<ExprID> blocking;
+
     for (const auto& eff : action.effects()) {
         const auto& ee = eff.effect_expression();
         // Pass-ordering invariant: forall-effects are expanded by the
@@ -424,28 +408,26 @@ std::optional<Action> lower_action(const Action& action, ArrayLowerer& lowerer,
         std::optional<ExprID> fluent = lowerer.rewrite_permissive(ee.fluent_id(), ctx);
         std::optional<ExprID> value  = lowerer.rewrite_permissive(ee.value_id(), ctx);
         if (!fluent || !value) {
-            // Out-of-bounds write target or RHS: a conditional effect is dropped
-            // (guarded, cannot validly fire); an unconditional one makes the
-            // whole action inapplicable.
-            if (conditional) continue;
-            return std::nullopt;
+            // Out-of-bounds or undefined-position target or RHS: an
+            // unconditional effect makes the whole action inapplicable; a
+            // conditional one is dropped and blocks the action where C holds.
+            if (!conditional) return std::nullopt;
+            blocking.push_back(cond);
+            continue;
         }
 
         out.add_effect(Effect(EffectExpression(ee.kind(), *fluent, *value, cond, &pool)));
-        if (lowerer.is_cell(*fluent)) cell_targets.push_back(*fluent);
     }
 
-    // Intra-action same-cell write collision (the chained encoder keeps only
-    // the first effect per (action, variable), so a second write to the same
-    // cell would be silently dropped).
-    std::unordered_set<ExprID> seen;
-    for (ExprID t : cell_targets) {
-        if (!seen.insert(t).second) {
-            out_reason = DiscardReason::Collision;
-            return std::nullopt;
-        }
+    if (!blocking.empty()) {
+        ExprBuilder b(pool);
+        std::vector<ExprID> parts;
+        if (out.has_precondition()) parts.push_back(out.precondition_id());
+        for (ExprID c : blocking) parts.push_back(b.make_not(c));
+        ExprID pre = b.make_and(std::move(parts));
+        if (pool.is_false_constant(pre)) return std::nullopt;  // some C is always true
+        if (!pool.is_true_constant(pre)) out.set_precondition_id(pre);
     }
-
     return out;
 }
 
@@ -466,41 +448,20 @@ Problem lower_arrays(const Problem& problem) {
     ExprPool& pool = *problem.pool_ptr();
     ArrayLowerer lowerer(problem);
 
-    // Actions (L1/L3, discards, collisions). Per schema *name* we count total
-    // instances vs. collision discards: if every instance of a schema collides
-    // (two effects on one cell), the model is unconditionally broken and must
-    // fail loudly instead of the schema silently vanishing.
+    // Actions (L1/L3, discards).
     std::vector<Action> new_actions;
     new_actions.reserve(problem.actions().size());
     size_t discarded = 0;
-    std::map<std::string, std::pair<size_t, size_t>> per_schema;  // name -> {total, collisions}
     for (const Action& a : problem.actions()) {
-        auto& counts = per_schema[a.name()];
-        ++counts.first;
-        DiscardReason reason;
-        auto lowered = lower_action(a, lowerer, pool, reason);
+        auto lowered = lower_action(a, lowerer, pool);
         if (lowered) {
             new_actions.push_back(std::move(*lowered));
             continue;
         }
         ++discarded;
-        if (reason == DiscardReason::Collision) {
-            ++counts.second;
-            Logger::instance().verbose(
-                "Array lowering: discarding instance " + a.label() +
-                " — two effects write the same array cell");
-        } else {
-            Logger::instance().verbose(
-                "Array lowering: discarding instance " + a.label() +
-                " — out-of-bounds or undefined-position array access");
-        }
-    }
-    for (const auto& [name, counts] : per_schema) {
-        if (counts.first > 0 && counts.second == counts.first) {
-            throw std::runtime_error(
-                "Action '" + name + "' writes the same array cell with two "
-                "effects in every instance (unconditionally broken model).");
-        }
+        Logger::instance().verbose(
+            "Array lowering: discarding instance " + a.label() +
+            " — out-of-bounds or undefined-position array access");
     }
 
     // Goals and invariants: an out-of-bounds access is a hard error (an

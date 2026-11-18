@@ -23,9 +23,7 @@ class SetLowerer {
 public:
     explicit SetLowerer(const Problem& problem)
         : problem_(problem), pool_(*problem.pool_ptr()), builder_(pool_) {
-        bool_type_ = problem_.find_type("up:bool");
-        if (!bool_type_) throw std::runtime_error("Set lowering: no bool type.");
-        bool_type_id_ = problem_.type_id_of(bool_type_);
+        bool_type_ = &problem_.types().at(BOOL_TYPE_ID);
         true_ = builder_.true_id();
         false_ = builder_.false_id();
         mint_membership_fluents();
@@ -128,7 +126,6 @@ private:
     ExprPool& pool_;
     ExprBuilder builder_;
     const Type* bool_type_ = nullptr;
-    int bool_type_id_ = -1;
     ExprID true_ = EXPR_NULL;
     ExprID false_ = EXPR_NULL;
     std::vector<Fluent> membership_fluents_;
@@ -400,7 +397,7 @@ private:
         cell_args.reserve(args.size() + 1);
         cell_args.push_back(e);
         for (ExprID a : args) cell_args.push_back(a);
-        return pool_.intern_state_variable(f.name(), bool_type_id_, cell_args);
+        return pool_.intern_state_variable(f.name(), BOOL_TYPE_ID, cell_args);
     }
 
     // An object constant for the enumerated element; the node construction is

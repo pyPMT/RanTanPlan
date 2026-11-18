@@ -35,7 +35,7 @@ class _RantanPlanBase(Engine):
         Engine.__init__(self)
 
         self._verbosity = options.get('verbosity')
-        self._strategy = options.get('strategy', 'els')
+        self._strategy = options.get('strategy', 'elsc')
         self._max_steps = options.get('max_steps')
         self._persist_clauses = options.get('persist_clauses', True)
         self._symmetries = options.get('symmetries', False)
@@ -87,6 +87,11 @@ class _RantanPlanBase(Engine):
 
     @staticmethod
     def supported_kind():
+        return _RantanPlanBase._supported_kind_for(None)
+
+    @staticmethod
+    def _supported_kind_for(mode):
+        """The supported kind in search mode @p mode (None is satisficing)."""
         supported_kind = ProblemKind()
         supported_kind.set_problem_class("ACTION_BASED")
         supported_kind.set_problem_type("GENERAL_NUMERIC_PLANNING")
@@ -121,7 +126,10 @@ class _RantanPlanBase(Engine):
         supported_kind.set_effects_kind('STATIC_FLUENTS_IN_OBJECT_ASSIGNMENTS')
         supported_kind.set_effects_kind('FLUENTS_IN_OBJECT_ASSIGNMENTS')
         supported_kind.set_effects_kind('FORALL_EFFECTS')
-        supported_kind.set_quality_metrics('FINAL_VALUE')
+        # The converter drops final-value metrics, so the planner never
+        # optimises one. Only satisficing search may ignore a metric.
+        if mode in (None, "satisficing"):
+            supported_kind.set_quality_metrics('FINAL_VALUE')
         supported_kind.set_quality_metrics('ACTIONS_COST')
         supported_kind.set_quality_metrics('PLAN_LENGTH')
         supported_kind.set_actions_cost_kind('INT_NUMBERS_IN_ACTIONS_COST')
@@ -404,13 +412,12 @@ class _RantanPlanBase(Engine):
     # ── Result conversion ────────────────────────────────────────────────
 
     @staticmethod
-    def _up_status(status: int) -> PlanGenerationResultStatus:
-        name = _rantanplan.SolveStatus(status).name
-        return PlanGenerationResultStatus[name]
+    def _up_status(status: _rantanplan.SolveStatus) -> PlanGenerationResultStatus:
+        return PlanGenerationResultStatus[status.name]
 
     @staticmethod
-    def _up_log_level(level: int) -> LogLevel:
-        return (LogLevel.DEBUG, LogLevel.INFO, LogLevel.WARNING, LogLevel.ERROR)[level]
+    def _up_log_level(level: _rantanplan.LogLevel) -> LogLevel:
+        return LogLevel[level.name]
 
     @staticmethod
     def _build_plan(instances, compiled_problem: Problem,
@@ -509,6 +516,29 @@ class _RantanPlanBase(Engine):
 
     # ── In-process solving ───────────────────────────────────────────────
 
+    def _unsupported_result(self, problem: Problem) -> Optional[PlanGenerationResult]:
+        """An UNSUPPORTED_PROBLEM result if the problem uses a feature not in
+        supported_kind(), else None.
+
+        Checked up front, rather than crashing deep in conversion. Calling an
+        engine by name makes UP's own supports() gate only warn, so we enforce
+        it here. This is an allow-list: supported_kind() must list every
+        feature RantanPlan can handle, so an unlisted feature (e.g.
+        DERIVED_FLUENTS / axioms) is rejected cleanly. Keyed by self._mode,
+        not the class: the satisficing engine also runs optimal search when
+        given mode=optimal."""
+        supported = _RantanPlanBase._supported_kind_for(self._mode)
+        if problem.kind <= supported:
+            return None
+        unsupported = problem.kind.features - supported.features
+        return PlanGenerationResult(
+            PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, None, self.name,
+            log_messages=[LogMessage(
+                LogLevel.ERROR,
+                "RantanPlan does not support these problem features"
+                + (f" in {self._mode} mode" if self._mode else "") + ": "
+                + ", ".join(sorted(unsupported)))])
+
     def _solve_in_process(self, problem: Problem,
                           timeout: Optional[float] = None,
                           output_stream: Optional[IO[str]] = None,
@@ -521,20 +551,9 @@ class _RantanPlanBase(Engine):
                 "The _rantanplan extension module is not built. Run "
                 "'pip install -e . --no-build-isolation' first.")
 
-        # Reject any problem using a feature not in supported_kind() up front,
-        # rather than crashing deep in conversion. Calling an engine by name
-        # bypasses UP's own supports() gate, so we enforce it here. This is an
-        # allow-list: supported_kind() must list every feature RantanPlan can
-        # handle, so an unlisted feature (e.g. DERIVED_FLUENTS / axioms) is
-        # rejected cleanly.
-        if not self.supports(problem.kind):
-            unsupported = problem.kind.features - self.supported_kind().features
-            return PlanGenerationResult(
-                PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, None, self.name,
-                log_messages=[LogMessage(
-                    LogLevel.ERROR,
-                    "RantanPlan does not support these problem features: "
-                    + ", ".join(sorted(unsupported)))])
+        rejected = self._unsupported_result(problem)
+        if rejected is not None:
+            return rejected
 
         # The C++ log sink is installed for the duration of the call, on this
         # thread (the one that runs preprocess/solve -- the module requires
@@ -597,6 +616,14 @@ class RantanPlanOptimalPlanner(_RantanPlanBase, OneshotPlannerMixin):
         self._mode = "optimal"  # Force optimal mode
 
     @staticmethod
+    def supported_kind():
+        return _RantanPlanBase._supported_kind_for("optimal")
+
+    @staticmethod
+    def supports(problem_kind):
+        return problem_kind <= RantanPlanOptimalPlanner.supported_kind()
+
+    @staticmethod
     def satisfies(optimality_guarantee: OptimalityGuarantee) -> bool:
         return True
 
@@ -617,6 +644,14 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
         _RantanPlanBase.__init__(self, **options)
         AnytimePlannerMixin.__init__(self)
         self._mode = "anytime"  # Force anytime mode
+
+    @staticmethod
+    def supported_kind():
+        return _RantanPlanBase._supported_kind_for("anytime")
+
+    @staticmethod
+    def supports(problem_kind):
+        return problem_kind <= RantanPlanAnytimePlanner.supported_kind()
 
     @staticmethod
     def ensures(anytime_guarantee: AnytimeGuarantee) -> bool:
@@ -643,6 +678,11 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
             raise UPException(
                 "The _rantanplan extension module is not built. Run "
                 "'pip install -e . --no-build-isolation' first.")
+
+        rejected = self._unsupported_result(problem)
+        if rejected is not None:
+            yield rejected
+            return
 
         self._output_stream = output_stream
         try:

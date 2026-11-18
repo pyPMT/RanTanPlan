@@ -214,17 +214,13 @@ z3::expr LiftedEncodingVisitor::convert_from_pool(ExprID id, int timestep) {
 z3::expr LiftedEncodingVisitor::convert_node_pool(ExprID id) {
     const ExprPool& pool = problem_->pool();
     const ExprNode& node = pool.get(id);
-    auto kind = static_cast<ExprKind>(node.kind);
+    ExprKind kind = node.kind;
 
     // ---- Leaf nodes (no children) ----
     if (node.children.empty()) {
         if (std::holds_alternative<std::string>(node.payload)) {
             const std::string& symbol = std::get<std::string>(node.payload);
-            // Resolve type from type_id
-            const Type* type = nullptr;
-            if (node.type_id >= 0 && node.type_id < static_cast<int>(problem_->types().size())) {
-                type = &problem_->types()[node.type_id];
-            }
+            const Type* type = problem_->type_for_id(id);
             // Use type-based variable creation (same as visit_symbol)
             if (!type) {
                 return create_int_variable(symbol);
@@ -236,10 +232,11 @@ z3::expr LiftedEncodingVisitor::convert_node_pool(ExprID id) {
             return create_int_variable(symbol);
         }
         if (std::holds_alternative<int64_t>(node.payload)) {
-            return ctx_.int_val(static_cast<int>(std::get<int64_t>(node.payload)));
+            return ctx_.int_val(std::get<int64_t>(node.payload));
         }
-        if (std::holds_alternative<double>(node.payload)) {
-            return ctx_.real_val(std::to_string(std::get<double>(node.payload)).c_str());
+        if (std::holds_alternative<Rational>(node.payload)) {
+            const Rational& r = std::get<Rational>(node.payload);
+            return ctx_.real_val(r.num, r.den);
         }
         if (std::holds_alternative<bool>(node.payload)) {
             return ctx_.bool_val(std::get<bool>(node.payload));
@@ -281,7 +278,7 @@ z3::expr LiftedEncodingVisitor::convert_node_pool(ExprID id) {
 
     // ---- Function application ----
     if (kind == ExprKind::FUNCTION_APPLICATION) {
-        auto op = static_cast<ExprOperator>(node.op);
+        ExprOperator op = node.op;
 
         // Recursively convert arguments
         std::vector<z3::expr> z3_args;
@@ -315,7 +312,7 @@ z3::expr LiftedEncodingVisitor::convert_node_pool(ExprID id) {
         }
     }
 
-    throw std::runtime_error("Unhandled ExprNode kind in convert_node: " + std::to_string(node.kind));
+    throw std::runtime_error("Unhandled ExprNode kind in convert_node: " + std::to_string(static_cast<int>(node.kind)));
 }
 
 } // namespace rantanplan

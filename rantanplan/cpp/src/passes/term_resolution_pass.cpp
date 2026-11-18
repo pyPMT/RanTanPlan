@@ -275,7 +275,7 @@ private:
         } while (action_->has_parameter(name));
 
         ExprNode node;
-        node.kind = static_cast<int>(ExprKind::PARAMETER);
+        node.kind = ExprKind::PARAMETER;
         node.type_id = problem_.type_id_of(vt);
         node.payload = name;
         ExprID param = pool_.intern(std::move(node));
@@ -368,8 +368,9 @@ public:
                                             pool_.intern_int_constant(p))));
             // Boundary instance: `e < 0 ∨ e ≥ n`, index -> the statically
             // out-of-bounds constant n. ArrayLoweringPass then applies the
-            // Def. 9 permissive policy at compile time: guarded writes are
-            // dropped, OR/COUNT absorb the ⊥ read, and an unconditional ⊥
+            // permissive policy at compile time: a guarded
+            // write is dropped with ¬guard added to the precondition,
+            // OR/COUNT absorb the ⊥ read, and an unconditional ⊥
             // discards the instance (see undefinedness-semantics.md).
             ExprID zero = pool_.intern_int_constant(0);
             ExprID n = pool_.intern_int_constant(target->dim_size);

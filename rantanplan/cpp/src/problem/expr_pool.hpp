@@ -10,6 +10,7 @@
 #include <cassert>
 #include <span>
 #include "expr_enums.hpp"
+#include "rational.hpp"
 
 // Optional Improvements
 // ---------------------
@@ -52,15 +53,16 @@ struct hash<rantanplan::ExprID> : hash<int32_t> {
 
 namespace rantanplan {
 
-/// Payload carried by leaf nodes in the expression pool.
-using ExprPayload = std::variant<std::monostate, bool, int64_t, double, std::string>;
+/// Payload carried by leaf nodes in the expression pool. A real constant is an
+/// exact Rational.
+using ExprPayload = std::variant<std::monostate, bool, int64_t, Rational, std::string>;
 
 /// A single node in the expression pool (internal representation). Two
 /// kinds (FUNCTION_APPLICATION, STATE_VARIABLE) use a head+arguments child
 /// layout — see the ExprPool class comment below for the convention.
 struct ExprNode {
-    int kind = 0;     // ExprKind as int
-    int op = -1;      // ExprOperator as int, -1 if N/A
+    ExprKind kind = ExprKind::UNKNOWN;
+    ExprOperator op = ExprOperator::NONE;  // an application's is its head's (intern())
     int type_id = -1; // index into Problem's types_ vector, -1 if null
 
     std::vector<ExprID> children;
@@ -119,21 +121,40 @@ public:
     // for `at(truck1, depot)` that differ only in an argument's type_id both
     // become the variable `at_truck1_depot`.
     //
-    // Anything that groups by fluent ExprID therefore silently assumes one
-    // ground atom has one id. That assumption is pervasive and was never
-    // enforced — SemanticInterferencePredicate's effects_by_fluent,
-    // ChainedGroundedEncoder's variable_modifiers_, DuplicateEffectPass's write
-    // counting, NumericRelaxedPlanningGraph's reachability/bounds tables, and
-    // the footprint filter in action_footprint.hpp all key on it. If it ever
-    // broke, each would mis-group rather than fail loudly.
+    // Anything that groups by fluent ExprID assumes one ground atom has one id:
+    // WriteOnlyFluentPass's reads and writes, SemanticInterferencePredicate's
+    // effects_by_fluent, ChainedGroundedEncoder's variable_modifiers_,
+    // EffectNormalizationPass's write counting, NumericRelaxedPlanningGraph's
+    // reachability/bounds tables and the footprint filter in
+    // action_footprint.hpp. Each would mis-group, not fail, if it broke. So
+    // the assumption is enforced: preprocess() (api/solver_api.cpp) stops with
+    // an error when aliased_state_variable_count() is nonzero.
     //
-    // Rather than collapse the interning key (set_lowering_pass.cpp:147 and
-    // array_lowering.cpp deliberately rely on type_id keeping nodes distinct),
-    // this maps every state variable onto a representative sharing its payload
-    // signature. Callers that mean "the same ground atom" use the
-    // representative; callers that mean "the same node" keep using the id.
-    // Maintained incrementally in intern() because passes keep interning
-    // throughout preprocessing — a cache built once would go stale.
+    // An alias needs two producers that build one atom with a different type
+    // somewhere. Most types are fixed in one place so that this cannot happen:
+    //   - intern() gives a state variable its head's type, and a bool, int or
+    //     real constant its value's type. There is one int type,
+    //     INT_TYPE_ID. Otherwise the goal visited(3) and the effect
+    //     visited(?i) with ?i = 3 (an integer parameter instantiated by
+    //     IntParameterInstantiationPass) could be two nodes;
+    //   - object constants are typed by the object's own type, by the
+    //     converter and the grounder alike, and minted cells (array and set
+    //     lowering) are interned once and reused.
+    // What is left is a producer that breaks one of these: typing an object by
+    // a parameter's declared (super)type, or a head symbol differently (say,
+    // int against real). Bounds cannot do it: a bounded integer is the base
+    // int type, its bounds are data on the Fluent (see Type).
+    //
+    // The signature covers atoms whose arguments are object or integer
+    // constants. No atom with integer arguments exists yet (integer fluent
+    // parameters are unsupported, set elements must be user types, and the
+    // encoder rejects non-string arguments), but the check sees them already.
+    //
+    // The interning key itself stays finer (set_lowering_pass.cpp:147 and
+    // array_lowering.cpp rely on type_id keeping nodes distinct). Instead each
+    // state variable is mapped onto a representative sharing its payload
+    // signature, maintained incrementally in intern() because passes keep
+    // interning throughout preprocessing (a cache built once would go stale).
 
     /// Representative id for a ground state variable: the first one interned
     /// with the same head symbol and argument payloads. Identity on any other
@@ -144,9 +165,8 @@ public:
         return rep.valid() ? rep : id;
     }
 
-    /// State variables that are not their own representative. ZERO means every
-    /// ground atom has exactly one id and the assumption above holds; a nonzero
-    /// value means it does not, and every consumer listed above is affected.
+    /// State variables ever interned that are not their own representative.
+    /// Only grows. preprocess() refuses a problem when it is nonzero.
     size_t aliased_state_variable_count() const { return aliased_sv_count_; }
 
     /// Access a node by ID.
@@ -165,8 +185,8 @@ public:
     // Kind / Operator / Type accessors
     // ========================================================================
 
-    ExprKind kind(ExprID id) const { return static_cast<ExprKind>(get(id).kind); }
-    ExprOperator op(ExprID id) const { return static_cast<ExprOperator>(get(id).op); }
+    ExprKind kind(ExprID id) const { return get(id).kind; }
+    ExprOperator op(ExprID id) const { return get(id).op; }
     int type_id(ExprID id) const { return get(id).type_id; }
 
     // ========================================================================
@@ -279,11 +299,11 @@ public:
     int64_t payload_int(ExprID id) const {
         return std::get<int64_t>(get(id).payload);
     }
-    bool payload_is_double(ExprID id) const {
-        return std::holds_alternative<double>(get(id).payload);
+    bool payload_is_real(ExprID id) const {
+        return std::holds_alternative<Rational>(get(id).payload);
     }
-    double payload_double(ExprID id) const {
-        return std::get<double>(get(id).payload);
+    const Rational& payload_real(ExprID id) const {
+        return std::get<Rational>(get(id).payload);
     }
     bool payload_is_string(ExprID id) const {
         return std::holds_alternative<std::string>(get(id).payload);
@@ -296,60 +316,77 @@ public:
     // Semantic helpers
     // ========================================================================
 
+    // A constant's type follows from its value, set by intern(), so these
+    // helpers take none.
+
     /// Intern an integer constant and return its ExprID.
     ExprID intern_int_constant(int64_t value) {
         ExprNode node;
-        node.kind = static_cast<int>(ExprKind::CONSTANT);
+        node.kind = ExprKind::CONSTANT;
         node.payload = value;
         return intern(std::move(node));
     }
 
-    /// Intern a double constant and return its ExprID.
-    ExprID intern_double_constant(double value, int type_id = -1) {
+    /// Intern a real constant and return its ExprID.
+    ExprID intern_real_constant(const Rational& value) {
         ExprNode node;
-        node.kind = static_cast<int>(ExprKind::CONSTANT);
-        node.type_id = type_id;
+        node.kind = ExprKind::CONSTANT;
         node.payload = value;
         return intern(std::move(node));
+    }
+
+    /// Intern the result of folding arithmetic: an integer constant if
+    /// `integer` (every operand was an integer and the operation keeps
+    /// integers), else a real one. So folded 2 + 3 is the node of the literal
+    /// 5, and folded 2.0 + 3.0 the node of the real 5.0.
+    ExprID intern_folded_constant(const Rational& value, bool integer) {
+        if (integer && value.is_integer()) return intern_int_constant(value.num);
+        return intern_real_constant(value);
     }
 
     /// Intern a boolean constant and return its ExprID.
     ExprID intern_bool_constant(bool value) {
         ExprNode node;
-        node.kind = static_cast<int>(ExprKind::CONSTANT);
+        node.kind = ExprKind::CONSTANT;
         node.payload = value;
         return intern(std::move(node));
     }
 
-    /// Intern a STATE_VARIABLE node: a FLUENT_SYMBOL head (payload = fluent
-    /// name) followed by its argument children. `type_id` is the fluent's value
-    /// type, used for both the head symbol and the state-variable node. `args`
-    /// defaults to empty for a nullary fluent (e.g. an array cell minted by
-    /// array lowering). This is the single place the state-variable node layout
-    /// (children[0] = FLUENT_SYMBOL, children[1..] = arguments) is constructed.
-    ExprID intern_state_variable(const std::string& fluent_name, int type_id,
-                                 const std::vector<ExprID>& args = {}) {
+    /// Intern a FLUENT_SYMBOL, the head of a fluent's state variables: payload
+    /// the fluent's name, `type_id` its value type.
+    ExprID intern_fluent_symbol(const std::string& fluent_name, int type_id) {
         ExprNode head;
-        head.kind = static_cast<int>(ExprKind::FLUENT_SYMBOL);
+        head.kind = ExprKind::FLUENT_SYMBOL;
         head.type_id = type_id;
         head.payload = fluent_name;
-        ExprID head_id = intern(std::move(head));
+        return intern(std::move(head));
+    }
 
+    /// Intern a STATE_VARIABLE node: a FLUENT_SYMBOL head followed by its
+    /// argument children; intern() gives it the head's type. `args` defaults to
+    /// empty for a nullary fluent (e.g. an array cell minted by array
+    /// lowering). This is the single place the state-variable node layout
+    /// (children[0] = FLUENT_SYMBOL, children[1..] = arguments) is constructed.
+    ExprID intern_state_variable(ExprID head, const std::vector<ExprID>& args = {}) {
         ExprNode sv;
-        sv.kind = static_cast<int>(ExprKind::STATE_VARIABLE);
-        sv.type_id = type_id;
+        sv.kind = ExprKind::STATE_VARIABLE;
         sv.children.reserve(1 + args.size());
-        sv.children.push_back(head_id);
+        sv.children.push_back(head);
         for (ExprID a : args) sv.children.push_back(a);
         return intern(std::move(sv));
+    }
+
+    /// The same, by the fluent's name and value type.
+    ExprID intern_state_variable(const std::string& fluent_name, int type_id,
+                                 const std::vector<ExprID>& args = {}) {
+        return intern_state_variable(intern_fluent_symbol(fluent_name, type_id), args);
     }
 
     /// Check if this is a boolean constant with value true.
     bool is_true_constant(ExprID id) const {
         if (!id.valid()) return false;
         const auto& n = get(id);
-        return n.children.empty() &&
-               static_cast<ExprKind>(n.kind) == ExprKind::CONSTANT &&
+        return n.children.empty() && n.kind == ExprKind::CONSTANT &&
                std::holds_alternative<bool>(n.payload) &&
                std::get<bool>(n.payload) == true;
     }
@@ -358,8 +395,7 @@ public:
     bool is_false_constant(ExprID id) const {
         if (!id.valid()) return false;
         const auto& n = get(id);
-        return n.children.empty() &&
-               static_cast<ExprKind>(n.kind) == ExprKind::CONSTANT &&
+        return n.children.empty() && n.kind == ExprKind::CONSTANT &&
                std::holds_alternative<bool>(n.payload) &&
                std::get<bool>(n.payload) == false;
     }
@@ -367,9 +403,9 @@ public:
 private:
     /// Payload signature of a state variable — head symbol payload plus each
     /// argument payload, which is exactly what the Z3 variable name is built
-    /// from. Empty if the node is not a state variable with string payloads
-    /// throughout (nested fluent arguments have no name and are rejected by the
-    /// encoding visitor anyway), which disables aliasing for it.
+    /// from. Empty unless every argument is an object or integer constant
+    /// (nested fluent arguments have no name and are rejected by the encoding
+    /// visitor anyway), which disables aliasing for it.
     std::string state_variable_signature(const ExprNode& node) const;
 
     std::vector<ExprNode> nodes_;

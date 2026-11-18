@@ -7,6 +7,7 @@
 #include "parameter.hpp"
 #include "type.hpp"
 #include "expr_pool.hpp"  // ExprID (declared_default_ references a pool constant)
+#include "rational.hpp"
 
 namespace rantanplan {
 
@@ -40,13 +41,13 @@ public:
     void set_parameters(const std::vector<Parameter>& parameters) { parameters_ = parameters; }
 
     // Declared numeric bounds (from bounded int/real value types, e.g.
-    // integer[0, 15]). Either side may be unset for a one-sided bound.
-    void set_declared_bounds(std::optional<double> lower, std::optional<double> upper) {
+    // integer[0, 15]), exact. Either side may be unset for a one-sided bound.
+    void set_declared_bounds(std::optional<Rational> lower, std::optional<Rational> upper) {
         lower_bound_ = lower;
         upper_bound_ = upper;
     }
-    std::optional<double> declared_lower_bound() const { return lower_bound_; }
-    std::optional<double> declared_upper_bound() const { return upper_bound_; }
+    std::optional<Rational> declared_lower_bound() const { return lower_bound_; }
+    std::optional<Rational> declared_upper_bound() const { return upper_bound_; }
     bool has_declared_bounds() const {
         return lower_bound_.has_value() || upper_bound_.has_value();
     }
@@ -129,8 +130,8 @@ private:
     int id_;
     const Type* value_type_ = nullptr;
     std::vector<Parameter> parameters_;
-    std::optional<double> lower_bound_;
-    std::optional<double> upper_bound_;
+    std::optional<Rational> lower_bound_;
+    std::optional<Rational> upper_bound_;
     std::optional<ExprID> declared_default_;
     std::vector<std::vector<int64_t>> array_undefined_positions_;
 };

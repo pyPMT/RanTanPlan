@@ -143,6 +143,7 @@ z3::expr R2EGroundedEncoder::encode_actions(int t) {
     all_constraints.push_back(encode_precondition_constraints(t));
     all_constraints.push_back(encode_effect_constraints(t));
     all_constraints.push_back(encode_linking_constraints(t));
+    all_constraints.push_back(encode_declared_bounds(t));
 
     Stats::instance().add("encoder.r2e.action_constraints", all_constraints.size());
 
@@ -320,6 +321,25 @@ z3::expr R2EGroundedEncoder::encode_linking_constraints(int t) {
         return ctx_.bool_val(true);
     }
     return z3::mk_and(constraints);
+}
+
+z3::expr R2EGroundedEncoder::encode_declared_bounds(int t) {
+    // A declared bound holds in every state a plan passes through, those inside
+    // a step included. Under the fixed ordering these are the chain variables:
+    // x^t_i is x right after its i-th writer, and the last one is x^{t+1}. The
+    // first state of the step, x^t, is the last one of the step before (or the
+    // initial state), and a fluent no action writes keeps its initial value.
+    z3::expr_vector constraints(ctx_);
+    for (const auto& [var_eid, writers] : variable_modifiers_) {
+        const Fluent* fluent = problem_.declaration_of(var_eid);
+        if (!fluent || !fluent->has_declared_bounds()) continue;
+        for (const Action* writer : writers) {
+            z3::expr x = get_chain_variable(var_eid, t, get_global_action_index(writer));
+            if (auto lo = fluent->declared_lower_bound()) constraints.push_back(x >= variable_factory_.make_numeric_val(*lo));
+            if (auto hi = fluent->declared_upper_bound()) constraints.push_back(x <= variable_factory_.make_numeric_val(*hi));
+        }
+    }
+    return constraints.empty() ? ctx_.bool_val(true) : z3::mk_and(constraints);
 }
 
 std::unordered_map<ExprID, z3::expr> R2EGroundedEncoder::create_prev_substitution(int action_index, int timestep) {

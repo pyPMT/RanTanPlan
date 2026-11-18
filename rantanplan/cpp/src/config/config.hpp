@@ -52,9 +52,12 @@ public:
     } rpg;
     
     struct Planner {
-        std::string strategy = "els";  ///< Strategy name (looked up in StrategyRegistry)
+        std::string strategy = "elsc";  ///< Strategy name (looked up in StrategyRegistry)
         std::string mode = "satisficing";  ///< Search mode: satisficing, optimal, anytime
-        std::string output_plan = "plan.txt";  ///< Plan output file path (IPC format)
+        /// Base path for plan files in IPC format (<path>.1, .2, ...). Empty =
+        /// write none: the library writes files only when asked, and the
+        /// command line (rantanplan/cli.py) asks for plan.txt by default.
+        std::string output_plan = "";
         int max_steps = 500;
         int start_timestep = 0;  ///< Starting timestep for search (can be set by RPG lower bound)
         std::string horizon_schedule = "linear";  ///< Schedule type: linear|arithmetic|geometric|doubling

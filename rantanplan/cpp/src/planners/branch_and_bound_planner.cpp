@@ -261,9 +261,11 @@ Plan BranchAndBoundPlanner::search() {
                     auto now = std::chrono::high_resolution_clock::now();
                     double elapsed = std::chrono::duration<double>(now - start_time).count();
                     bool unit = (problem_.metric_kind() != MetricKind::MINIMIZE_ACTION_COSTS);
-                    best_plan.write_ipc(config.planner.output_plan, solution_count_,
-                                        upper_bound, unit,
-                                        config.planner.strategy, config.planner.mode, elapsed);
+                    if (!config.planner.output_plan.empty()) {
+                        best_plan.write_ipc(config.planner.output_plan, solution_count_,
+                                            upper_bound, unit,
+                                            config.planner.strategy, config.planner.mode, elapsed);
+                    }
                     notify_intermediate_plan(best_plan);
 
                     Logger::instance().info(

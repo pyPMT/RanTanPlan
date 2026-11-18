@@ -10,11 +10,11 @@ Interval evaluate_interval(ExprID eid,
 
     // --- Leaf: numeric constant ---
     if (pool.is_constant(eid)) {
-        if (pool.payload_is_double(eid)) {
-            return Interval(pool.payload_double(eid));
+        if (pool.payload_is_real(eid)) {
+            return Interval::of(pool.payload_real(eid));
         }
         if (pool.payload_is_int(eid)) {
-            return Interval(static_cast<double>(pool.payload_int(eid)));
+            return Interval::of(pool.payload_int(eid));
         }
         // Boolean or string constant — not a numeric value.
         return Interval::unbounded();

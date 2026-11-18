@@ -13,6 +13,7 @@ from pathlib import Path
 
 import rantanplan  # noqa: F401 — registers the UP engines (also in spawned workers)
 from unified_planning.io import PDDLReader
+from unified_planning.model.metrics import MinimizeExpressionOnFinalState
 from unified_planning.shortcuts import OneshotPlanner, PlanValidator
 from unified_planning.engines.results import PlanGenerationResultStatus
 from unified_planning.engines import ValidationResultStatus
@@ -28,7 +29,7 @@ QUICK_TEST_DIRS = [
     "pddl/test/rover",
     "pddl/test/gripper-round-1-adl",
     "pddl/test/hydropower",
-    "pddl/test/mprime",              # guards the elsc-fp extraction bug (duplicate-effect pass)
+    "pddl/test/mprime",              # guards the elsc-fp extraction bug (effect-normalization pass)
     "pddl/test/sdac-simple",
     "pddl/test/sdac-zero-bound",
     "pddl/test/worksworld",
@@ -47,7 +48,6 @@ QUICK_STRATEGIES = [
     "elsc",       # ExistsCycle module (lazy semantic, chained)
     "elsc-dt",    # ExistsCycle module + DoubleTail planner
     "elsc-fp",    # ExistsCycle + FrameAxiom modules
-    "cgb",        # ExistsCycle module + CGB planner (core-guided activation)
 ]
 
 TIMEOUT = 60  # seconds per test
@@ -55,8 +55,8 @@ TIMEOUT = 60  # seconds per test
 ## Strategies to test with --mode optimal (replaces the old -opt registry entries)
 OPTIMAL_MODE_STRATEGIES = [
     "seq", "r2e",
-    "f", "f-p", "fl", "fls", "flsc",
-    "e", "el", "els", "elsc",
+    "f", "f-p", "fl", "flsc",
+    "e", "el", "elsc",
 ]
 
 QUICK_OPTIMAL_MODE_STRATEGIES = [
@@ -91,7 +91,9 @@ REGRESSION_CONFIGS = [
     # Exists-step *semantic* interference must catch numeric read/write hazards;
     # fo-sailing previously produced a plan UP rejects on these encoders.
     # docs/specs/exists-step-semantic-interference-soundness.md
-    ("fo-sailing", ["els", "elsc", "egs", "egsc"]),
+    # Only the chained strategies: StrategyFactory::validate refuses semantic
+    # interference with the Grounded encoder (the old els and egs).
+    ("fo-sailing", ["elsc", "egsc"]),
     # Goal-relevance pruning must keep actions that establish a conditional
     # effect's guard; logistics-round-1-adl was UNSAT at every horizon before.
     # docs/specs/conditional-effect-condition-pruning.md
@@ -163,8 +165,20 @@ def build_test_configs(strategies, quick=False):
 def run_test(name, domain, problem, strategy, verbose=False, up_grounding=False, mode=None):
     """Run one test. Returns (passed: bool, detail: str)."""
     try:
-        reader = PDDLReader()
+        # Unified Planning's own reader, as in rantanplan/cli.py: with the
+        # default reader the order of actions and objects changes between
+        # runs, and the planner's horizons and plans change with it.
+        reader = PDDLReader(force_up_pddl_reader=True)
         prob = reader.parse_problem(str(domain), str(problem))
+        if mode == "optimal":
+            # Optimal search rejects final-value metrics, which the planner
+            # does not optimise (zenotravel, rover). Without one it minimises
+            # plan length, as it did before when it ignored them.
+            kept = [m for m in prob.quality_metrics
+                    if not isinstance(m, MinimizeExpressionOnFinalState)]
+            prob.clear_quality_metrics()
+            for m in kept:
+                prob.add_quality_metric(m)
 
         params = {
             'strategy': strategy,
@@ -181,9 +195,10 @@ def run_test(name, domain, problem, strategy, verbose=False, up_grounding=False,
 
         # Corpus-wide invariant: one ground atom has exactly one ExprID.
         # Everything that groups by fluent id assumes it — the chained encoder's
-        # chain links, DuplicateEffectPass's write counts, the RPG tables — and
-        # every one of them MIS-GROUPS SILENTLY if it breaks, so nothing else
-        # here would fail. Measured 0 across all 66 pddl/test domains when this
+        # chain links, EffectNormalizationPass's writes per fluent, the RPG tables,
+        # WriteOnlyFluentPass — so preprocessing stops with an error if it breaks,
+        # and the status check below fails too; this names the cause whenever the
+        # stat still arrives. Measured 0 across all 66 pddl/test domains when this
         # was added. Checked before the status check on purpose: the stat is
         # emitted after preprocessing, so it is meaningful even on instances that
         # come back UNSOLVABLE_PROVEN and would otherwise return early.

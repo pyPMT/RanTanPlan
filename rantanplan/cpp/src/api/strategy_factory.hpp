@@ -19,6 +19,14 @@
  */
 namespace rantanplan {
 
+/// The problem uses a feature the selected strategy cannot handle soundly,
+/// though another strategy can. api::solve reports it as UNSUPPORTED_PROBLEM
+/// with this message; any other exception is an internal error.
+class UnsupportedProblemError : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
 /// Strategy component factory — handles validation, problem-specific
 /// adjustments, and fully wired component assembly at solve time.
 ///
@@ -40,6 +48,7 @@ public:
 
     /// Adjust a strategy spec for problem-specific constraints (e.g. SDAC +
     /// exists-step downgrade). Mutates spec in place and logs adjustments.
+    /// Throws UnsupportedProblemError if the strategy cannot take the problem.
     static void adjust_spec(StrategySpec& spec, const Problem& problem);
 
     /// Build a fully wired encoder: interference analyzer (timed as
@@ -57,8 +66,7 @@ public:
         const Problem& problem, BaseEncoder& encoder);
 
     /// Create the planner and route its artifacts: arithmetic profile,
-    /// then BasePlanner::consume_artifacts (CGB takes achievers, B&B
-    /// takes SDAC cost bounds).
+    /// then BasePlanner::consume_artifacts (B&B takes SDAC cost bounds).
     static std::unique_ptr<BasePlanner> create_planner(
         const StrategySpec& spec, PreprocessedProblem& pre,
         BaseEncoder& encoder, z3::context& ctx);

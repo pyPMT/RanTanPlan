@@ -19,8 +19,8 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
     }
 
     // Fill every grounded fluent missing from the initial state. This is the
-    // sole materialiser of default initial values (the Python wrapper no longer
-    // does it): a declared default_initial_value is authoritative (including an
+    // sole materialiser of default initial values: a declared
+    // default_initial_value is authoritative (including an
     // object/UserType default, which the ObjectFluentIndex has already seeded
     // for the grounder); otherwise a boolean is closed-world false and a numeric
     // is 0 clamped into its declared bounds. An object fluent with neither an
@@ -29,11 +29,8 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
     for (ExprID eid : problem.grounded_fluents()) {
         if (assigned.count(eid)) continue;
 
-        int fluent_type_id = pool->get(eid).type_id;
-        if (fluent_type_id < 0) continue;  // unknown type — skip
-
         const Type* type = problem.type_for_id(eid);
-        if (!type) continue;
+        if (!type) continue;  // unknown type — skip
 
         // Resolve the fluent schema (via its head symbol) for the declared
         // default and bounds; array cells resolve to their cell fluent.
@@ -70,29 +67,22 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
         // (the branch above already handled — and took precedence for — any
         // UP-declared default). Booleans are closed-world false; numerics are 0
         // clamped into the declared bounds. Unlike the declared-default branch,
-        // this synthesises a fresh constant node rather than reusing a UP node.
-        ExprNode constant_node;
-        constant_node.kind = static_cast<int>(ExprKind::CONSTANT);
-        constant_node.type_id = fluent_type_id;
-
+        // the value comes from this rule rather than from a UP node.
+        ExprID value_id;
         if (type->is_bool()) {
-            constant_node.payload = false;
+            value_id = pool->intern_bool_constant(false);
         } else {
             // int/real: 0 clamped into the declared bounds — UP rejects an
             // out-of-range initial value for a bounded type.
-            double v = 0.0;
+            Rational v = Rational::of(0);
             if (fluent) {
-                if (auto lo = fluent->declared_lower_bound(); lo && v < *lo) v = *lo;
-                if (auto hi = fluent->declared_upper_bound(); hi && v > *hi) v = *hi;
+                if (auto lo = fluent->declared_lower_bound(); lo && compare(v, *lo) < 0) v = *lo;
+                if (auto hi = fluent->declared_upper_bound(); hi && compare(v, *hi) > 0) v = *hi;
             }
-            if (type->is_int()) {
-                constant_node.payload = static_cast<int64_t>(v);
-            } else {
-                constant_node.payload = v;
-            }
+            // An int type's bounds are integers.
+            value_id = type->is_int() ? pool->intern_int_constant(v.num)
+                                      : pool->intern_real_constant(v);
         }
-
-        ExprID value_id = pool->intern(std::move(constant_node));
         defaults.emplace_back(eid, value_id, &problem.pool());
     }
 

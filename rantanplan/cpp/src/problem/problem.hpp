@@ -23,6 +23,12 @@ struct ProblemIR;  // plain-data IR (for friend access from ir_io)
 
 namespace rantanplan {
 
+/// The metric the search optimises. Action costs live on the actions, and no
+/// kind reads a fluent otherwise. A kind with a metric expression, such as a
+/// final-value metric (dropped by the converter today), needs: every pass that
+/// rewrites action costs to rewrite it too; preprocess() to drop it in
+/// satisficing mode, which ignores the metric; and WriteOnlyFluentPass to
+/// count its fluents as read, as it does a goal's.
 enum class MetricKind { NONE, MINIMIZE_ACTION_COSTS, MINIMIZE_PLAN_LENGTH };
 
 /**
@@ -82,6 +88,9 @@ public:
     const Fluent& fluent_by_id(int id) const { return fluents_[id]; }
     bool has_fluent(const std::string& name) const;
     const Fluent* find_fluent(const std::string& name) const;
+    /// The fluent a ground state variable such as at(truck1, depot)
+    /// instantiates; nullptr for any other expression.
+    const Fluent* declaration_of(ExprID state_variable) const;
 
     /// True if any fluent carries a declared numeric bound (bounded int/real
     /// value type, e.g. integer[0, 15]).
@@ -107,6 +116,17 @@ public:
     int find_grounded_fluent_index(ExprID eid) const;
 
     // Action access
+    //
+    // An action's id is its position: actions()[i].id() == i. Whatever
+    // changes the action set (without_actions, with_actions, with_simplified,
+    // and the lowering passes that replace actions_) numbers the actions it
+    // keeps again from 0, so an id names the same action only within one
+    // Problem. Data keyed by action id that is kept across such a change must
+    // be re-keyed or rebuilt, as ActionPruningPass does with the planning
+    // graph's first layers. ActionPruningPass is the last pass that changes
+    // the action set, so the ids are final after it: the artifacts made from
+    // then on (achievers, landmarks, SDAC cost bounds, symmetries) and the
+    // encoders rely on them.
     const std::vector<Action>& actions() const { return actions_; }
     size_t action_count() const { return actions_.size(); }
     const Action& action(size_t index) const { return actions_[index]; }
@@ -196,24 +216,20 @@ public:
 
     /// Check if an interned expression has boolean type (O(1) via ExprPool).
     bool is_bool_type(ExprID eid) const {
-        const ExprNode& node = pool_->get(eid);
-        return node.type_id >= 0 &&
-               static_cast<size_t>(node.type_id) < types_->size() &&
-               (*types_)[node.type_id].is_bool();
+        const Type* type = type_for_id(eid);
+        return type && type->is_bool();
     }
 
     /// Check if an interned expression has numeric type (int or real).
     bool is_numeric_type(ExprID eid) const {
-        const ExprNode& node = pool_->get(eid);
-        if (node.type_id < 0 || static_cast<size_t>(node.type_id) >= types_->size()) return false;
-        return (*types_)[node.type_id].is_int() || (*types_)[node.type_id].is_real();
+        const Type* type = type_for_id(eid);
+        return type && (type->is_int() || type->is_real());
     }
 
     /// Check if an interned expression has object type (user-defined, not bool/int/real).
     bool is_object_type(ExprID eid) const {
-        const ExprNode& node = pool_->get(eid);
-        if (node.type_id < 0 || static_cast<size_t>(node.type_id) >= types_->size()) return false;
-        return (*types_)[node.type_id].is_object();
+        const Type* type = type_for_id(eid);
+        return type && type->is_object();
     }
 
     /// Get the Type pointer for an interned expression (O(1) via ExprPool).
@@ -236,7 +252,7 @@ public:
     bool is_object_constant(ExprID eid) const {
         if (!eid.valid()) return false;
         const ExprNode& node = pool_->get(eid);
-        return static_cast<ExprKind>(node.kind) == ExprKind::CONSTANT &&
+        return node.kind == ExprKind::CONSTANT &&
                std::holds_alternative<std::string>(node.payload) &&
                is_object_type(eid);
     }

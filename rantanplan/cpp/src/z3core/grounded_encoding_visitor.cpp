@@ -223,17 +223,13 @@ z3::expr GroundedEncodingVisitor::convert_from_pool(ExprID id, int timestep) {
 z3::expr GroundedEncodingVisitor::convert_node(ExprID id) {
     const ExprPool& pool = problem_->pool();
     const ExprNode& node = pool.get(id);
-    auto kind = static_cast<ExprKind>(node.kind);
+    ExprKind kind = node.kind;
 
     // ---- Leaf nodes (no children) ----
     if (node.children.empty()) {
         if (std::holds_alternative<std::string>(node.payload)) {
             const std::string& symbol = std::get<std::string>(node.payload);
-            // Resolve type from type_id
-            const Type* type = nullptr;
-            if (node.type_id >= 0 && node.type_id < static_cast<int>(problem_->types().size())) {
-                type = &problem_->types()[node.type_id];
-            }
+            const Type* type = problem_->type_for_id(id);
             // Object constants must be encoded as concrete numeric values
             // (not free Z3 variables) to preserve distinct-object semantics
             // in equality comparisons like (= (location ?p) city0).
@@ -248,8 +244,8 @@ z3::expr GroundedEncodingVisitor::convert_node(ExprID id) {
         if (std::holds_alternative<int64_t>(node.payload)) {
             return variable_factory_->make_numeric_val(std::get<int64_t>(node.payload));
         }
-        if (std::holds_alternative<double>(node.payload)) {
-            return variable_factory_->make_numeric_val(std::get<double>(node.payload));
+        if (std::holds_alternative<Rational>(node.payload)) {
+            return variable_factory_->make_numeric_val(std::get<Rational>(node.payload));
         }
         if (std::holds_alternative<bool>(node.payload)) {
             return ctx_.bool_val(std::get<bool>(node.payload));
@@ -308,7 +304,7 @@ z3::expr GroundedEncodingVisitor::convert_node(ExprID id) {
 
     // ---- Function application ----
     if (kind == ExprKind::FUNCTION_APPLICATION) {
-        auto op = static_cast<ExprOperator>(node.op);
+        ExprOperator op = node.op;
 
         // Cardinality fast path: a comparison between a Count and an
         // integer constant becomes a native Z3 pseudo-boolean constraint
@@ -325,9 +321,9 @@ z3::expr GroundedEncodingVisitor::convert_node(ExprID id) {
                 if (std::holds_alternative<int64_t>(n.payload)) {
                     return std::get<int64_t>(n.payload);
                 }
-                if (std::holds_alternative<double>(n.payload)) {
-                    double d = std::get<double>(n.payload);
-                    if (d == static_cast<int64_t>(d)) return static_cast<int64_t>(d);
+                if (std::holds_alternative<Rational>(n.payload)) {
+                    const Rational& r = std::get<Rational>(n.payload);
+                    if (r.is_integer()) return r.num;
                 }
                 return std::nullopt;
             };
@@ -370,7 +366,7 @@ z3::expr GroundedEncodingVisitor::convert_node(ExprID id) {
         }
     }
 
-    throw std::runtime_error("Unhandled ExprNode kind in convert_node: " + std::to_string(node.kind));
+    throw std::runtime_error("Unhandled ExprNode kind in convert_node: " + std::to_string(static_cast<int>(node.kind)));
 }
 
 } // namespace rantanplan

@@ -2,7 +2,9 @@
 #include "../problem/action.hpp"
 #include "../problem/problem.hpp"
 #include "../util/logger.hpp"
+#include <cmath>
 #include <iostream>
+#include <stdexcept>
 
 namespace rantanplan {
 
@@ -280,14 +282,31 @@ std::vector<std::pair<std::shared_ptr<z3::expr>, int>> Z3VariableFactory::get_al
 z3::expr Z3VariableFactory::make_numeric_val(int64_t v) const {
     return (problem_ && problem_->all_integer())
         ? ctx_.int_val(static_cast<int64_t>(v))
-        : ctx_.real_val(static_cast<int>(v));
+        : ctx_.real_val(static_cast<int64_t>(v));
+}
+
+z3::expr Z3VariableFactory::make_numeric_val(const Rational& v) const {
+    if (problem_ && problem_->all_integer() && v.is_integer()) {
+        return ctx_.int_val(v.num);
+    }
+    return ctx_.real_val(v.num, v.den);
 }
 
 z3::expr Z3VariableFactory::make_numeric_val(double v) const {
     if (problem_ && problem_->all_integer()) {
         return ctx_.int_val(static_cast<int64_t>(v));
     }
-    return ctx_.real_val(std::to_string(v).c_str());
+    return real_val(v);
+}
+
+z3::expr Z3VariableFactory::real_val(double v) const {
+    if (!std::isfinite(v)) {
+        throw std::invalid_argument("Real value " + std::to_string(v) + " is not finite");
+    }
+    if (v == std::trunc(v) && std::fabs(v) <= 0x1p53) {  // an integer, as int64
+        return ctx_.real_val(static_cast<int64_t>(v));
+    }
+    return ctx_.real_val(exact_decimal(v).c_str());
 }
 
 z3::expr Z3VariableFactory::make_zero() const {

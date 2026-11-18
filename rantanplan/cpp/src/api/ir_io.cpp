@@ -11,33 +11,92 @@
 namespace rantanplan {
 
 // ============================================================================
-// File-local helpers (ports of the former protobuf loader's logic)
+// File-local helpers
 // ============================================================================
 
-/// Resolve a UP type string to an index into the problem's type table,
-/// handling the same aliases the protobuf loader handled.
+/// The planner's kind for an IR node kind. UNKNOWN is a node the converter left
+/// unset.
+static ExprKind to_expr_kind(ir::ExprKindIR kind) {
+    switch (kind) {
+        case ir::ExprKindIR::CONSTANT: return ExprKind::CONSTANT;
+        case ir::ExprKindIR::PARAMETER: return ExprKind::PARAMETER;
+        case ir::ExprKindIR::FLUENT_SYMBOL: return ExprKind::FLUENT_SYMBOL;
+        case ir::ExprKindIR::FUNCTION_SYMBOL: return ExprKind::FUNCTION_SYMBOL;
+        case ir::ExprKindIR::STATE_VARIABLE: return ExprKind::STATE_VARIABLE;
+        case ir::ExprKindIR::FUNCTION_APPLICATION: return ExprKind::FUNCTION_APPLICATION;
+        case ir::ExprKindIR::VARIABLE: return ExprKind::VARIABLE;
+        case ir::ExprKindIR::UNKNOWN: break;
+    }
+    throw std::runtime_error("Unsupported expression kind " +
+                             std::to_string(static_cast<int>(kind)) + " in IR input");
+}
+
+ir::ExprKindIR to_ir_kind(ExprKind kind) {
+    switch (kind) {
+        case ExprKind::CONSTANT: return ir::ExprKindIR::CONSTANT;
+        case ExprKind::PARAMETER: return ir::ExprKindIR::PARAMETER;
+        case ExprKind::FLUENT_SYMBOL: return ir::ExprKindIR::FLUENT_SYMBOL;
+        case ExprKind::FUNCTION_SYMBOL: return ir::ExprKindIR::FUNCTION_SYMBOL;
+        case ExprKind::STATE_VARIABLE: return ir::ExprKindIR::STATE_VARIABLE;
+        case ExprKind::FUNCTION_APPLICATION: return ir::ExprKindIR::FUNCTION_APPLICATION;
+        case ExprKind::VARIABLE: return ir::ExprKindIR::VARIABLE;
+        case ExprKind::UNKNOWN: break;
+    }
+    return ir::ExprKindIR::UNKNOWN;
+}
+
+/// The planner's operator for an IR one. IFF becomes EQUALS: = on two
+/// booleans is iff, as in SMT-LIB, which has no iff of its own.
+static ExprOperator to_expr_operator(ir::OperatorIR op) {
+    switch (op) {
+        case ir::OperatorIR::PLUS: return ExprOperator::PLUS;
+        case ir::OperatorIR::MINUS: return ExprOperator::MINUS;
+        case ir::OperatorIR::TIMES: return ExprOperator::MULTIPLY;
+        case ir::OperatorIR::DIV: return ExprOperator::DIVIDE;
+        case ir::OperatorIR::LE: return ExprOperator::LESS_EQUAL;
+        case ir::OperatorIR::LT: return ExprOperator::LESS_THAN;
+        case ir::OperatorIR::EQUALS: return ExprOperator::EQUALS;
+        case ir::OperatorIR::AND: return ExprOperator::AND;
+        case ir::OperatorIR::OR: return ExprOperator::OR;
+        case ir::OperatorIR::NOT: return ExprOperator::NOT;
+        case ir::OperatorIR::IMPLIES: return ExprOperator::IMPLIES;
+        case ir::OperatorIR::IFF: return ExprOperator::EQUALS;
+        case ir::OperatorIR::COUNT: return ExprOperator::COUNT;
+        case ir::OperatorIR::EXISTS: return ExprOperator::EXISTS;
+        case ir::OperatorIR::FORALL: return ExprOperator::FORALL;
+        case ir::OperatorIR::ARRAY_INDEX: return ExprOperator::ARRAY_INDEX;
+        case ir::OperatorIR::SET_MEMBER: return ExprOperator::SET_MEMBER;
+        case ir::OperatorIR::SET_SUBSETEQ: return ExprOperator::SET_SUBSETEQ;
+        case ir::OperatorIR::SET_DISJOINT: return ExprOperator::SET_DISJOINT;
+        case ir::OperatorIR::SET_CARDINALITY: return ExprOperator::SET_CARDINALITY;
+        case ir::OperatorIR::SET_ADD: return ExprOperator::SET_ADD;
+        case ir::OperatorIR::SET_REMOVE: return ExprOperator::SET_REMOVE;
+        case ir::OperatorIR::SET_UNION: return ExprOperator::SET_UNION;
+        case ir::OperatorIR::SET_INTERSECT: return ExprOperator::SET_INTERSECT;
+        case ir::OperatorIR::SET_DIFFERENCE: return ExprOperator::SET_DIFFERENCE;
+        case ir::OperatorIR::SET_CONSTANT: return ExprOperator::SET_CONSTANT;
+    }
+    throw std::runtime_error("Unsupported operator " + std::to_string(static_cast<int>(op)) +
+                             " in IR input");
+}
+
+static EffectExpression::Kind to_effect_kind(ir::EffectKindIR kind) {
+    switch (kind) {
+        case ir::EffectKindIR::ASSIGN: return EffectExpression::Kind::ASSIGN;
+        case ir::EffectKindIR::INCREASE: return EffectExpression::Kind::INCREASE;
+        case ir::EffectKindIR::DECREASE: return EffectExpression::Kind::DECREASE;
+    }
+    throw std::runtime_error("Unsupported effect kind " +
+                             std::to_string(static_cast<int>(kind)) + " in IR input");
+}
+
+/// Resolve a UP type string to an index into the problem's type table, or -1
+/// for "" or an unknown name.
 static int resolve_type_id(const std::string& type_str,
                            const std::vector<Type>& types,
                            const std::unordered_map<std::string, const Type*>& type_map) {
-    if (type_str.empty()) return -1;
-
-    std::string resolved = type_str;
-    if (type_str == "up:integer") resolved = "up:int";
-    else if (type_str == "up:boolean") resolved = "up:bool";
-
-    auto it = type_map.find(resolved);
-    if (it == type_map.end() && resolved != type_str) {
-        it = type_map.find(type_str);
-    }
-    if (it != type_map.end()) {
-        const Type* found_type = it->second;
-        for (size_t i = 0; i < types.size(); ++i) {
-            if (&types[i] == found_type) {
-                return static_cast<int>(i);
-            }
-        }
-    }
-    return -1;
+    auto it = type_map.find(type_str);
+    return it == type_map.end() ? -1 : static_cast<int>(it->second - types.data());
 }
 
 /// Context shared by the loading helpers.
@@ -64,51 +123,42 @@ static void intern_nodes(IRLoadContext& ctx) {
 
     for (size_t index = 0; index < ctx.in.nodes.size(); ++index) {
         const ir::ExprNodeIR& ir_node = ctx.in.nodes[index];
-        if (ir_node.kind == 8) {
-            throw std::runtime_error("Unsupported expression kind CONTAINER_ID (8) in IR input");
-        }
+        const ExprKind kind = to_expr_kind(ir_node.kind);
 
         ExprNode node;
-        node.kind = ir_node.kind;
+        node.kind = kind;
         node.type_id = resolve_type_id(ir_node.type_name, ctx.types, ctx.type_map);
 
-        auto kind = static_cast<ExprKind>(ir_node.kind);
-        if (ir_node.symbol) {
-            std::string symbol = *ir_node.symbol;
-            if (kind == ExprKind::FUNCTION_SYMBOL || kind == ExprKind::FLUENT_SYMBOL) {
-                symbol = map_up_operator(symbol);
+        if (kind == ExprKind::FUNCTION_SYMBOL) {
+            // An operator, under its standard spelling (the one ExprBuilder's
+            // heads use); intern() gives its applications the same op.
+            if (!ir_node.op) {
+                throw std::runtime_error("Function symbol without an operator in IR input");
             }
-            node.payload = symbol;
-            if (kind == ExprKind::FUNCTION_SYMBOL) {
-                node.op = static_cast<int>(string_to_expr_operator(symbol));
-            }
+            node.op = to_expr_operator(*ir_node.op);
+            node.payload = expr_operator_to_string(node.op);
+        } else if (ir_node.symbol) {
+            node.payload = *ir_node.symbol;  // a name: fluent, object, parameter or variable
         } else if (ir_node.int_value) {
             node.payload = *ir_node.int_value;
         } else if (ir_node.real_value) {
-            double val = static_cast<double>(ir_node.real_value->first) /
-                         static_cast<double>(ir_node.real_value->second);
-            node.payload = val;
+            auto [num, den] = *ir_node.real_value;
+            auto value = Rational::make(num, den);
+            if (!value) {
+                throw std::runtime_error("Real constant " + std::to_string(num) + "/" +
+                                         std::to_string(den) + " in IR input is not a number");
+            }
+            node.payload = *value;
         } else if (ir_node.bool_value) {
             node.payload = *ir_node.bool_value;
         }
 
         node.children.reserve(ir_node.children.size());
-        for (size_t i = 0; i < ir_node.children.size(); ++i) {
-            uint32_t child_index = ir_node.children[i];
+        for (uint32_t child_index : ir_node.children) {
             if (child_index >= index) {
                 throw std::runtime_error("IR node pool is not topologically ordered");
             }
             node.children.push_back(ctx.expr_ids[child_index]);
-
-            // A function application takes its operator from its head symbol
-            // (same deduction the protobuf loader made on the child atom).
-            if (i == 0 && kind == ExprKind::FUNCTION_APPLICATION) {
-                const ir::ExprNodeIR& head = ctx.in.nodes[child_index];
-                if (head.kind == static_cast<int>(ExprKind::FUNCTION_SYMBOL) && head.symbol) {
-                    node.op = static_cast<int>(
-                        string_to_expr_operator(map_up_operator(*head.symbol)));
-                }
-            }
         }
 
         ctx.expr_ids.push_back(ctx.pool.intern(std::move(node)));
@@ -127,7 +177,7 @@ static Action convert_action(IRLoadContext& ctx, const ir::ActionIR& ir_action) 
 
     std::vector<Effect> effects;
     for (const auto& ir_effect : ir_action.effects) {
-        auto kind = static_cast<EffectExpression::Kind>(ir_effect.kind);
+        EffectExpression::Kind kind = to_effect_kind(ir_effect.kind);
         ExprID fluent_id = ctx.id(ir_effect.fluent);
         ExprID value_id = ctx.id(ir_effect.value);
 
@@ -279,8 +329,8 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
     // --- Load types ---
     problem.types_->clear();
     problem.type_name_to_ptr_.clear();
+    // The built-in types, at BOOL_TYPE_ID, INT_TYPE_ID and REAL_TYPE_ID.
     problem.types_->emplace_back("up:bool");
-    problem.types_->emplace_back("up:int");
     problem.types_->emplace_back("up:integer");
     problem.types_->emplace_back("up:real");
     for (const auto& ir_type : ir_problem.types) {
@@ -341,8 +391,17 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
         }
         problem.fluents_.emplace_back(ir_fluent.name, value_type, params);
         if (ir_fluent.lower_bound || ir_fluent.upper_bound) {
-            problem.fluents_.back().set_declared_bounds(ir_fluent.lower_bound,
-                                                        ir_fluent.upper_bound);
+            auto bound = [&](const auto& b) -> std::optional<Rational> {
+                if (!b) return std::nullopt;
+                auto value = Rational::make(b->first, b->second);
+                if (!value) {
+                    throw std::runtime_error("A bound of fluent '" + ir_fluent.name +
+                                             "' in IR input is not a number");
+                }
+                return value;
+            };
+            problem.fluents_.back().set_declared_bounds(bound(ir_fluent.lower_bound),
+                                                        bound(ir_fluent.upper_bound));
         }
         // Undefined positions are per-fluent data, not part of the array type
         // (two fluents of one array type may exclude different cells).
@@ -385,7 +444,7 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
     }
 
     // --- Load metric (costs already resolved per action by the converter) ---
-    auto metric_kind = static_cast<ir::MetricKindIR>(ir_problem.metric_kind);
+    const ir::MetricKindIR metric_kind = ir_problem.metric_kind;
     if (metric_kind == ir::MetricKindIR::MINIMIZE_ACTION_COSTS) {
         problem.set_metric_kind(MetricKind::MINIMIZE_ACTION_COSTS);
         for (size_t i = 0; i < problem.actions_.size(); ++i) {

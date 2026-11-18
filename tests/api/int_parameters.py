@@ -14,6 +14,10 @@ from unified_planning.exceptions import UPException
 
 from ..harness import solve, assert_valid, int_args
 
+# Bounded types need the Grounded encoder: the default strategy (elsc) refuses
+# declared bounds, so the cases that declare them name a Grounded strategy.
+GROUNDED = "e"
+
 
 def test_single_bounded_int_param():
     """Grounder enumerates [1,3]; plan carries the chosen int; validates."""
@@ -29,7 +33,7 @@ def test_single_bounded_int_param():
     problem.add_action(pour)
     problem.add_goal(LE(level, 1))
 
-    r = solve(problem)
+    r = solve(problem, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     assert_valid(problem, r.plan)
     for ai in r.plan.actions:
@@ -57,7 +61,7 @@ def test_interleaved_param_order():
     problem.add_goal(marked(l1, t1))
     problem.add_goal(GE(counter(l1), 2))
 
-    r = solve(problem)
+    r = solve(problem, strategy=GROUNDED)
     assert r.plan is not None and r.plan.actions, "no plan"
     assert_valid(problem, r.plan)
     ps = r.plan.actions[0].actual_parameters
@@ -77,7 +81,7 @@ def test_two_int_params_cartesian():
     problem.add_action(setxy)
     problem.add_goal(GE(x, 5))          # e.g. a=3,b=2 in one step
 
-    r = solve(problem)
+    r = solve(problem, strategy=GROUNDED)
     assert r.plan is not None, "no plan"
     assert_valid(problem, r.plan)
     assert all(p.is_int_constant() for p in r.plan.actions[0].actual_parameters)
@@ -99,7 +103,7 @@ def test_numeric_pruning_keeps_feasible():
     problem.add_action(pour)
     problem.add_goal(LE(level, 0))
 
-    r = solve(problem)
+    r = solve(problem, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     assert_valid(problem, r.plan)
     assert all(v >= 1 for ai in r.plan.actions for v in int_args(ai))
@@ -121,7 +125,7 @@ def test_cost_depends_on_int_param_optimal():
     problem.add_goal(LE(level, 1))
     problem.add_quality_metric(MinimizeActionCosts({pour: amount}))
 
-    r = solve(problem, optimal=True)
+    r = solve(problem, optimal=True, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_OPTIMALLY, r.status
     assert_valid(problem, r.plan)
     # Minimum total cost to drive 5 -> <=1 with cost==amount is 4.

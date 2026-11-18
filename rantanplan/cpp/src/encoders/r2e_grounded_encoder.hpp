@@ -29,13 +29,11 @@ public:
     z3::expr encode_frames(int t) override;
     z3::expr encode_parallelism(int t) override;
 
-    // TODO: R2E uses chain-substituted intermediate variables (ζ) where each
-    // action sees a different "state" based on its position in the fixed ordering.
-    // State constraints (mutexes, bounds) apply to the TRUE state at timestep
-    // boundaries (x_t and x_{t+1}), not to intermediate chain variables.
-    // To support state constraints here, we would need to assert them only on
-    // the first chain variable (= x_t) and the last (= x_{t+1}), not on
-    // intermediate ζ values. For now, disabled.
+    // The constraints the preprocessor derives (RPG bounds, domains,
+    // conservation laws, mutexes) are redundant: they only ever cost or buy
+    // speed, and R2E does not assert them. Declared bounds (bounded int/real
+    // fluent types) define which plans are valid, so encode_actions asserts
+    // them on every chain variable instead (encode_declared_bounds).
     z3::expr encode_state_constraints(int t) override {
         return ctx_.bool_val(true);
     }
@@ -76,6 +74,7 @@ private:
     z3::expr encode_precondition_constraints(int t);
     z3::expr encode_effect_constraints(int t);
     z3::expr encode_linking_constraints(int t);
+    z3::expr encode_declared_bounds(int t);
     
     // Helper methods
     std::unordered_map<ExprID, z3::expr> create_prev_substitution(int action_index, int timestep);

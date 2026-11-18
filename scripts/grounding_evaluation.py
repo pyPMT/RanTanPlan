@@ -95,7 +95,8 @@ def run_config(domain_file: str, problem_file: str, timeout: int,
             max_steps=1,      # exit after at most 1 solver step — pipeline stats are always written
             **extra_opts,
         )
-        reader = PDDLReader()
+        # Unified Planning's own reader, as in rantanplan/cli.py (same order every run).
+        reader = PDDLReader(force_up_pddl_reader=True)
         problem = reader.parse_problem(domain_file, problem_file)
         planner._solve(problem, timeout=float(timeout))
     except Exception as e:

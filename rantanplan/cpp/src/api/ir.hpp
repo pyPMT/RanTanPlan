@@ -15,14 +15,19 @@
  * array with index children; children always precede their parents, so the
  * loader interns the array in a single forward pass.
  *
- * Node `kind` values and payload shapes deliberately mirror the
- * unified_planning protobuf ExpressionKind encoding this IR replaced, so
- * the loader stays a port of the protobuf loader, not a redesign.
+ * Node `kind` values are UP's ExpressionKind numbers, and an application's
+ * head symbol (its operator or fluent) is its first child, as in UP.
+ *
+ * Every enumerated field is one of the enums below, which bindings.cpp
+ * exports to Python, so the numbers are written only here. load_problem_from_ir
+ * maps them onto the planner's own enums.
  */
 namespace rantanplan::ir {
 
-/// unified_planning expression kinds (subset the loader understands)
-enum ExprKindIR : int {
+/// unified_planning expression kinds (subset the loader understands; UNKNOWN
+/// is an unset node, which the loader rejects)
+enum class ExprKindIR : int {
+    UNKNOWN = 0,
     CONSTANT = 1,
     PARAMETER = 2,
     FLUENT_SYMBOL = 3,
@@ -32,11 +37,24 @@ enum ExprKindIR : int {
     VARIABLE = 7,
 };
 
+/// The UP operators the converter sends, under their OperatorKind names (the
+/// converter maps each OperatorKind to the member of the same name).
+enum class OperatorIR : int {
+    PLUS, MINUS, TIMES, DIV,
+    LE, LT, EQUALS,
+    AND, OR, NOT, IMPLIES, IFF,
+    COUNT, EXISTS, FORALL, ARRAY_INDEX,
+    SET_MEMBER, SET_SUBSETEQ, SET_DISJOINT, SET_CARDINALITY,
+    SET_ADD, SET_REMOVE, SET_UNION, SET_INTERSECT, SET_DIFFERENCE, SET_CONSTANT,
+};
+
 struct ExprNodeIR {
-    int kind = 0;
+    ExprKindIR kind = ExprKindIR::UNKNOWN;
     /// UP type string ("up:bool", "up:integer", user type name) or ""
     std::string type_name;
-    // Payload: at most one is set (atoms only; applications have children)
+    // Payload: at most one is set (atoms only; applications have children).
+    // A FUNCTION_SYMBOL has `op`; other named atoms have `symbol`.
+    std::optional<OperatorIR> op;
     std::optional<std::string> symbol;
     std::optional<int64_t> int_value;
     std::optional<std::pair<int64_t, int64_t>> real_value;  ///< numerator/denominator
@@ -78,8 +96,9 @@ struct FluentIR {
     /// `integer[0, 15]`); unset for unbounded numeric or non-numeric fluents.
     /// For array fluents these carry the *element* type's bounds (the grounder
     /// mints cells of that element type), same as scalar bounded fluents.
-    std::optional<double> lower_bound;
-    std::optional<double> upper_bound;
+    /// Exact, as numerator/denominator (like ExprNodeIR::real_value).
+    std::optional<std::pair<int64_t, int64_t>> lower_bound;
+    std::optional<std::pair<int64_t, int64_t>> upper_bound;
     /// Structured-value data, interpreted per `shape`. For an ARRAY fluent (from
     /// an ArrayType value, e.g. `array[3, integer[0, 15]]`): `element_type` is
     /// the leaf scalar type string ("up:integer", …), `array_sizes` the
@@ -108,8 +127,10 @@ struct FluentIR {
     std::optional<uint32_t> default_value;
 };
 
+enum class EffectKindIR : int { ASSIGN = 0, INCREASE = 1, DECREASE = 2 };
+
 struct EffectIR {
-    int kind = 0;  ///< 0 ASSIGN, 1 INCREASE, 2 DECREASE
+    EffectKindIR kind = EffectKindIR::ASSIGN;
     uint32_t fluent = 0;
     uint32_t value = 0;
     std::optional<uint32_t> condition;
@@ -119,8 +140,8 @@ struct EffectIR {
 struct ActionIR {
     std::string name;
     std::vector<ParameterIR> parameters;
-    /// The converter synthesizes the precondition conjunction (true constant
-    /// for no conditions, AND application for several)
+    /// The conjunction of the action's preconditions, as UP's And builds it
+    /// (the true constant for none, the condition itself for one)
     uint32_t precondition = 0;
     std::vector<EffectIR> effects;
     /// Metric cost, already resolved per action (explicit or metric default);
@@ -148,7 +169,7 @@ struct ProblemIR {
     std::vector<AssignmentIR> initial_state;
     std::vector<uint32_t> goals;
     std::vector<uint32_t> state_invariants;  ///< bodies of `(always f)` constraints
-    int metric_kind = 0;  ///< MetricKindIR value
+    MetricKindIR metric_kind = MetricKindIR::NONE;
 };
 
 // ── Results ─────────────────────────────────────────────────────────────
@@ -159,6 +180,7 @@ enum class SolveStatusIR : int {
     UNSOLVABLE_PROVEN = 2,
     UNSOLVABLE_INCOMPLETELY = 3,
     TIMEOUT = 4,
+    UNSUPPORTED_PROBLEM = 5,
 };
 
 struct ActionInstanceIR {
@@ -166,13 +188,15 @@ struct ActionInstanceIR {
     std::vector<std::string> parameters;
 };
 
+enum class LogLevelIR : int { DEBUG = 0, INFO = 1, WARNING = 2, ERROR = 3 };
+
 struct LogMessageIR {
-    int level = 1;  ///< 0 DEBUG, 1 INFO, 2 WARNING, 3 ERROR
+    LogLevelIR level = LogLevelIR::INFO;
     std::string message;
 };
 
 struct ResultIR {
-    int status = 0;  ///< SolveStatusIR value
+    SolveStatusIR status = SolveStatusIR::SOLVED_SATISFICING;
     bool has_plan = false;
     std::vector<ActionInstanceIR> plan;
     std::vector<LogMessageIR> log_messages;

@@ -14,15 +14,18 @@ namespace rantanplan {
  *
  * AND/OR closure: goal conditions not satisfied initially are landmarks; a
  * condition required by ALL achievers of a landmark is itself a landmark
- * (with a natural ordering).  For landmarks whose condition is a simple
- * numeric threshold (fluent >= c and variants) and whose achievers all have
- * constant additive effects on that fluent, the pass records per-achiever
- * contributions lambda(a,c) and the initial-state deficit t(c), and derives
- * a horizon lower bound ceil(t/Lambda) that is sound under parallel
- * cumulative semantics (all achievers firing every step).  Effects that are
- * assignments, state-dependent, nonlinear, or quantified invalidate the
- * count structure of the affected landmark (never just the achiever —
- * dropping one achiever would understate Lambda and overstate the bound).
+ * (with a natural ordering).  For landmarks whose condition is a linear
+ * numeric threshold (fluent >= c and variants) and whose fluents every
+ * action changes by a constant additive amount, the pass records the
+ * contribution lambda(a,c) of every action that moves the threshold towards
+ * satisfaction (achiever or not: an action that can never make the condition
+ * true can still add most of the deficit) and the initial-state deficit
+ * t(c), and derives a horizon lower bound ceil(t/Lambda) that is sound under
+ * parallel cumulative semantics (all contributors firing every step).  An
+ * assignment, state-dependent, nonlinear, or quantified effect on those
+ * fluents, by any action, invalidates the count structure of the landmark
+ * (never just that action — dropping a contributor would understate Lambda
+ * and overstate the bound).
  *
  * Contributes max(depth bounds) to PreprocessedProblem::lower_bound and
  * stores the full artifact in PreprocessedProblem::landmark_data.

@@ -104,7 +104,7 @@ protected:
         std::unordered_set<ExprID> negative_boolean_preconditions;  // Boolean fluents required to be false
         std::unordered_set<ExprID> numeric_preconditions;           // Numeric fluents in preconditions
 
-        // Effect analysis
+        // Effect analysis (a computed boolean write, p := q, is in both)
         std::unordered_set<ExprID> positive_boolean_effects;  // Boolean fluents made true
         std::unordered_set<ExprID> negative_boolean_effects;  // Boolean fluents made false
         std::unordered_set<ExprID> numeric_effects;           // Numeric fluents modified
@@ -115,9 +115,9 @@ protected:
         // Fluents appearing in the conditions of conditional effects
         std::unordered_set<ExprID> conditional_effect_fluents;
 
-        // Fluents appearing on the RHS of numeric assignments.
-        // For example, given an effect x' = x + y + y + z^2 would have y and z in this set.
-        std::unordered_set<ExprID> numeric_effect_dependencies;
+        // Fluents read by an effect's value, numeric or computed boolean.
+        // For example, x' = x + y + y + z^2 gives x, y and z, and p' = q gives q.
+        std::unordered_set<ExprID> effect_value_dependencies;
     };
 
     // Common data that all implementations need

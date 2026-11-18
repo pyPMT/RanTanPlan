@@ -66,8 +66,8 @@ private:
  * Strategy-independent and Config-free: all knobs arrive through the
  * options (driver builds them via PreprocessorOptions::from_config).
  * Owns pass-list construction, the pre-grounding snapshot for symmetry
- * detection, and the pipeline run. If the result has proven_unsolvable
- * set, the caller must not call solve().
+ * detection, and the pipeline run. If the result has proven_unsolvable or
+ * no_plan_within_step_limit set, the caller must not call solve().
  */
 PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& options);
 

@@ -14,7 +14,7 @@
 namespace rantanplan {
 
 /// SAT encoder family: Grounded (one clause set per ground action), Chained
-/// (frame-axiom chaining, reused across elsc/elsc-dt/cgb), R2E (relaxed-to-exact).
+/// (frame-axiom chaining, reused across elsc/elsc-dt), R2E (relaxed-to-exact).
 enum class EncoderFamily { Grounded, Chained, R2E };
 
 /// Parallelism semantics for the encoding: Sequential (one action per
@@ -28,10 +28,8 @@ enum class SemanticsKind { Sequential, Forall, Exists };
 enum class InterferenceKind { None, EagerSyntactic, EagerSemantic, LazySyntactic, LazySemantic };
 
 /// Planner backend: Sequential/DoubleTail drive satisficing search with a
-/// growing horizon; BranchAndBound is the cost-optimal/anytime search;
-/// CGB activates ground actions lazily under Exists semantics, with
-/// growth named by unsat cores.
-enum class PlannerKind { Sequential, DoubleTail, BranchAndBound, CGB };
+/// growing horizon; BranchAndBound is the cost-optimal/anytime search.
+enum class PlannerKind { Sequential, DoubleTail, BranchAndBound };
 
 /// Composable propagator module kinds.
 enum class PropagatorModuleKind { ForallEager, ForallLazy, ExistsCycle, FrameAxiom };
@@ -63,11 +61,6 @@ inline PlannerKind resolve_planner_kind(SearchMode mode, const StrategySpec& spe
         throw std::invalid_argument(
             "Mode '" + mode_str + "' is incompatible with double-tail strategies. "
             "Use a non-dt strategy (e.g., 'fl' instead of 'fl-dt').");
-    }
-    if (spec.planner == PlannerKind::CGB) {
-        std::string mode_str = (mode == SearchMode::Optimal) ? "optimal" : "anytime";
-        throw std::invalid_argument(
-            "Mode '" + mode_str + "' is incompatible with the CGB strategy.");
     }
     return PlannerKind::BranchAndBound;
 }

@@ -18,10 +18,8 @@ inline std::optional<int64_t> fold_const_int(ExprID eid, const ExprPool& pool) {
 
     if (pool.is_constant(eid)) {
         if (pool.payload_is_int(eid)) return pool.payload_int(eid);
-        if (pool.payload_is_double(eid)) {
-            double d = pool.payload_double(eid);
-            int64_t i = static_cast<int64_t>(d);
-            if (static_cast<double>(i) == d) return i;
+        if (pool.payload_is_real(eid) && pool.payload_real(eid).is_integer()) {
+            return pool.payload_real(eid).num;
         }
         return std::nullopt;
     }

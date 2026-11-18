@@ -11,7 +11,7 @@ PreprocessedProblem run_pipeline(PreprocessedProblem initial_result, const std::
 
         pass->apply(result);
 
-        if (result.proven_unsolvable) {
+        if (result.proven_unsolvable || result.no_plan_within_step_limit) {
             break;
         }
     }

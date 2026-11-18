@@ -13,6 +13,7 @@
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
 #include <nanobind/stl/unique_ptr.h>
 #include <nanobind/stl/vector.h>
 
@@ -21,6 +22,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "api/ir.hpp"
@@ -107,10 +109,18 @@ ir::ResultIR run_solve(PreprocessedProblem& pre, const api::PlanCallback& on_pla
 
     ir::ResultIR result;
     if (pre.proven_unsolvable) {
-        result.status = static_cast<int>(ir::SolveStatusIR::UNSOLVABLE_PROVEN);
+        result.status = ir::SolveStatusIR::UNSOLVABLE_PROVEN;
         result.log_messages.push_back(ir::LogMessageIR{
-            1 /* INFO */,
+            ir::LogLevelIR::INFO,
             "Problem proven unsolvable: goals not reachable in " + pre.unsolvable_reason});
+    } else if (pre.no_plan_within_step_limit) {
+        // The same status as a search that runs out of steps (solver_api.cpp).
+        result.status = ir::SolveStatusIR::UNSOLVABLE_INCOMPLETELY;
+        result.log_messages.push_back(ir::LogMessageIR{
+            ir::LogLevelIR::INFO,
+            "No plan within the step limit (max_steps = " +
+                std::to_string(config.planner.max_steps) + "): goals not reachable in " +
+                pre.unsolvable_reason + " within that many layers; a longer plan may exist"});
     } else {
         // The pipeline's horizon lower bound drives where the search starts.
         config.planner.start_timestep = pre.lower_bound;
@@ -185,6 +195,23 @@ std::string export_formula_ir(const ir::ProblemIR& problem_ir,
     return api::export_formula(problem);
 }
 
+/// One pool node as (kind, type name, text): see Preprocessed.pool_nodes.
+using PoolNodeIR = std::tuple<ir::ExprKindIR, std::string, std::string>;
+
+std::vector<PoolNodeIR> pool_nodes(const Preprocessed& handle) {
+    const Problem& problem = handle.pre.problem;
+    const ExprPool& pool = problem.pool();
+    std::vector<PoolNodeIR> nodes;
+    nodes.reserve(pool.size());
+    for (size_t i = 0; i < pool.size(); ++i) {
+        ExprID id{static_cast<int32_t>(i)};
+        const Type* type = problem.type_for_id(id);
+        nodes.emplace_back(to_ir_kind(pool.kind(id)), type ? type->name() : "",
+                           pool.to_string(id));
+    }
+    return nodes;
+}
+
 std::string z3_version() {
     unsigned major = 0, minor = 0, build = 0, revision = 0;
     Z3_get_version(&major, &minor, &build, &revision);
@@ -198,10 +225,49 @@ NB_MODULE(_rantanplan, m) {
     m.doc() = "In-process RantanPlan solver (C++ core via nanobind)";
 
     // ── Problem IR ──────────────────────────────────────────────────────
+    nb::enum_<ir::ExprKindIR>(m, "ExprKind")
+        .value("UNKNOWN", ir::ExprKindIR::UNKNOWN)
+        .value("CONSTANT", ir::ExprKindIR::CONSTANT)
+        .value("PARAMETER", ir::ExprKindIR::PARAMETER)
+        .value("FLUENT_SYMBOL", ir::ExprKindIR::FLUENT_SYMBOL)
+        .value("FUNCTION_SYMBOL", ir::ExprKindIR::FUNCTION_SYMBOL)
+        .value("STATE_VARIABLE", ir::ExprKindIR::STATE_VARIABLE)
+        .value("FUNCTION_APPLICATION", ir::ExprKindIR::FUNCTION_APPLICATION)
+        .value("VARIABLE", ir::ExprKindIR::VARIABLE);
+
+    nb::enum_<ir::OperatorIR>(m, "Operator")
+        .value("PLUS", ir::OperatorIR::PLUS)
+        .value("MINUS", ir::OperatorIR::MINUS)
+        .value("TIMES", ir::OperatorIR::TIMES)
+        .value("DIV", ir::OperatorIR::DIV)
+        .value("LE", ir::OperatorIR::LE)
+        .value("LT", ir::OperatorIR::LT)
+        .value("EQUALS", ir::OperatorIR::EQUALS)
+        .value("AND", ir::OperatorIR::AND)
+        .value("OR", ir::OperatorIR::OR)
+        .value("NOT", ir::OperatorIR::NOT)
+        .value("IMPLIES", ir::OperatorIR::IMPLIES)
+        .value("IFF", ir::OperatorIR::IFF)
+        .value("COUNT", ir::OperatorIR::COUNT)
+        .value("EXISTS", ir::OperatorIR::EXISTS)
+        .value("FORALL", ir::OperatorIR::FORALL)
+        .value("ARRAY_INDEX", ir::OperatorIR::ARRAY_INDEX)
+        .value("SET_MEMBER", ir::OperatorIR::SET_MEMBER)
+        .value("SET_SUBSETEQ", ir::OperatorIR::SET_SUBSETEQ)
+        .value("SET_DISJOINT", ir::OperatorIR::SET_DISJOINT)
+        .value("SET_CARDINALITY", ir::OperatorIR::SET_CARDINALITY)
+        .value("SET_ADD", ir::OperatorIR::SET_ADD)
+        .value("SET_REMOVE", ir::OperatorIR::SET_REMOVE)
+        .value("SET_UNION", ir::OperatorIR::SET_UNION)
+        .value("SET_INTERSECT", ir::OperatorIR::SET_INTERSECT)
+        .value("SET_DIFFERENCE", ir::OperatorIR::SET_DIFFERENCE)
+        .value("SET_CONSTANT", ir::OperatorIR::SET_CONSTANT);
+
     nb::class_<ir::ExprNodeIR>(m, "ExprNodeIR")
         .def(nb::init<>())
         .def_rw("kind", &ir::ExprNodeIR::kind)
         .def_rw("type_name", &ir::ExprNodeIR::type_name)
+        .def_rw("op", &ir::ExprNodeIR::op)
         .def_rw("symbol", &ir::ExprNodeIR::symbol)
         .def_rw("int_value", &ir::ExprNodeIR::int_value)
         .def_rw("real_value", &ir::ExprNodeIR::real_value)
@@ -243,6 +309,11 @@ NB_MODULE(_rantanplan, m) {
         .def_rw("shape", &ir::FluentIR::shape)
         .def_rw("default_value", &ir::FluentIR::default_value);
 
+    nb::enum_<ir::EffectKindIR>(m, "EffectKind")
+        .value("ASSIGN", ir::EffectKindIR::ASSIGN)
+        .value("INCREASE", ir::EffectKindIR::INCREASE)
+        .value("DECREASE", ir::EffectKindIR::DECREASE);
+
     nb::class_<ir::EffectIR>(m, "EffectIR")
         .def(nb::init<>())
         .def_rw("kind", &ir::EffectIR::kind)
@@ -264,6 +335,11 @@ NB_MODULE(_rantanplan, m) {
         .def_rw("fluent", &ir::AssignmentIR::fluent)
         .def_rw("value", &ir::AssignmentIR::value);
 
+    nb::enum_<ir::MetricKindIR>(m, "MetricKind")
+        .value("NONE", ir::MetricKindIR::NONE)
+        .value("MINIMIZE_ACTION_COSTS", ir::MetricKindIR::MINIMIZE_ACTION_COSTS)
+        .value("MINIMIZE_PLAN_LENGTH", ir::MetricKindIR::MINIMIZE_PLAN_LENGTH);
+
     nb::class_<ir::ProblemIR>(m, "ProblemIR")
         .def(nb::init<>())
         .def_rw("nodes", &ir::ProblemIR::nodes)
@@ -282,11 +358,18 @@ NB_MODULE(_rantanplan, m) {
         .value("SOLVED_OPTIMALLY", ir::SolveStatusIR::SOLVED_OPTIMALLY)
         .value("UNSOLVABLE_PROVEN", ir::SolveStatusIR::UNSOLVABLE_PROVEN)
         .value("UNSOLVABLE_INCOMPLETELY", ir::SolveStatusIR::UNSOLVABLE_INCOMPLETELY)
-        .value("TIMEOUT", ir::SolveStatusIR::TIMEOUT);
+        .value("TIMEOUT", ir::SolveStatusIR::TIMEOUT)
+        .value("UNSUPPORTED_PROBLEM", ir::SolveStatusIR::UNSUPPORTED_PROBLEM);
 
     nb::class_<ir::ActionInstanceIR>(m, "ActionInstanceIR")
         .def_ro("action_name", &ir::ActionInstanceIR::action_name)
         .def_ro("parameters", &ir::ActionInstanceIR::parameters);
+
+    nb::enum_<ir::LogLevelIR>(m, "LogLevel")
+        .value("DEBUG", ir::LogLevelIR::DEBUG)
+        .value("INFO", ir::LogLevelIR::INFO)
+        .value("WARNING", ir::LogLevelIR::WARNING)
+        .value("ERROR", ir::LogLevelIR::ERROR);
 
     nb::class_<ir::LogMessageIR>(m, "LogMessageIR")
         .def_ro("level", &ir::LogMessageIR::level)
@@ -311,6 +394,10 @@ NB_MODULE(_rantanplan, m) {
                      [](const Preprocessed& p) { return p.pre.lower_bound; })
         .def_prop_ro("consumed",
                      [](const Preprocessed& p) { return p.consumed; })
+        .def("pool_nodes", &pool_nodes,
+             "Every node interned while loading and preprocessing, in id "
+             "order, as (ExprKind, type name, text); the type name is '' for an "
+             "untyped node. For tests of node identity: one value, one node.")
         .def("interrupt",
              [](Preprocessed& p) { p.interrupt_slot.interrupt(); },
              "Cancel the solve currently running on this handle, from any "

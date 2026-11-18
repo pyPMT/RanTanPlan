@@ -8,8 +8,8 @@ namespace rantanplan {
  * @brief Closed-World Assumption initial state completion pass.
  *
  * Ensures every grounded fluent has an explicit initial state assignment.
- * This pass is the sole materialiser of default initial values (the Python
- * wrapper no longer fills them in). For a fluent without an assignment:
+ * This pass is the sole materialiser of default initial values. For a fluent
+ * without an assignment:
  *   - a declared default_initial_value is authoritative;
  *   - otherwise booleans are closed-world false and numerics are 0 clamped
  *     into the declared bounds;

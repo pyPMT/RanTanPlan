@@ -30,7 +30,8 @@
 #include "passes/quantifier_expansion_pass.hpp"
 #include "passes/cwa_initial_state_pass.hpp"
 #include "passes/static_fluent_pass.hpp"
-#include "passes/duplicate_effect_pass.hpp"
+#include "passes/write_only_fluent_pass.hpp"
+#include "passes/effect_normalization_pass.hpp"
 #include "passes/cnf_normalization_pass.hpp"
 #include "passes/mutex_analysis_pass.hpp"
 #include "passes/landmark_analysis_pass.hpp"
@@ -136,6 +137,10 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     // Ordering constraints:
     //   - Grounding before CWA (CWA needs all grounded fluents visible)
     //   - CWA before StaticFluent (needs complete initial state to identify constants)
+    //   - StaticFluent before WriteOnlyFluent (reads are per atom, after folding)
+    //   - WriteOnlyFluent before EffectNormalization and ActionPruning (neither
+    //     sees the removed fluents; EffectNormalization also drops the actions
+    //     WriteOnlyFluent leaves with no effect)
     //   - StaticFluent before CnfNormalization (folding first collapses disjunctions
     //     over static predicates; distributing before folding can blow up)
     //   - StaticFluent before ActionPruning (simpler expressions → tighter RPG bounds)
@@ -165,7 +170,8 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     rantanplan::GroundingPass grounding_pass;
     rantanplan::CWAInitialStatePass cwa_pass;
     rantanplan::StaticFluentPass static_fluent_pass;
-    rantanplan::DuplicateEffectPass duplicate_effect_pass;
+    rantanplan::WriteOnlyFluentPass write_only_fluent_pass;
+    rantanplan::EffectNormalizationPass effect_normalization_pass;
     rantanplan::CnfNormalizationPass cnf_normalization_pass;
     rantanplan::ActionPruningPass action_pruning_pass(options);
     rantanplan::MutexAnalysisPass mutex_analysis_pass;
@@ -214,10 +220,11 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     }
     passes.push_back(&cwa_pass);
     passes.push_back(&static_fluent_pass);
+    passes.push_back(&write_only_fluent_pass);
     // After static-fluent folding, not merely after grounding: folding can in
     // principle collapse two distinct expressions onto one fluent, which is the
     // same shape this pass exists to catch.
-    passes.push_back(&duplicate_effect_pass);
+    passes.push_back(&effect_normalization_pass);
     if (options.enable_cnf_normalization) {
         passes.push_back(&cnf_normalization_pass);
     }
@@ -248,32 +255,25 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     rantanplan::Stats::instance().set("pipeline.final_actions",
                                       static_cast<double>(pipeline_result.problem.actions().size()));
 
-    // How many state variables share a ground atom with an earlier node. ZERO is
-    // the expected and healthy value: it means every ground atom has exactly one
-    // ExprID, which everything that groups by fluent id silently assumes — the
-    // chained encoder's chain links, DuplicateEffectPass's write counts, the RPG
-    // tables, the interference footprints. A nonzero value is not a failure (the
-    // footprint filter is keyed by representative and copes) but it means those
-    // other consumers are mis-grouping. See ExprPool's "Ground-atom identity".
+    // One ground atom, one ExprID: everything that groups by fluent id relies on
+    // it (WriteOnlyFluentPass's reads and writes, EffectNormalizationPass's
+    // writes per fluent, the RPG tables, the chained encoder's chain links, the
+    // interference footprints), and each would mis-group SILENTLY otherwise:
+    // WriteOnlyFluentPass, for one, would remove a fluent that is read under
+    // another id. No alias has ever been seen (0 on all pddl/test domains), so
+    // the planner stops rather than repair one. The pool's count only grows, so
+    // this also catches an alias that a pass has since removed from the
+    // problem. See ExprPool's "Ground-atom identity".
     const size_t aliased_sv =
         pipeline_result.problem.pool().aliased_state_variable_count();
     rantanplan::Stats::instance().set("pool.aliased_state_variables",
                                       static_cast<double>(aliased_sv));
     if (aliased_sv > 0) {
-        // Loud, because everything below fails SILENTLY when this happens: the
-        // chained encoder builds one chain link per id, so one fluent gets two
-        // and the second overwrites the first; DuplicateEffectPass counts one
-        // write as two and may drop a legitimate action; the RPG keeps two
-        // reachability entries for one atom. Only the interference footprint
-        // copes, because it keys on canonical_state_variable(). Measured as 0
-        // across all 66 pddl/test domains when this check was added, so a
-        // nonzero value means something upstream changed.
-        rantanplan::Logger::instance().info(
-            "WARNING: " + std::to_string(aliased_sv) + " ground state variable(s) "
-            "have more than one ExprID — the same atom interned twice, differing "
-            "only in a type_id. Everything that groups by fluent id (chained "
-            "encoder, duplicate-effect pass, RPG tables) will mis-group these. "
-            "See ExprPool's \"Ground-atom identity\" comment.");
+        throw std::runtime_error(
+            std::to_string(aliased_sv) + " ground state variable(s) have more than "
+            "one ExprID: the same atom interned twice, differing only in a type_id. "
+            "Everything that groups by fluent id would mis-group them. See ExprPool's "
+            "\"Ground-atom identity\" comment.");
     }
 
     // Debug: dump problem info after pipeline
@@ -300,7 +300,14 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
     rantanplan::StrategySpec spec = rantanplan::StrategyRegistry::get(config.planner.strategy);
     rantanplan::SearchMode mode = rantanplan::parse_search_mode(config.planner.mode);
     spec.planner = rantanplan::resolve_planner_kind(mode, spec);
-    rantanplan::StrategyFactory::adjust_spec(spec, problem);
+    try {
+        rantanplan::StrategyFactory::adjust_spec(spec, problem);
+    } catch (const rantanplan::UnsupportedProblemError& e) {
+        ir::ResultIR unsupported;
+        unsupported.status = ir::SolveStatusIR::UNSUPPORTED_PROBLEM;
+        unsupported.log_messages.push_back(ir::LogMessageIR{ir::LogLevelIR::ERROR, e.what()});
+        return unsupported;
+    }
     rantanplan::StrategyFactory::validate(spec, config.planner.strategy,
                                           config.planner.horizon_schedule);
 
@@ -318,7 +325,7 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
 
     ir::ResultIR result;
     auto add_info = [&result](const std::string& message) {
-        result.log_messages.push_back(ir::LogMessageIR{1 /* INFO */, message});
+        result.log_messages.push_back(ir::LogMessageIR{ir::LogLevelIR::INFO, message});
     };
 
     z3::context ctx;
@@ -354,9 +361,8 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
     // Call planner->search() and get the result
     rantanplan::Plan plan = planner->search();
     if (planner->solution_found()) {
-        result.status = static_cast<int>(planner->optimality_proven()
-                                             ? ir::SolveStatusIR::SOLVED_OPTIMALLY
-                                             : ir::SolveStatusIR::SOLVED_SATISFICING);
+        result.status = planner->optimality_proven() ? ir::SolveStatusIR::SOLVED_OPTIMALLY
+                                                     : ir::SolveStatusIR::SOLVED_SATISFICING;
         result.plan = rantanplan::plan_to_ir(plan);
         result.has_plan = true;
 
@@ -371,13 +377,13 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
             add_info(msg);
         }
     } else if (planner->timed_out()) {
-        result.status = static_cast<int>(ir::SolveStatusIR::TIMEOUT);
+        result.status = ir::SolveStatusIR::TIMEOUT;
         if (config.is_info()) {
             add_info("Timeout reached.");
         }
     } else {
         // No plan found within search limits (max_steps exhausted)
-        result.status = static_cast<int>(ir::SolveStatusIR::UNSOLVABLE_INCOMPLETELY);
+        result.status = ir::SolveStatusIR::UNSOLVABLE_INCOMPLETELY;
         if (config.is_info()) {
             add_info("No plan found within the search limit.");
         }

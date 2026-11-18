@@ -115,7 +115,6 @@ add_library(rantanplan_core STATIC
     src/planners/incremental_horizon_planner.cpp
     src/planners/double_tail_planner.cpp
     src/planners/branch_and_bound_planner.cpp
-    src/planners/cgb_planner.cpp
     src/planners/formula_exporter.cpp
     src/encoders/abstract_suffix_encoder.cpp
     src/planners/propagators/propagator_strategy.cpp
@@ -152,7 +151,8 @@ add_library(rantanplan_core STATIC
     src/passes/quantifier_expansion_pass.cpp
     src/passes/cwa_initial_state_pass.cpp
     src/passes/static_fluent_pass.cpp
-    src/passes/duplicate_effect_pass.cpp
+    src/passes/write_only_fluent_pass.cpp
+    src/passes/effect_normalization_pass.cpp
     src/passes/cnf_normalization_pass.cpp
     src/problem/substitution.cpp
     src/grounding/fact_index.cpp

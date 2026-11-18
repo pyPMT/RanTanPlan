@@ -32,6 +32,10 @@ from unified_planning.model.int_variable import IntVariable
 
 from ..harness import solve
 
+# Bounded types need the Grounded encoder: the default strategy (elsc) refuses
+# declared bounds, so the cases that declare them name a Grounded strategy.
+GROUNDED = "e"
+
 _ENV_EM = None
 
 
@@ -66,24 +70,24 @@ def _assert_valid(p_ref, plan, label):
         f"{label}: plan invalid under array-free equivalent ({vr.status})"
 
 
-def _ar_check(p):
+def _ar_check(p, strategy=None):
     """AR oracle: native plan and RantanPlan's AR-solve both validate vs P'.
     Returns the native PlanGenerationResult for extra assertions."""
     p_ar = _ar_compile(p)
-    r = solve(p)
+    r = solve(p, strategy=strategy)
     assert r.plan is not None, f"{p.name}: no native plan"
     _assert_valid(p_ar, _map_plan(p_ar, r.plan), f"{p.name} native")
 
-    r_ar = solve(p_ar)
+    r_ar = solve(p_ar, strategy=strategy)
     assert r_ar.plan is not None, f"{p.name}: no AR-oracle plan"
     _assert_valid(p_ar, r_ar.plan, f"{p.name} AR-oracle")
     return r
 
 
-def _ref_check(p_native, p_ref):
+def _ref_check(p_native, p_ref, strategy=None):
     """Solve the array problem, validate its plan against a hand-written
     array-free reference (same action signatures). Returns the native result."""
-    r = solve(p_native)
+    r = solve(p_native, strategy=strategy)
     assert r.plan is not None, f"{p_native.name}: no native plan"
     _assert_valid(p_ref, _map_plan(p_ref, r.plan), f"{p_native.name} vs reference")
     return r
@@ -119,7 +123,7 @@ def test_1d_int_read_write_goal():
     p.add_action(cp)
     p.add_goal(And(Equals(em.ArrayIndex(a(), Int(0)), 5),
                    Equals(em.ArrayIndex(a(), Int(2)), 1)))  # cp must fire before w
-    _ar_check(p)
+    _ar_check(p, strategy=GROUNDED)
 
 
 def test_swap_one_action_reads_prestate():
@@ -137,7 +141,7 @@ def test_swap_one_action_reads_prestate():
     # A read-post-state bug would give [7,7]; the swap must give [7,3].
     p.add_goal(And(Equals(em.ArrayIndex(a(), Int(0)), 7),
                    Equals(em.ArrayIndex(a(), Int(1)), 3)))
-    r = _ar_check(p)
+    r = _ar_check(p, strategy=GROUNDED)
     assert [ai.action.name for ai in r.plan.actions] == ["swap"]
 
 
@@ -175,7 +179,7 @@ def test_conditional_effect_on_cell():
     act.add_effect(em.ArrayIndex(a(), Int(1)), 5, condition=p_())
     p.add_action(act)
     p.add_goal(Equals(em.ArrayIndex(a(), Int(1)), 5))
-    _ar_check(p)
+    _ar_check(p, strategy=GROUNDED)
 
 
 def test_boolean_array_precond_and_cwa():
@@ -224,7 +228,7 @@ def test_multidim_2d():
     p.add_action(act)
     # g[1][0] must still read the initial 3 (row-major independence).
     p.add_goal(And(Equals(cell(0, 1), 7), Equals(cell(1, 0), 3)))
-    _ar_check(p)
+    _ar_check(p, strategy=GROUNDED)
 
 
 def test_initial_state_both_shapes():
@@ -243,7 +247,7 @@ def test_initial_state_both_shapes():
     p.add_action(act)
     p.add_goal(And(Equals(em.ArrayIndex(x(), Int(0)), 5),   # 1 + 4
                    Equals(em.ArrayIndex(y(), Int(0)), 3)))
-    _ar_check(p)
+    _ar_check(p, strategy=GROUNDED)
 
 
 def test_default_initial_value_applies_to_cells():
@@ -282,7 +286,7 @@ def test_default_with_partial_explicit_override():
     p.add_goal(And(Equals(em.ArrayIndex(a(), Int(0)), 2),
                    Equals(em.ArrayIndex(a(), Int(1)), 4),
                    Equals(em.ArrayIndex(a(), Int(2)), 0)))
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
 
 
@@ -381,7 +385,7 @@ def test_size1_array_degenerates_to_scalar():
     act.add_effect(em.ArrayIndex(a(), Int(0)), 8)
     p.add_action(act)
     p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 8))
-    _ar_check(p)
+    _ar_check(p, strategy=GROUNDED)
 
 
 # ═══════════════════════ whole-array literals (AR oracle) ════════════════════
@@ -405,7 +409,7 @@ def test_whole_array_goal_equality_literal():
     act.add_effect(cell(1, 1), 6)
     p.add_action(act)
     p.add_goal(Equals(g(), [[5, 2], [3, 6]]))   # whole-array literal goal
-    r = _ar_check(p)
+    r = _ar_check(p, strategy=GROUNDED)
     assert [ai.action.name for ai in r.plan.actions] == ["seta"]
 
 
@@ -424,7 +428,7 @@ def test_whole_array_goal_disequality_literal():
     bump.add_effect(em.ArrayIndex(a(), Int(0)), 7)
     p.add_action(bump)
     p.add_goal(Not(Equals(a(), [1, 2])))        # must differ from [1, 2]
-    r = _ar_check(p)
+    r = _ar_check(p, strategy=GROUNDED)
     assert [ai.action.name for ai in r.plan.actions] == ["bump"]
 
 
@@ -458,7 +462,7 @@ def test_whole_array_assignment_effect_literal():
     ref.add_action(rset)
     ref.add_goal(And(Equals(a0(), 3), Equals(a1(), 4)))
 
-    r = _ref_check(p, ref)
+    r = _ref_check(p, ref, strategy=GROUNDED)
     assert [ai.action.name for ai in r.plan.actions] == ["setall"]
 
 
@@ -490,7 +494,7 @@ def test_index_arithmetic_int_param():
     ref.add_action(rsh)
     ref.add_goal(Equals(a1(), 1))
 
-    r = _ref_check(p, ref)
+    r = _ref_check(p, ref, strategy=GROUNDED)
     assert [ai.actual_parameters[0].int_constant_value()
             for ai in r.plan.actions] == [0]
 
@@ -527,7 +531,7 @@ def test_forall_effect_range_variable_reverse():
     ref.add_action(rrev)
     ref.add_goal(And(Equals(a0(), 0), Equals(a1(), 1), Equals(a2(), 2)))
 
-    r = _ref_check(p, ref)
+    r = _ref_check(p, ref, strategy=GROUNDED)
     assert [ai.action.name for ai in r.plan.actions] == ["rev"]
 
 
@@ -560,7 +564,7 @@ def test_forall_effect_parameter_dependent_bound():
     ref.add_action(rflip)
     ref.add_goal(And(Equals(a0(), 0), Equals(a1(), 1)))
 
-    _ref_check(p, ref)
+    _ref_check(p, ref, strategy=GROUNDED)
 
 
 def test_forall_effect_arithmetic_range_bound():
@@ -597,7 +601,7 @@ def test_forall_effect_arithmetic_range_bound():
     ref.add_action(rf)
     ref.add_goal(And(Equals(a0(), 9), Equals(a1(), 9), Equals(a2(), 9)))
 
-    r_res = _ref_check(p, ref)
+    r_res = _ref_check(p, ref, strategy=GROUNDED)
     assert [ai.actual_parameters[0].int_constant_value()
             for ai in r_res.plan.actions] == [3]
 
@@ -628,7 +632,7 @@ def test_quantified_forall_goal_index():
     rz.add_effect(a2(), 0, condition=Equals(rk, 2))
     ref.add_action(rz)
     ref.add_goal(And(Equals(a0(), 0), Equals(a1(), 0), Equals(a2(), 0)))
-    _ref_check(p, ref)
+    _ref_check(p, ref, strategy=GROUNDED)
 
 
 def test_quantified_exists_goal_index():
@@ -656,7 +660,7 @@ def test_quantified_exists_goal_index():
     rs.add_effect(a2(), 5, condition=Equals(rk, 2))
     ref.add_action(rs)
     ref.add_goal(Or(Equals(a0(), 5), Equals(a1(), 5), Equals(a2(), 5)))
-    _ref_check(p, ref)
+    _ref_check(p, ref, strategy=GROUNDED)
 
 
 # ═══════════════════════════ edge cases ══════════════════════════════════════
@@ -686,7 +690,7 @@ def test_oob_by_parameter_enumeration():
     ref.add_action(rst)
     ref.add_goal(Equals(a1(), 1))
 
-    r = _ref_check(p, ref)
+    r = _ref_check(p, ref, strategy=GROUNDED)
     for ai in r.plan.actions:
         assert 0 <= ai.actual_parameters[0].int_constant_value() <= 1, \
             "an out-of-bounds instance leaked into the plan"
@@ -708,7 +712,7 @@ def test_undefined_positions_discard_and_neighbours():
     st.add_effect(em.ArrayIndex(a(), st.parameter("c")), 9)
     p.add_action(st)
     p.add_goal(Equals(em.ArrayIndex(a(), Int(2)), 9))
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.plan is not None and r.status == PlanGenerationResultStatus.SOLVED_SATISFICING
     for ai in r.plan.actions:
         assert ai.actual_parameters[0].int_constant_value() in (0, 2), \
@@ -730,7 +734,7 @@ def test_oob_precondition_read_discard():
     act.add_effect(flag(), True)
     p.add_action(act)
     p.add_goal(flag())
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     for ai in r.plan.actions:
         assert ai.actual_parameters[0].int_constant_value() == 2, \
@@ -749,7 +753,7 @@ def test_oob_effect_rhs_read_discard():
     cp.add_effect(em.ArrayIndex(a(), Int(0)), em.ArrayIndex(a(), cp.parameter("k")))
     p.add_action(cp)
     p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 3))
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     for ai in r.plan.actions:
         assert ai.actual_parameters[0].int_constant_value() == 2, \
@@ -789,10 +793,73 @@ def test_guarded_oob_permissive_survives():
     p.add_goal(And(Equals(em.ArrayIndex(a(), Int(1)), 5),
                    Equals(em.ArrayIndex(a(), Int(0)), 0)))
 
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     assert [ai.actual_parameters[0].int_constant_value() for ai in r.plan.actions] == [1], \
         "only the guarded-OOB boundary instance step(1) reaches the goal"
+
+
+def _guarded_undefined_effect(side, with_lower):
+    """The problem of the two tests below: poke(2)'s conditional effect has an
+    out-of-bounds target (side='target') or value (side='value')."""
+    em = _em()
+    a = Fluent(f"gue_{side}_a", ArrayType(2, IntType(0, 9)))
+    x = Fluent(f"gue_{side}_x", IntType(0, 9))
+    flag = Fluent(f"gue_{side}_flag", BoolType())
+    done = Fluent(f"gue_{side}_done", BoolType())
+    p = Problem(f"gue_{side}")
+    p.add_fluent(a, default_initial_value=0)
+    p.add_fluent(x, default_initial_value=0)
+    p.add_fluent(flag, default_initial_value=False)
+    p.add_fluent(done, default_initial_value=False)
+    p.set_initial_value(flag(), True)
+    poke = InstantaneousAction("poke", k=IntType(2, 2))   # k = 2 is out of bounds
+    k = poke.parameter("k")
+    if side == "target":
+        poke.add_effect(em.ArrayIndex(a(), k), 1, condition=flag())
+    else:
+        poke.add_effect(x(), em.ArrayIndex(a(), k), condition=flag())
+    poke.add_effect(done(), True)
+    p.add_action(poke)
+    if with_lower:
+        lower = InstantaneousAction("lower")
+        lower.add_effect(flag(), False)
+        p.add_action(lower)
+    p.add_goal(done())
+    return p
+
+
+def test_guarded_undefined_effect_blocks_where_condition_holds():
+    """A conditional effect ⟨C ▷ l := r⟩ whose target l or
+    value r is undefined is removed and ¬C joins the precondition, so the action
+    is inapplicable wherever C holds (not applicable with the effect skipped).
+
+        a : array[2] of int[0,9];  flag (init true), done (init false)
+        lower      : flag := false
+        poke(k), k in 2..2 (a[2] is out of bounds)
+          eff : a[k] := 1   WHEN flag      (side = target)
+                x := a[k]   WHEN flag      (side = value)
+          eff : done := true
+        goal : done
+
+    poke(2) needs flag false, so every plan lowers the flag first. Dropping the
+    effect without ¬flag let poke(2) reach the goal in one step."""
+    for side in ("target", "value"):
+        r = solve(_guarded_undefined_effect(side, with_lower=True), strategy=GROUNDED)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, (side, r.status)
+        names = [ai.action.name for ai in r.plan.actions]
+        assert "lower" in names and "poke" in names, (side, names)
+        assert names.index("lower") < names.index("poke"), (side, names)
+
+
+def test_guarded_undefined_effect_never_applicable_when_condition_static():
+    """The same action without `lower`: flag is always true, so poke(2) is never
+    applicable and the goal is unreachable."""
+    for side in ("target", "value"):
+        r = solve(_guarded_undefined_effect(side, with_lower=False))
+        assert r.plan is None, (side, [ai.action.name for ai in r.plan.actions])
+        assert r.status in (PlanGenerationResultStatus.UNSOLVABLE_PROVEN,
+                            PlanGenerationResultStatus.UNSOLVABLE_INCOMPLETELY), (side, r.status)
 
 
 def test_state_invariant_with_cell_read():
@@ -813,7 +880,7 @@ def test_state_invariant_with_cell_read():
     p.add_action(bad)
     p.add_trajectory_constraint(Always(LE(em.ArrayIndex(a(), Int(1)), Int(5))))
     p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 1))
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     assert [ai.action.name for ai in r.plan.actions] == ["good"], \
         f"invariant not enforced: {r.plan}"
@@ -833,13 +900,14 @@ def test_action_cost_with_cell_read():
     p.add_action(w)
     p.add_goal(Equals(em.ArrayIndex(a(), Int(1)), 1))
     p.add_quality_metric(MinimizeActionCosts({w: em.Plus(em.ArrayIndex(a(), Int(0)), 1)}))
-    r = solve(p, optimal=True)
+    r = solve(p, optimal=True, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_OPTIMALLY, r.status
 
 
 def test_same_cell_collision_instance_dependent():
-    """a[i]:=5; a[j]:=6 with int params: the i==j instances collide and are
-    discarded; distinct-cell instances solve the problem."""
+    """a[i]:=5; a[j]:=6 with int params: the i==j instances assign one cell two
+    values, which UP can never execute, so EffectNormalizationPass removes them
+    (case 6); distinct-cell instances solve the problem."""
     em = _em()
     a = Fluent("a", ArrayType(2, IntType(0, 9)))
     p = Problem("collinst")
@@ -867,10 +935,166 @@ def test_same_cell_collision_instance_dependent():
     ref.add_action(rwp)
     ref.add_goal(And(Equals(a0(), 5), Equals(a1(), 6)))
 
-    r = _ref_check(p, ref)
+    r = _ref_check(p, ref, strategy=GROUNDED)
     for ai in r.plan.actions:
         vs = [x.int_constant_value() for x in ai.actual_parameters]
-        assert vs[0] != vs[1], "a colliding same-cell instance leaked into the plan"
+        assert vs[0] != vs[1], "an instance assigning one cell two values leaked into the plan"
+
+
+def test_same_cell_increases_add_up():
+    """a[i] += 1; a[j] += 1 with int params: at i == j both increases hit one
+    cell and add up, as for any fluent (EffectNormalizationPass, case 3). The
+    goal a = [2, 0] needs exactly that instance, bump(0, 0)."""
+    em = _em()
+    a = Fluent("twice_inc_a", ArrayType(2, IntType(0, 9)))
+    done = Fluent("twice_inc_done", BoolType())
+    p = Problem("twiceinc")
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(a, [0, 0])
+    p.add_fluent(done, default_initial_value=False)
+    bump = InstantaneousAction("bump", i=IntType(0, 1), j=IntType(0, 1))
+    i, j = bump.parameter("i"), bump.parameter("j")
+    bump.add_precondition(Not(done()))
+    bump.add_increase_effect(em.ArrayIndex(a(), i), 1)
+    bump.add_increase_effect(em.ArrayIndex(a(), j), 1)
+    bump.add_effect(done(), True)
+    p.add_action(bump)
+    p.add_goal(And(Equals(em.ArrayIndex(a(), Int(0)), 2),
+                   Equals(em.ArrayIndex(a(), Int(1)), 0)))
+
+    a0, a1 = Fluent("a0", IntType(0, 9)), Fluent("a1", IntType(0, 9))
+    ref = Problem("twiceincref")
+    for f in (a0, a1):
+        ref.add_fluent(f, default_initial_value=0)
+    ref.add_fluent(done, default_initial_value=False)
+    rbump = InstantaneousAction("bump", i=IntType(0, 1), j=IntType(0, 1))
+    ri, rj = rbump.parameter("i"), rbump.parameter("j")
+    rbump.add_precondition(Not(done()))
+    for par in (ri, rj):
+        rbump.add_increase_effect(a0(), 1, condition=Equals(par, 0))
+        rbump.add_increase_effect(a1(), 1, condition=Equals(par, 1))
+    rbump.add_effect(done(), True)
+    ref.add_action(rbump)
+    ref.add_goal(And(Equals(a0(), 2), Equals(a1(), 0)))
+
+    r = _ref_check(p, ref, strategy=GROUNDED)
+    assert [[x.int_constant_value() for x in ai.actual_parameters]
+            for ai in r.plan.actions] == [[0, 0]], r.plan
+
+
+def test_same_cell_set_and_clear():
+    """occ[i] := false; occ[j] := true on a Boolean array: at i == j the set
+    wins (add after delete, EffectNormalizationPass case 1), so a move to the
+    same cell leaves it occupied. The goal needs move(0, 0)."""
+    em = _em()
+    occ = Fluent("twice_occ", ArrayType(2, BoolType()))
+    moved = Fluent("twice_moved", BoolType())
+    p = Problem("twiceocc")
+    p.add_fluent(occ, default_initial_value=False)
+    p.set_initial_value(occ, [True, False])
+    p.add_fluent(moved, default_initial_value=False)
+    move = InstantaneousAction("move", i=IntType(0, 1), j=IntType(0, 1))
+    i, j = move.parameter("i"), move.parameter("j")
+    move.add_precondition(And(em.ArrayIndex(occ(), i), Not(moved())))
+    move.add_effect(em.ArrayIndex(occ(), i), False)
+    move.add_effect(em.ArrayIndex(occ(), j), True)
+    move.add_effect(moved(), True)
+    p.add_action(move)
+    p.add_goal(And(moved(), em.ArrayIndex(occ(), Int(0)),
+                   Not(em.ArrayIndex(occ(), Int(1)))))
+
+    o0, o1 = Fluent("o0", BoolType()), Fluent("o1", BoolType())
+    ref = Problem("twiceoccref")
+    for f in (o0, o1, moved):
+        ref.add_fluent(f, default_initial_value=False)
+    ref.set_initial_value(o0(), True)
+    rmove = InstantaneousAction("move", i=IntType(0, 1), j=IntType(0, 1))
+    ri, rj = rmove.parameter("i"), rmove.parameter("j")
+    rmove.add_precondition(And(Or(And(Equals(ri, 0), o0()), And(Equals(ri, 1), o1())),
+                               Not(moved())))
+    rmove.add_effect(o0(), False, condition=Equals(ri, 0))
+    rmove.add_effect(o1(), False, condition=Equals(ri, 1))
+    rmove.add_effect(o0(), True, condition=Equals(rj, 0))
+    rmove.add_effect(o1(), True, condition=Equals(rj, 1))
+    rmove.add_effect(moved(), True)
+    ref.add_action(rmove)
+    ref.add_goal(And(moved(), o0(), Not(o1())))
+
+    r = _ref_check(p, ref)
+    assert [[x.int_constant_value() for x in ai.actual_parameters]
+            for ai in r.plan.actions] == [[0, 0]], r.plan
+
+
+def test_same_cell_exclusive_guards():
+    """WHEN c: a[i] := 1; WHEN not c: a[i] := 2. Every instance writes one cell
+    twice, but the guards exclude each other, so the two writes never apply
+    together and the action is kept as it is. Goal a[0] = 2: flip, put(0)."""
+    em = _em()
+    a = Fluent("twice_excl_a", ArrayType(2, IntType(0, 9)))
+    c = Fluent("twice_excl_c", BoolType())
+    p = Problem("twiceexcl")
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(a, [0, 0])
+    p.add_fluent(c, default_initial_value=False)
+    p.set_initial_value(c(), True)
+    put = InstantaneousAction("put", i=IntType(0, 1))
+    i = put.parameter("i")
+    put.add_effect(em.ArrayIndex(a(), i), 1, condition=c())
+    put.add_effect(em.ArrayIndex(a(), i), 2, condition=Not(c()))
+    flip = InstantaneousAction("flip")
+    flip.add_effect(c(), False)
+    p.add_action(put)
+    p.add_action(flip)
+    p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 2))
+
+    a0, a1 = Fluent("a0", IntType(0, 9)), Fluent("a1", IntType(0, 9))
+    ref = Problem("twiceexclref")
+    for f in (a0, a1):
+        ref.add_fluent(f, default_initial_value=0)
+    ref.add_fluent(c, default_initial_value=False)
+    ref.set_initial_value(c(), True)
+    rput = InstantaneousAction("put", i=IntType(0, 1))
+    ri = rput.parameter("i")
+    rput.add_effect(a0(), 1, condition=And(c(), Equals(ri, 0)))
+    rput.add_effect(a1(), 1, condition=And(c(), Equals(ri, 1)))
+    rput.add_effect(a0(), 2, condition=And(Not(c()), Equals(ri, 0)))
+    rput.add_effect(a1(), 2, condition=And(Not(c()), Equals(ri, 1)))
+    rflip = InstantaneousAction("flip")
+    rflip.add_effect(c(), False)
+    ref.add_action(rput)
+    ref.add_action(rflip)
+    ref.add_goal(Equals(a0(), 2))
+
+    _ref_check(p, ref, strategy=GROUNDED)
+
+
+def test_same_cell_folded_increases_add_up():
+    """a[0] += 1; a[1-1] += 2: the two targets fold to one cell in every
+    instance, and the increases add up (a[0] = 3), as in UP's model of the same
+    action on a scalar fluent. (UP itself blocks syntactically identical
+    targets, hence the folding.)"""
+    em = _em()
+    a = Fluent("twice_fold_a", ArrayType(2, IntType(0, 9)))
+    p = Problem("twicefold")
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(a, [0, 0])
+    add3 = InstantaneousAction("add3")
+    add3.add_increase_effect(em.ArrayIndex(a(), Int(0)), 1)
+    add3.add_increase_effect(em.ArrayIndex(a(), Minus(Int(1), Int(1))), 2)  # folds to a[0]
+    p.add_action(add3)
+    p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 3))
+
+    a0 = Fluent("a0", IntType(0, 9))
+    ref = Problem("twicefoldref")
+    ref.add_fluent(a0, default_initial_value=0)
+    radd3 = InstantaneousAction("add3")
+    radd3.add_increase_effect(a0(), 1)
+    radd3.add_increase_effect(a0(), 2)
+    ref.add_action(radd3)
+    ref.add_goal(Equals(a0(), 3))
+
+    r = _ref_check(p, ref, strategy=GROUNDED)
+    assert [ai.action.name for ai in r.plan.actions] == ["add3"]
 
 
 def test_element_bounds_respected():
@@ -904,7 +1128,7 @@ def test_non_array_regression():
     dec.add_decrease_effect(level, 2)
     p.add_action(dec)
     p.add_goal(Equals(level, 1))
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.plan is not None, r.status
     assert_valid(p, r.plan)
 
@@ -927,9 +1151,9 @@ def test_parallel_different_cells_exists_step():
                    Equals(em.ArrayIndex(a(), Int(1)), 2)))
 
     p_ar = _ar_compile(p)
-    r = solve(p, strategy="els")   # exists-step, grounded encoder
+    r = solve(p, strategy=GROUNDED)   # exists-step, grounded encoder
     assert r.plan is not None, f"parallel: no plan ({r.status})"
-    _assert_valid(p_ar, _map_plan(p_ar, r.plan), "parallel native (els)")
+    _assert_valid(p_ar, _map_plan(p_ar, r.plan), "parallel native (e)")
 
 
 # ═══════════════════ ill-formed models → clean rejection ═════════════════════
@@ -966,10 +1190,12 @@ def test_undefined_position_goal_error():
     _assert_rejected(build)
 
 
-def test_same_cell_collision_unconditional_error():
-    """Two writes to the same literal cell (folded from a[0] and a[1-1]) are an
-    unconditionally broken model — a hard error. (UP itself blocks syntactically
-    identical targets, so the collision is reached via constant folding.)"""
+def test_same_cell_conflicting_assignments_never_apply():
+    """Two assignments of different values to one literal cell (a[0] and the
+    folded a[1-1]): UP can never execute the action, so EffectNormalizationPass
+    removes it (case 6), with a warning, and the goal is unreachable. (UP
+    itself blocks syntactically identical targets, so the conflict is reached
+    via constant folding.)"""
     def build():
         em = _em()
         a = Fluent("a", ArrayType(2, IntType(0, 9)))
@@ -1004,11 +1230,11 @@ def test_whole_array_equality_rejected():
     _assert_rejected(build)
 
 
-def test_all_instances_collide_hard_error():
-    """A literal same-cell collision (a[0] and the folded a[1-1]) in an action
-    that also has an unrelated int parameter: EVERY instance collides, so the
-    schema is unconditionally broken — a hard error, not a silently vanished
-    schema."""
+def test_all_instances_conflicting_never_apply():
+    """The same conflict (a[0] and the folded a[1-1]) in an action that also
+    has an unrelated int parameter: every instance assigns one cell two values,
+    so EffectNormalizationPass removes every instance, with a warning naming
+    them, and the goal is unreachable."""
     def build():
         em = _em()
         a = Fluent("allcoll_a", ArrayType(2, IntType(0, 9)))
@@ -1045,7 +1271,7 @@ def test_oob_initial_state_assignment_dropped():
     w.add_effect(em.ArrayIndex(a(), Int(0)), 1)
     p.add_action(w)
     p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 1))
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     assert [ai.action.name for ai in r.plan.actions] == ["w"]
 
@@ -1149,7 +1375,7 @@ def test_sliding_puzzle_2x2():
     p.add_action(slide)
     p.add_goal(And(*[Equals(cell(r, c), goal[r][c]) for r in range(2) for c in range(2)]))
 
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.plan is not None, f"puzzle: no plan ({r.status})"
 
     # Replay the plan through a faithful simulator (checks preconditions + swap).
@@ -1195,18 +1421,24 @@ CASES = [
     test_oob_precondition_read_discard,
     test_oob_effect_rhs_read_discard,
     test_guarded_oob_permissive_survives,
+    test_guarded_undefined_effect_blocks_where_condition_holds,
+    test_guarded_undefined_effect_never_applicable_when_condition_static,
     test_state_invariant_with_cell_read,
     test_action_cost_with_cell_read,
     test_same_cell_collision_instance_dependent,
+    test_same_cell_increases_add_up,
+    test_same_cell_set_and_clear,
+    test_same_cell_exclusive_guards,
+    test_same_cell_folded_increases_add_up,
     test_element_bounds_respected,
     test_non_array_regression,
     test_parallel_different_cells_exists_step,
     # ill-formed models → clean rejection
     test_static_oob_goal_error,
     test_undefined_position_goal_error,
-    test_same_cell_collision_unconditional_error,
+    test_same_cell_conflicting_assignments_never_apply,
     test_whole_array_equality_rejected,
-    test_all_instances_collide_hard_error,
+    test_all_instances_conflicting_never_apply,
     test_oob_initial_state_assignment_dropped,
     test_whole_array_assignment_rejected,
     test_fluent_index_in_goal_rejected,

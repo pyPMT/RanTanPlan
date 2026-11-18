@@ -1,5 +1,6 @@
 #include "bound_tightening.hpp"
 #include <cmath>
+#include <optional>
 #include <unordered_set>
 
 namespace rantanplan {
@@ -8,11 +9,20 @@ namespace rantanplan {
 // Helpers
 // ============================================================================
 
-static double extract_constant(ExprID id, const ExprPool& pool) {
-    if (!id.valid() || !pool.is_constant(id)) return std::nan("");
-    if (pool.payload_is_int(id)) return static_cast<double>(pool.payload_int(id));
-    if (pool.payload_is_double(id)) return pool.payload_double(id);
-    return std::nan("");
+// The exact value of a numeric constant; nothing for anything else.
+static std::optional<Rational> extract_constant(ExprID id, const ExprPool& pool) {
+    if (!id.valid() || !pool.is_constant(id)) return std::nullopt;
+    if (pool.payload_is_int(id)) return Rational::of(pool.payload_int(id));
+    if (pool.payload_is_real(id)) return pool.payload_real(id);
+    return std::nullopt;
+}
+
+static bool is_nonnegative(const std::optional<Rational>& c) { return c && c->num >= 0; }
+
+// The smallest double at least the constant, or +inf when it is not one: an
+// upper bound read from it then holds every value the constant allows.
+static double upper_double(const std::optional<Rational>& c) {
+    return c ? Interval::of(*c).upper : INFINITY;
 }
 
 // Check if expr is (- a b) with a == fluent_id and b == delta_id.
@@ -50,8 +60,7 @@ static bool precondition_has_ge_guard(ExprID precond_id, ExprID fluent_id,
         if (lhs == fluent_id && rhs == delta_id) return true;
         // (>= (- fluent delta) C) where C >= 0
         if (is_minus_of(lhs, fluent_id, delta_id, pool)) {
-            double c = extract_constant(rhs, pool);
-            if (std::isfinite(c) && c >= 0.0) return true;
+            if (is_nonnegative(extract_constant(rhs, pool))) return true;
         }
     }
     if (pool.is_less_equal(precond_id) || pool.is_less_than(precond_id)) {
@@ -59,8 +68,7 @@ static bool precondition_has_ge_guard(ExprID precond_id, ExprID fluent_id,
         if (lhs == delta_id && rhs == fluent_id) return true;
         // (<= C (- fluent delta)) where C >= 0
         if (is_minus_of(rhs, fluent_id, delta_id, pool)) {
-            double c = extract_constant(lhs, pool);
-            if (std::isfinite(c) && c >= 0.0) return true;
+            if (is_nonnegative(extract_constant(lhs, pool))) return true;
         }
     }
 
@@ -78,17 +86,25 @@ static bool is_plus_of(ExprID expr, ExprID fluent_id, ExprID delta_id,
            (a0 == delta_id && a1 == fluent_id);
 }
 
-static double is_minus_capacity(ExprID expr, ExprID fluent_id,
-                                 const ExprPool& pool) {
-    if (pool.kind(expr) != ExprKind::FUNCTION_APPLICATION) return std::nan("");
-    if (!pool.is_minus(expr)) return std::nan("");
-    if (pool.argument_count(expr) != 2) return std::nan("");
-    if (pool.argument(expr, 1) != fluent_id) return std::nan("");
+// C when expr is (- C fluent) for a constant C.
+static std::optional<Rational> is_minus_capacity(ExprID expr, ExprID fluent_id,
+                                                 const ExprPool& pool) {
+    if (pool.kind(expr) != ExprKind::FUNCTION_APPLICATION) return std::nullopt;
+    if (!pool.is_minus(expr)) return std::nullopt;
+    if (pool.argument_count(expr) != 2) return std::nullopt;
+    if (pool.argument(expr, 1) != fluent_id) return std::nullopt;
     return extract_constant(pool.argument(expr, 0), pool);
 }
 
+// The smallest double at least R + delta, for constants R and delta.
+static double upper_sum(ExprID r, ExprID delta, const ExprPool& pool) {
+    auto a = extract_constant(r, pool), b = extract_constant(delta, pool);
+    if (!a || !b) return INFINITY;
+    return (Interval::of(*a) + Interval::of(*b)).upper;
+}
+
 // Search precondition AND-tree for f + delta <= C (or equivalent forms).
-// Returns C if found, +inf otherwise.
+// Returns C (rounded up to a double) if found, +inf otherwise.
 static double find_ub_guard(ExprID precond_id, ExprID fluent_id,
                              ExprID delta_id, const ExprPool& pool) {
     if (!precond_id.valid()) return INFINITY;
@@ -110,38 +126,32 @@ static double find_ub_guard(ExprID precond_id, ExprID fluent_id,
     if (pool.is_less_equal(precond_id) || pool.is_less_than(precond_id)) {
         // f + delta <= C
         if (is_plus_of(lhs, fluent_id, delta_id, pool)) {
-            double c = extract_constant(rhs, pool);
-            if (std::isfinite(c)) return c;
+            if (auto c = extract_constant(rhs, pool)) return upper_double(c);
         }
         // delta <= C - f
         if (lhs == delta_id) {
-            double c = is_minus_capacity(rhs, fluent_id, pool);
-            if (std::isfinite(c)) return c;
+            if (auto c = is_minus_capacity(rhs, fluent_id, pool)) return upper_double(c);
         }
         // f <= R (constant) → f + delta <= R + delta
         if (lhs == fluent_id) {
-            double r = extract_constant(rhs, pool);
-            double d = extract_constant(delta_id, pool);
-            if (std::isfinite(r) && std::isfinite(d)) return r + d;
+            double c = upper_sum(rhs, delta_id, pool);
+            if (std::isfinite(c)) return c;
         }
     }
 
     if (pool.is_greater_equal(precond_id) || pool.is_greater_than(precond_id)) {
         // C >= f + delta
         if (is_plus_of(rhs, fluent_id, delta_id, pool)) {
-            double c = extract_constant(lhs, pool);
-            if (std::isfinite(c)) return c;
+            if (auto c = extract_constant(lhs, pool)) return upper_double(c);
         }
         // C - f >= delta
         if (rhs == delta_id) {
-            double c = is_minus_capacity(lhs, fluent_id, pool);
-            if (std::isfinite(c)) return c;
+            if (auto c = is_minus_capacity(lhs, fluent_id, pool)) return upper_double(c);
         }
         // R (constant) >= f → f + delta <= R + delta
         if (rhs == fluent_id) {
-            double r = extract_constant(lhs, pool);
-            double d = extract_constant(delta_id, pool);
-            if (std::isfinite(r) && std::isfinite(d)) return r + d;
+            double c = upper_sum(lhs, delta_id, pool);
+            if (std::isfinite(c)) return c;
         }
     }
 
@@ -163,15 +173,10 @@ static bool verify_lower_bound(ExprID fluent_id, const Problem& problem) {
             if (ee.is_conditional()) return false;
 
             if (ee.is_increase()) {
-                if (ee.is_constant_value()) {
-                    ExprID val = ee.value_id();
-                    double v = 0.0;
-                    if (pool.payload_is_int(val))
-                        v = static_cast<double>(pool.payload_int(val));
-                    else if (pool.payload_is_double(val))
-                        v = pool.payload_double(val);
-                    if (v < 0.0) return false;
-                }
+                // Only a constant amount >= 0 is known not to lower f; a negative
+                // or non-constant one may (sailing-wind's moves increase y by
+                // (* (v ?b) -0.71)).
+                if (!is_nonnegative(extract_constant(ee.value_id(), pool))) return false;
                 continue;
             }
 
@@ -185,10 +190,7 @@ static bool verify_lower_bound(ExprID fluent_id, const Problem& problem) {
 
             if (ee.is_assign()) {
                 ExprID val = ee.value_id();
-                if (pool.is_constant(val)) {
-                    double v = extract_constant(val, pool);
-                    if (std::isfinite(v) && v >= 0.0) continue;
-                }
+                if (is_nonnegative(extract_constant(val, pool))) continue;
                 return false;
             }
 
@@ -215,6 +217,9 @@ static double verify_upper_bound(ExprID fluent_id, const Problem& problem) {
             if (ee.is_conditional()) return INFINITY;
 
             if (ee.is_decrease()) {
+                // Only a constant amount >= 0 is known not to raise f; a negative
+                // or non-constant one may (the mirror image of verify_lower_bound).
+                if (!is_nonnegative(extract_constant(ee.value_id(), pool))) return INFINITY;
                 continue;
             }
 
@@ -228,7 +233,7 @@ static double verify_upper_bound(ExprID fluent_id, const Problem& problem) {
             }
 
             if (ee.is_assign()) {
-                double v = extract_constant(ee.value_id(), pool);
+                double v = upper_double(extract_constant(ee.value_id(), pool));
                 if (!std::isfinite(v)) return INFINITY;
                 if (v > bound) bound = v;
                 continue;
@@ -244,7 +249,7 @@ static double verify_upper_bound(ExprID fluent_id, const Problem& problem) {
     double init = 0.0;
     for (const auto& assignment : problem.initial_state()) {
         if (assignment.fluent_id() == fluent_id) {
-            init = extract_constant(assignment.value_id(), pool);
+            init = upper_double(extract_constant(assignment.value_id(), pool));
             if (!std::isfinite(init)) return INFINITY;
             break;
         }
@@ -263,16 +268,13 @@ int tighten_bounds_syntactically(
 
     const auto& pool = problem.pool();
 
-    // Build initial-value lookup for the lower-bound initial-value check.
-    std::unordered_map<ExprID, double> initial_values;
+    // Fluents whose initial value is negative, for the lower-bound check.
+    std::unordered_set<ExprID> negative_initially;
     for (const auto& assignment : problem.initial_state()) {
         ExprID fid = assignment.fluent_id();
         if (!problem.is_numeric_type(fid)) continue;
-        ExprID vid = assignment.value_id();
-        if (pool.payload_is_int(vid))
-            initial_values[fid] = static_cast<double>(pool.payload_int(vid));
-        else if (pool.payload_is_double(vid))
-            initial_values[fid] = pool.payload_double(vid);
+        auto v = extract_constant(assignment.value_id(), pool);
+        if (v && v->num < 0) negative_initially.insert(fid);
     }
 
     int tightened = 0;
@@ -282,11 +284,7 @@ int tighten_bounds_syntactically(
 
         // Lower bound: tighten to 0 if syntactically verified and tighter than RPG.
         if (interval.lower < 0.0) {
-            double init = 0.0;
-            auto it = initial_values.find(eid);
-            if (it != initial_values.end()) init = it->second;
-
-            if (init >= 0.0 && verify_lower_bound(eid, problem)) {
+            if (!negative_initially.count(eid) && verify_lower_bound(eid, problem)) {
                 interval.lower = 0.0;
                 tightened++;
             }
@@ -321,7 +319,7 @@ std::vector<ConservationConstraint> discover_conservation_laws(
         ExprID value_id;
     };
     struct ActionDeltas {
-        std::unordered_map<ExprID, double> deltas;           // net constant delta
+        std::unordered_map<ExprID, Rational> deltas;         // net constant delta
         std::unordered_set<ExprID> poisoned;                  // conditional / ASSIGN
         std::unordered_map<ExprID, std::vector<EffectInfo>> effects;  // all unconditional inc/dec
     };
@@ -345,12 +343,14 @@ std::vector<ConservationConstraint> discover_conservation_laws(
                 // Track all unconditional inc/dec for transfer detection
                 ad.effects[fid].push_back({ee.is_increase(), ee.value_id()});
 
-                // Also compute constant delta where possible
+                // Also compute constant delta where possible (exactly; a
+                // fluent whose net delta overflows is left out of laws)
                 if (ee.is_constant_value()) {
-                    double d = extract_constant(ee.value_id(), pool);
-                    if (std::isfinite(d)) {
-                        if (ee.is_increase()) ad.deltas[fid] += d;
-                        else ad.deltas[fid] -= d;
+                    if (auto d = extract_constant(ee.value_id(), pool)) {
+                        Rational& net = ad.deltas[fid];
+                        auto next = ee.is_increase() ? add(net, *d) : sub(net, *d);
+                        if (next) net = *next;
+                        else ad.poisoned.insert(fid);
                     }
                 }
             }
@@ -373,11 +373,11 @@ std::vector<ConservationConstraint> discover_conservation_laws(
         // Source A: constant opposite deltas
         for (auto it1 = ad.deltas.begin(); it1 != ad.deltas.end(); ++it1) {
             if (ad.poisoned.count(it1->first)) continue;
-            if (std::abs(it1->second) < 1e-12) continue;
+            if (it1->second.num == 0) continue;
             for (auto it2 = std::next(it1); it2 != ad.deltas.end(); ++it2) {
                 if (ad.poisoned.count(it2->first)) continue;
-                if (std::abs(it2->second) < 1e-12) continue;
-                if (std::abs(it1->second + it2->second) < 1e-12) {
+                if (it2->second.num == 0) continue;
+                if (add(it1->second, it2->second) == Rational::of(0)) {
                     ExprID a = it1->first, b = it2->first;
                     if (b < a) std::swap(a, b);
                     candidate_pairs.insert({a, b});
@@ -450,12 +450,12 @@ std::vector<ConservationConstraint> discover_conservation_laws(
 
             // (b) Constant opposite deltas
             if (!f_has_effects == !g_has_effects) {  // both have or both don't
-                double df = 0.0, dg = 0.0;
+                Rational df = Rational::of(0), dg = Rational::of(0);
                 auto itf = ad.deltas.find(f);
                 auto itg = ad.deltas.find(g);
                 if (itf != ad.deltas.end()) df = itf->second;
                 if (itg != ad.deltas.end()) dg = itg->second;
-                if (std::abs(df + dg) < 1e-12) {
+                if (add(df, dg) == Rational::of(0)) {
                     // (c) Also check transfer match for non-constant effects
                     auto fit = ad.effects.find(f);
                     auto git = ad.effects.find(g);
@@ -484,26 +484,22 @@ std::vector<ConservationConstraint> discover_conservation_laws(
         }
         if (!valid) continue;
 
-        // Compute C = initial(f) + initial(g).
-        double init_f = 0.0, init_g = 0.0;
+        // Compute C = initial(f) + initial(g), exactly.
+        std::optional<Rational> init_f = Rational::of(0), init_g = Rational::of(0);
         for (const auto& assignment : problem.initial_state()) {
             ExprID fid = assignment.fluent_id();
-            if (fid == f) {
-                init_f = extract_constant(assignment.value_id(), pool);
-                if (!std::isfinite(init_f)) { valid = false; break; }
-            } else if (fid == g) {
-                init_g = extract_constant(assignment.value_id(), pool);
-                if (!std::isfinite(init_g)) { valid = false; break; }
-            }
+            if (fid == f) init_f = extract_constant(assignment.value_id(), pool);
+            else if (fid == g) init_g = extract_constant(assignment.value_id(), pool);
         }
-        if (!valid) continue;
+        auto constant = init_f && init_g ? add(*init_f, *init_g) : std::nullopt;
+        if (!constant) continue;
 
         ConservationConstraint cc;
         cc.fluent1_id = f;
         cc.fluent2_id = g;
-        cc.constant = init_f + init_g;
+        cc.constant = *constant;
         cc.label = pool.to_string(f) + " + " + pool.to_string(g) +
-                   " == " + std::to_string(cc.constant);
+                   " == " + cc.constant.to_string();
         result.push_back(std::move(cc));
     }
 
@@ -523,19 +519,16 @@ void derive_bounds_from_conservations(
         auto it2 = bounds.find(cons.fluent2_id);
         if (it1 == bounds.end() || it2 == bounds.end()) continue;
 
-        double C = cons.constant;
+        const Interval C = Interval::of(cons.constant);
 
-        // f + g == C  =>  f <= C - lower(g),  f >= C - upper(g)
-        if (std::isfinite(it2->second.lower))
-            it1->second.upper = std::min(it1->second.upper, C - it2->second.lower);
-        if (std::isfinite(it2->second.upper))
-            it1->second.lower = std::max(it1->second.lower, C - it2->second.upper);
-
-        // Symmetric: g <= C - lower(f),  g >= C - upper(f)
-        if (std::isfinite(it1->second.lower))
-            it2->second.upper = std::min(it2->second.upper, C - it1->second.lower);
-        if (std::isfinite(it1->second.upper))
-            it2->second.lower = std::max(it2->second.lower, C - it1->second.upper);
+        // f + g == C  =>  f in C - g (outward rounded), and symmetrically.
+        auto narrow = [&](Interval& x, const Interval& y) {
+            const Interval implied = C - y;
+            x.lower = std::max(x.lower, implied.lower);
+            x.upper = std::min(x.upper, implied.upper);
+        };
+        narrow(it1->second, it2->second);
+        narrow(it2->second, it1->second);
     }
 }
 

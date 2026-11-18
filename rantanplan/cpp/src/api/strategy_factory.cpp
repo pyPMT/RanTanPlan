@@ -16,7 +16,6 @@
 #include "../planners/incremental_horizon_planner.hpp"
 #include "../planners/double_tail_planner.hpp"
 #include "../planners/branch_and_bound_planner.hpp"
-#include "../planners/cgb_planner.hpp"
 
 #include "../planners/propagators/modules/exists_cycle_module.hpp"
 #include "../planners/propagators/modules/forall_mutex_module.hpp"
@@ -38,9 +37,33 @@ static bool is_none(InterferenceKind kind) {
     return kind == InterferenceKind::None;
 }
 
+static bool is_semantic(InterferenceKind kind) {
+    return kind == InterferenceKind::EagerSemantic ||
+           kind == InterferenceKind::LazySemantic;
+}
+
 void StrategyFactory::validate(const StrategySpec& spec,
                                const std::string& strategy_name,
                                const std::string& horizon_schedule) {
+    // Semantic interference lets two actions share a step when their writes
+    // to one fluent commute, and it takes the step to apply those writes one
+    // after another: two increases of x add up, as PDDL 2.1 allows for
+    // concurrent increases. The Grounded encoder does not add them up. It
+    // states each write as its own equation on the next value,
+    // x^{t+1} = x^t + d, so two increases by the same amount are encoded as
+    // one, and the plan it returns is invalid. Semantic interference is
+    // therefore only sound with an encoder that composes the writes of one
+    // step, as the Chained encoder does. Syntactic interference keeps two
+    // writers of one numeric fluent in different steps, so it is sound with
+    // the Grounded encoder.
+    if (is_semantic(spec.interference) && spec.encoder == EncoderFamily::Grounded) {
+        throw std::invalid_argument(
+            "Semantic interference is only sound with an encoder that composes "
+            "the writes of one step to one fluent, which the Grounded encoder "
+            "does not; use the chained encoder (strategies elsc and flsc) or "
+            "syntactic interference (strategies e and f)");
+    }
+
     // Lazy interference requires a propagator that uses has_interference()
     // rather than graph methods (encode_parallelism needs the graph).
     // Lazy + ForallEager needs no check here: ForallMutexModule takes an
@@ -58,12 +81,12 @@ void StrategyFactory::validate(const StrategySpec& spec,
     }
 
     if (spec.propagator.count(PropagatorModuleKind::FrameAxiom) &&
-        (spec.planner == PlannerKind::CGB || uses_double_tail(spec))) {
+        uses_double_tail(spec)) {
         throw std::invalid_argument(
             "FrameAxiom propagator module is only validated with the "
-            "Sequential planner (incompatible with CGB and DoubleTail). "
+            "Sequential planner (incompatible with DoubleTail). "
             "It registers transitions contiguously by stride arithmetic, "
-            "which those planners violate.");
+            "which that planner violates.");
     }
 
     if (horizon_schedule != "linear" && uses_double_tail(spec)) {
@@ -75,19 +98,19 @@ void StrategyFactory::validate(const StrategySpec& spec,
 }
 
 void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
-    // Declared numeric bounds (bounded int/real fluents) are only sound with the
-    // Grounded encoder, which asserts them at every concrete timestep via
-    // encode_state_constraints. The Chained and R2E encoders reason over
+    // Declared numeric bounds (bounded int/real fluents) hold in every state a
+    // plan passes through. The Grounded encoder asserts them at every concrete
+    // timestep (encode_state_constraints), and the R2E encoder on every chain
+    // variable (encode_declared_bounds). The Chained encoder reasons over
     // chain-substituted intermediate variables (ζ) that bypass those boundary
     // constraints, so a plan could transiently violate a declared bound. Bail
-    // out rather than silently drop the bound (per-variable soundness analysis
-    // and encoder demotion are left for a follow-up).
-    if (problem.has_declared_bounds() && spec.encoder != EncoderFamily::Grounded) {
-        throw std::invalid_argument(
-            "Declared numeric bounds (bounded int/real fluent types) are only "
-            "sound with the Grounded encoder; this strategy's chained/relaxed "
-            "encoder uses intermediate variables that can violate the bounds. "
-            "Use a Grounded-encoder strategy such as els, seq, or f.");
+    // out rather than silently drop the bound.
+    if (problem.has_declared_bounds() && spec.encoder == EncoderFamily::Chained) {
+        throw UnsupportedProblemError(
+            "Declared numeric bounds (bounded int/real fluent types) are not "
+            "supported by the Chained encoder: its intermediate variables can "
+            "violate the bounds. Use a strategy on another encoder, such as e, "
+            "f, seq or r2e.");
     }
 
     if (uses_branch_and_bound(spec) &&
@@ -257,16 +280,13 @@ std::unique_ptr<BasePlanner> StrategyFactory::create_planner(
             planner = std::make_unique<BranchAndBoundPlanner>(
                 problem, encoder, ctx, interference, spec.semantics);
             break;
-        case PlannerKind::CGB:
-            planner = std::make_unique<CGBPlanner>(problem, encoder, ctx);
-            break;
     }
     if (!planner) {
         throw std::invalid_argument("Unknown planner kind");
     }
 
     // Route preprocessing artifacts: profile for all planners, then
-    // planner-declared consumption (achievers for CGB, SDAC bounds for B&B).
+    // planner-declared consumption (SDAC bounds for B&B).
     planner->set_arithmetic_profile(pre.arithmetic_profile);
     planner->consume_artifacts(pre);
     return planner;
