@@ -1893,6 +1893,59 @@ def test_conservation_constant_is_exact():
     assert_valid(p, r.plan)
 
 
+def _one_way_pair_problem(declared_first):
+    """`spoil` affects `use` (it makes p false, which use needs) and `use`
+    does not affect `spoil`, so one step can hold both only as use-then-spoil:
+
+        use    : PRE p   effect q := true
+        spoil  :         effect p := false, x += 1
+        link   :         effect q := false, x += 1
+        init  p, not q, x = 0;  goal  q and not p and x >= 1
+
+    `link` writes q and x as well, so it conflicts with both and puts the
+    three in one strongly connected component of the interference graph,
+    where the step order decides which pairs are forbidden. The actions are
+    declared with `declared_first` first, so the two cases give `use` the
+    lower id in one and the higher id in the other."""
+    p, q = Fluent("p"), Fluent("q")
+    x = Fluent("x", IntType())
+    use = InstantaneousAction("use")
+    use.add_precondition(p())
+    use.add_effect(q(), True)
+    spoil = InstantaneousAction("spoil")
+    spoil.add_effect(p(), False)
+    spoil.add_increase_effect(x(), 1)
+    link = InstantaneousAction("link")
+    link.add_effect(q(), False)
+    link.add_increase_effect(x(), 1)
+    problem = Problem(f"one_way_pair_{declared_first}_first")
+    problem.add_fluent(p, default_initial_value=False)
+    problem.add_fluent(q, default_initial_value=False)
+    problem.add_fluent(x, default_initial_value=0)
+    problem.set_initial_value(p(), True)
+    pair = [use, spoil] if declared_first == "use" else [spoil, use]
+    for a in pair + [link]:
+        problem.add_action(a)
+    problem.add_goal(And(q(), Not(p()), GE(x(), 1)))
+    return problem
+
+
+def test_exists_step_runs_the_affected_action_first():
+    """Exists-step semantics orders each step so that an action runs before
+    the actions that affect it, whatever their ids: use and spoil share the
+    one step of the plan."""
+    for strategy in ("e", "elsc"):
+        for declared_first in ("use", "spoil"):
+            problem = _one_way_pair_problem(declared_first)
+            r = solve(problem, strategy=strategy)
+            case = f"{strategy}, {declared_first} first"
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"{case}: {r.status}"
+            assert_valid(problem, r.plan)
+            assert _metric(r, "planner.solution_horizon") == 1, \
+                f"{case}: {[a.action.name for a in r.plan.actions]}"
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -1940,4 +1993,5 @@ CASES = [
     test_bounds_admit_values_no_double_holds,
     test_derived_bound_reaches_the_solver_as_its_exact_double,
     test_conservation_constant_is_exact,
+    test_exists_step_runs_the_affected_action_first,
 ]
