@@ -13,14 +13,17 @@
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
 #include <nanobind/stl/unique_ptr.h>
 #include <nanobind/stl/vector.h>
 
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "api/ir.hpp"
@@ -193,6 +196,27 @@ std::string export_formula_ir(const ir::ProblemIR& problem_ir,
     return api::export_formula(problem);
 }
 
+/// One pool node as (kind, type name, text): see Preprocessed.pool_nodes.
+using PoolNodeIR = std::tuple<std::string, std::string, std::string>;
+
+std::vector<PoolNodeIR> pool_nodes(const Preprocessed& handle) {
+    static const char* const kind_names[] = {
+        "unknown", "constant", "parameter", "fluent_symbol", "function_symbol",
+        "state_variable", "function_application", "variable"};
+    const Problem& problem = handle.pre.problem;
+    const ExprPool& pool = problem.pool();
+    std::vector<PoolNodeIR> nodes;
+    nodes.reserve(pool.size());
+    for (size_t i = 0; i < pool.size(); ++i) {
+        ExprID id{static_cast<int32_t>(i)};
+        const auto kind = static_cast<size_t>(pool.kind(id));
+        const Type* type = problem.type_for_id(id);
+        nodes.emplace_back(kind < std::size(kind_names) ? kind_names[kind] : "unknown",
+                           type ? type->name() : "", pool.to_string(id));
+    }
+    return nodes;
+}
+
 std::string z3_version() {
     unsigned major = 0, minor = 0, build = 0, revision = 0;
     Z3_get_version(&major, &minor, &build, &revision);
@@ -320,6 +344,10 @@ NB_MODULE(_rantanplan, m) {
                      [](const Preprocessed& p) { return p.pre.lower_bound; })
         .def_prop_ro("consumed",
                      [](const Preprocessed& p) { return p.consumed; })
+        .def("pool_nodes", &pool_nodes,
+             "Every node interned while loading and preprocessing, in id "
+             "order, as (kind, type name, text); the type name is '' for an "
+             "untyped node. For tests of node identity: one value, one node.")
         .def("interrupt",
              [](Preprocessed& p) { p.interrupt_slot.interrupt(); },
              "Cancel the solve currently running on this handle, from any "

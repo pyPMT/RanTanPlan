@@ -70,13 +70,10 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
         // (the branch above already handled — and took precedence for — any
         // UP-declared default). Booleans are closed-world false; numerics are 0
         // clamped into the declared bounds. Unlike the declared-default branch,
-        // this synthesises a fresh constant node rather than reusing a UP node.
-        ExprNode constant_node;
-        constant_node.kind = static_cast<int>(ExprKind::CONSTANT);
-        constant_node.type_id = fluent_type_id;
-
+        // the value comes from this rule rather than from a UP node.
+        ExprID value_id;
         if (type->is_bool()) {
-            constant_node.payload = false;
+            value_id = pool->intern_bool_constant(false);
         } else {
             // int/real: 0 clamped into the declared bounds — UP rejects an
             // out-of-range initial value for a bounded type.
@@ -85,14 +82,9 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
                 if (auto lo = fluent->declared_lower_bound(); lo && v < *lo) v = *lo;
                 if (auto hi = fluent->declared_upper_bound(); hi && v > *hi) v = *hi;
             }
-            if (type->is_int()) {
-                constant_node.payload = static_cast<int64_t>(v);
-            } else {
-                constant_node.payload = v;
-            }
+            value_id = type->is_int() ? pool->intern_int_constant(static_cast<int64_t>(v))
+                                      : pool->intern_double_constant(v);
         }
-
-        ExprID value_id = pool->intern(std::move(constant_node));
         defaults.emplace_back(eid, value_id, &problem.pool());
     }
 

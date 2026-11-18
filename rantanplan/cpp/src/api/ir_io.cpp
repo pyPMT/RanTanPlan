@@ -14,30 +14,13 @@ namespace rantanplan {
 // File-local helpers (ports of the former protobuf loader's logic)
 // ============================================================================
 
-/// Resolve a UP type string to an index into the problem's type table,
-/// handling the same aliases the protobuf loader handled.
+/// Resolve a UP type string to an index into the problem's type table, or -1
+/// for "" or an unknown name.
 static int resolve_type_id(const std::string& type_str,
                            const std::vector<Type>& types,
                            const std::unordered_map<std::string, const Type*>& type_map) {
-    if (type_str.empty()) return -1;
-
-    std::string resolved = type_str;
-    if (type_str == "up:integer") resolved = "up:int";
-    else if (type_str == "up:boolean") resolved = "up:bool";
-
-    auto it = type_map.find(resolved);
-    if (it == type_map.end() && resolved != type_str) {
-        it = type_map.find(type_str);
-    }
-    if (it != type_map.end()) {
-        const Type* found_type = it->second;
-        for (size_t i = 0; i < types.size(); ++i) {
-            if (&types[i] == found_type) {
-                return static_cast<int>(i);
-            }
-        }
-    }
-    return -1;
+    auto it = type_map.find(type_str);
+    return it == type_map.end() ? -1 : static_cast<int>(it->second - types.data());
 }
 
 /// Context shared by the loading helpers.
@@ -279,8 +262,8 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
     // --- Load types ---
     problem.types_->clear();
     problem.type_name_to_ptr_.clear();
+    // The built-in types, at BOOL_TYPE_ID, INT_TYPE_ID and REAL_TYPE_ID.
     problem.types_->emplace_back("up:bool");
-    problem.types_->emplace_back("up:int");
     problem.types_->emplace_back("up:integer");
     problem.types_->emplace_back("up:real");
     for (const auto& ir_type : ir_problem.types) {

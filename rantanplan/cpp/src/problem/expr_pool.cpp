@@ -1,4 +1,5 @@
 #include "expr_pool.hpp"
+#include "type.hpp"
 #include <sstream>
 
 namespace rantanplan {
@@ -46,8 +47,8 @@ std::string ExprPool::state_variable_signature(const ExprNode& node) const {
     if (static_cast<ExprKind>(node.kind) != ExprKind::STATE_VARIABLE) return {};
     if (node.children.empty()) return {};
 
-    // GROUND atoms only: children[0] a fluent symbol, children[1..] all object
-    // CONSTANTs. A lifted node (PARAMETER or VARIABLE arguments) is excluded
+    // GROUND atoms only: children[0] a fluent symbol, children[1..] all
+    // CONSTANTs (objects or integers). A lifted node (PARAMETER or VARIABLE arguments) is excluded
     // deliberately — it never becomes a Z3 variable, since grounding replaces it
     // first, so it cannot participate in the id-vs-name mismatch this guards
     // against. Without that restriction the signature also over-merges: a schema
@@ -62,14 +63,38 @@ std::string ExprPool::state_variable_signature(const ExprNode& node) const {
         if (!child.valid() || static_cast<size_t>(child.id) >= nodes_.size()) return {};
         const ExprNode& arg = nodes_[child.id];
         if (i > 0 && static_cast<ExprKind>(arg.kind) != ExprKind::CONSTANT) return {};
-        if (!std::holds_alternative<std::string>(arg.payload)) return {};
-        signature += std::get<std::string>(arg.payload);
+        if (std::holds_alternative<std::string>(arg.payload)) {
+            signature += std::get<std::string>(arg.payload);
+        } else if (i > 0 && std::holds_alternative<int64_t>(arg.payload)) {
+            // An integer argument by its digits, whatever the constant's type.
+            signature += std::to_string(std::get<int64_t>(arg.payload));
+        } else {
+            return {};
+        }
         signature += '\0';  // unambiguous separator: object names cannot contain it
     }
     return signature;
 }
 
 ExprID ExprPool::intern(ExprNode node) {
+    // The types of these leaves follow from what they are, not from the
+    // caller, so that no producer can give one atom or value a second type.
+    // A state variable has its head's type: the fluent's value type.
+    if (static_cast<ExprKind>(node.kind) == ExprKind::STATE_VARIABLE && !node.children.empty()) {
+        ExprID head = node.children[0];
+        if (head.valid() && static_cast<size_t>(head.id) < nodes_.size() &&
+            static_cast<ExprKind>(nodes_[head.id].kind) == ExprKind::FLUENT_SYMBOL) {
+            node.type_id = nodes_[head.id].type_id;
+        }
+    }
+    // A constant has its value's type. An object constant (a string payload)
+    // keeps the object's type, which only the caller knows.
+    if (static_cast<ExprKind>(node.kind) == ExprKind::CONSTANT) {
+        if (std::holds_alternative<bool>(node.payload)) node.type_id = BOOL_TYPE_ID;
+        else if (std::holds_alternative<int64_t>(node.payload)) node.type_id = INT_TYPE_ID;
+        else if (std::holds_alternative<double>(node.payload)) node.type_id = REAL_TYPE_ID;
+    }
+
     std::string key = node.canonical_key();
     auto it = intern_.find(key);
     if (it != intern_.end()) {

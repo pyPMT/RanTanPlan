@@ -457,14 +457,19 @@ private:
                                          ExprID guard) {
         const int type_id = pool_.type_id(fid);
         double constant = 0.0;
+        bool integer = true;  // every constant summed is an integer
         std::vector<ExprID> added, subtracted;
         for (const EffectExpression* e : writes) {
             const bool increase = e->kind() == EffectExpression::Kind::INCREASE;
-            if (auto c = numeric_constant(pool_, e->value_id())) constant += increase ? *c : -*c;
-            else (increase ? added : subtracted).push_back(e->value_id());
+            if (auto c = numeric_constant(pool_, e->value_id())) {
+                constant += increase ? *c : -*c;
+                integer = integer && pool_.payload_is_int(e->value_id());
+            } else {
+                (increase ? added : subtracted).push_back(e->value_id());
+            }
         }
-        if (constant > 0) added.push_back(pool_.intern_double_constant(constant, type_id));
-        if (constant < 0) subtracted.push_back(pool_.intern_double_constant(-constant, type_id));
+        if (constant > 0) added.push_back(pool_.intern_folded_constant(constant, integer));
+        if (constant < 0) subtracted.push_back(pool_.intern_folded_constant(-constant, integer));
         if (added.empty() && subtracted.empty()) return std::nullopt;
 
         auto sum = [&](const std::vector<ExprID>& terms) {

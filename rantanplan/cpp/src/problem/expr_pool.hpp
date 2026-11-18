@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -129,21 +130,24 @@ public:
     // an error when aliased_state_variable_count() is nonzero.
     //
     // An alias needs two producers that build one atom with a different type
-    // somewhere: an argument constant typed by a parameter's declared
-    // (super)type instead of the object's own type, or a head symbol typed
-    // differently (say, bounded against base numeric type). Today the
-    // converter and the grounder both type an object constant by the object's
-    // own type, and minted cells (array and set lowering) are interned once
-    // and reused.
+    // somewhere. Most types are fixed in one place so that this cannot happen:
+    //   - intern() gives a state variable its head's type, and a bool, int or
+    //     real constant its value's type. There is one int type,
+    //     INT_TYPE_ID. Otherwise the goal visited(3) and the effect
+    //     visited(?i) with ?i = 3 (an integer parameter instantiated by
+    //     IntParameterInstantiationPass) could be two nodes;
+    //   - object constants are typed by the object's own type, by the
+    //     converter and the grounder alike, and minted cells (array and set
+    //     lowering) are interned once and reused.
+    // What is left is a producer that breaks one of these: typing an object by
+    // a parameter's declared (super)type, or a head symbol differently (say,
+    // int against real). Bounds cannot do it: a bounded integer is the base
+    // int type, its bounds are data on the Fluent (see Type).
     //
-    // The signature covers atoms whose arguments are named constants only. No
-    // atom with integer arguments exists today (integer fluent parameters are
-    // unsupported, set elements must be user types). Before supporting either,
-    // extend state_variable_signature() to integer payloads and give every
-    // integer argument one type, say the fluent's declared parameter type: the
-    // converter types an integer constant as up:int, while intern_int_constant()
-    // (used by IntParameterInstantiationPass) leaves it untyped, so goal
-    // visited(3) and the effect visited(?i) with ?i = 3 would be two nodes.
+    // The signature covers atoms whose arguments are object or integer
+    // constants. No atom with integer arguments exists yet (integer fluent
+    // parameters are unsupported, set elements must be user types, and the
+    // encoder rejects non-string arguments), but the check sees them already.
     //
     // The interning key itself stays finer (set_lowering_pass.cpp:147 and
     // array_lowering.cpp rely on type_id keeping nodes distinct). Instead each
@@ -311,6 +315,9 @@ public:
     // Semantic helpers
     // ========================================================================
 
+    // A constant's type follows from its value, set by intern(), so these
+    // helpers take none.
+
     /// Intern an integer constant and return its ExprID.
     ExprID intern_int_constant(int64_t value) {
         ExprNode node;
@@ -319,13 +326,24 @@ public:
         return intern(std::move(node));
     }
 
-    /// Intern a double constant and return its ExprID.
-    ExprID intern_double_constant(double value, int type_id = -1) {
+    /// Intern a real constant and return its ExprID.
+    ExprID intern_double_constant(double value) {
         ExprNode node;
         node.kind = static_cast<int>(ExprKind::CONSTANT);
-        node.type_id = type_id;
         node.payload = value;
         return intern(std::move(node));
+    }
+
+    /// Intern the result of folding arithmetic, which is computed in double:
+    /// an integer constant if `integer` (every operand was an integer and the
+    /// operation keeps integers) and the value fits one, else a real one. So
+    /// folded 2 + 3 is the node of the literal 5.
+    ExprID intern_folded_constant(double value, bool integer) {
+        // Whole and below 2^63 in magnitude, so the cast is exact.
+        if (integer && std::trunc(value) == value && std::fabs(value) < 0x1p63) {
+            return intern_int_constant(static_cast<int64_t>(value));
+        }
+        return intern_double_constant(value);
     }
 
     /// Intern a boolean constant and return its ExprID.
@@ -382,9 +400,9 @@ public:
 private:
     /// Payload signature of a state variable — head symbol payload plus each
     /// argument payload, which is exactly what the Z3 variable name is built
-    /// from. Empty if the node is not a state variable with string payloads
-    /// throughout (nested fluent arguments have no name and are rejected by the
-    /// encoding visitor anyway), which disables aliasing for it.
+    /// from. Empty unless every argument is an object or integer constant
+    /// (nested fluent arguments have no name and are rejected by the encoding
+    /// visitor anyway), which disables aliasing for it.
     std::string state_variable_signature(const ExprNode& node) const;
 
     std::vector<ExprNode> nodes_;

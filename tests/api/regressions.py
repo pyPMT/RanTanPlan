@@ -5,10 +5,13 @@ They live in the API suite so they run on every invocation, including
 ``--quick`` (the full PDDL sweep that also covers them is skipped there).
 """
 from unified_planning.shortcuts import (
-    Fluent, InstantaneousAction, Problem, BoolType, IntType, UserType, Object,
-    And, Count, Equals, GE, GT, Iff, LE, LT, Not, Or, Plus, Times,
+    Fluent, InstantaneousAction, Problem, ArrayType, BoolType, IntType, UserType,
+    Object, And, Count, Equals, GE, GT, Iff, Int, LE, LT, Not, Or, Plus, Times,
 )
 from unified_planning.engines import PlanGenerationResultStatus
+
+from rantanplan import _rantanplan
+from rantanplan.converter import convert_problem
 
 from ..harness import solve, assert_valid
 
@@ -1504,6 +1507,113 @@ def test_exclusive_guards_are_left_alone():
         assert _metric(r, "effect_normalization.overlap_queries") == 1, strategy
 
 
+def _pool_nodes(problem):
+    """Every node of the preprocessed problem's expression pool, as
+    (kind, type name, text). The pool keeps every node ever interned, so this
+    shows the converter's nodes beside those the passes made."""
+    pre = _rantanplan.preprocess(convert_problem(problem),
+                                 ["--strategy", "seq", "--verbosity", "silent"])
+    return pre.pool_nodes()
+
+
+def test_integer_declarations_and_nodes_have_one_type():
+    """The type table has one int type, so a type taken from a declaration is
+    the type of the converter's nodes.
+
+    It had two, the planner's own up:int beside UP's up:integer: the
+    converter's nodes resolved "up:integer" to up:int, but declarations were
+    looked up by name, so an int fluent's Fluent::type() was up:integer. Array
+    lowering mints each cell from the declaration, so the cells of `a` were
+    typed up:integer while `x` and the literals were up:int. Now the one entry
+    is UP's up:integer. A pass that made an atom the converter also
+    makes, with its declaration's type, would have made an alias."""
+    x = Fluent("x", IntType(0, 9))
+    a = Fluent("a", ArrayType(2, IntType(0, 9)))
+    p = Problem("int_types")
+    p.add_fluent(x, default_initial_value=0)
+    p.add_fluent(a, default_initial_value=0)
+    p.set_initial_value(a, [0, 0])
+    em = p.environment.expression_manager
+    w = InstantaneousAction("w")
+    w.add_effect(em.ArrayIndex(a(), Int(0)), 1)
+    w.add_effect(x(), 2)
+    p.add_action(w)
+    p.add_goal(And(Equals(em.ArrayIndex(a(), Int(0)), 1), Equals(x(), 2)))
+
+    nodes = _pool_nodes(p)
+    atoms = {text: type_name for kind, type_name, text in nodes
+             if kind == "state_variable" and text in ("(x)", "(a[0])", "(a[1])")}
+    literals = {type_name for kind, type_name, text in nodes
+                if kind == "constant" and text.isdigit()}
+    assert len(atoms) == 3, f"expected atoms x, a[0], a[1]; got {atoms}"
+    assert set(atoms.values()) | literals == {"up:integer"}, \
+        f"int atoms {atoms} and int literals {literals} should share one type"
+
+
+def test_boolean_constants_have_one_node_each():
+    """`true` is one node, typed bool, whoever interns it.
+
+    The converter types its `true` (the precondition of an action without
+    one) as up:bool, while intern_bool_constant(), behind every pass's
+    ExprBuilder::true_id(), gave no type. So most problems had two `true`
+    nodes, and Problem::is_bool_type() said no to the passes' one."""
+    b, c = Fluent("b"), Fluent("c")
+    p = Problem("bool_constants")
+    p.add_fluent(b, default_initial_value=False)
+    p.add_fluent(c, default_initial_value=False)
+    s = InstantaneousAction("s")
+    s.add_effect(b(), True)
+    t = InstantaneousAction("t")
+    t.add_precondition(b())
+    t.add_effect(c(), True)
+    p.add_action(s)
+    p.add_action(t)
+    p.add_goal(c())
+
+    bools = [(type_name, text) for kind, type_name, text in _pool_nodes(p)
+             if kind == "constant" and text in ("true", "false")]
+    assert ("up:bool", "true") in bools, f"no typed true among {bools}"
+    assert len(bools) == len(set(text for _, text in bools)), \
+        f"a boolean value has more than one node: {bools}"
+    assert all(type_name == "up:bool" for type_name, _ in bools), bools
+
+
+def test_folded_integers_are_integer_constants():
+    """Folding integer arithmetic gives an integer constant: the node of the
+    literal with that value.
+
+    Folding computes in double and stored the double: static-fluent folding
+    turned `k + 2` (k static, 3) into an untyped 5.000000, and effect
+    normalisation summed `y += 3` and `y += 4` into a 7.000000 typed int. Each
+    sat beside the goal's literal 5 or 7 as a second node for one value."""
+    x = Fluent("x", IntType(0, 20))
+    y = Fluent("y", IntType(0, 20))
+    k = Fluent("k", IntType(0, 9))
+    p = Problem("folded_integers")
+    p.add_fluent(x, default_initial_value=0)
+    p.add_fluent(y, default_initial_value=0)
+    p.add_fluent(k, default_initial_value=3)
+    set_x = InstantaneousAction("set_x")
+    set_x.add_effect(x(), Plus(k(), 2))
+    inc_y = InstantaneousAction("inc_y")
+    inc_y.add_increase_effect(y(), 3)
+    inc_y.add_increase_effect(y(), 4)
+    p.add_action(set_x)
+    p.add_action(inc_y)
+    p.add_goal(And(Equals(x(), 5), Equals(y(), 7)))
+
+    constants = [(type_name, text) for kind, type_name, text in _pool_nodes(p)
+                 if kind == "constant"]
+    for value in (5, 7):
+        nodes = [(t, s) for t, s in constants if s.startswith(str(value))]
+        assert nodes == [("up:integer", str(value))], \
+            f"{value} should be one integer constant, got {nodes}"
+
+    r = solve(p, strategy=GROUNDED)
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert_valid(p, r.plan)
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -1536,4 +1646,7 @@ CASES = [
     test_assignment_and_increase_restrict_the_precondition,
     test_same_assignment_twice_is_left_alone,
     test_exclusive_guards_are_left_alone,
+    test_integer_declarations_and_nodes_have_one_type,
+    test_boolean_constants_have_one_node_each,
+    test_folded_integers_are_integer_constants,
 ]

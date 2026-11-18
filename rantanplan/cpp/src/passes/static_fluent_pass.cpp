@@ -26,18 +26,22 @@ static std::optional<double> try_get_numeric(const ExprPool& pool, ExprID id) {
 // ============================================================================
 
 // Try to fold a FUNCTION_APPLICATION whose arguments (children[1..]) are all
-// numeric constants. Returns a folded CONSTANT ExprID or EXPR_NULL.
+// numeric constants. Returns a folded CONSTANT ExprID or EXPR_NULL. The result
+// is an integer if every argument is one and the operation keeps integers (all
+// but division).
 static ExprID try_fold_arithmetic(ExprPool& pool, ExprOperator op,
-                                   const std::vector<ExprID>& children, int type_id) {
+                                   const std::vector<ExprID>& children) {
     // children[0] = head symbol; children[1..] = arguments
     if (children.size() < 2) return EXPR_NULL;
 
     // Collect numeric values from arguments
     std::vector<double> vals;
+    bool integer = op != ExprOperator::DIVIDE;
     for (size_t i = 1; i < children.size(); ++i) {
         auto v = try_get_numeric(pool, children[i]);
         if (!v) return EXPR_NULL;
         vals.push_back(*v);
+        integer = integer && pool.payload_is_int(children[i]);
     }
 
     double result;
@@ -77,7 +81,7 @@ static ExprID try_fold_arithmetic(ExprPool& pool, ExprOperator op,
             return EXPR_NULL;
     }
 
-    return pool.intern_double_constant(result, type_id);
+    return pool.intern_folded_constant(result, integer);
 }
 
 // ============================================================================
@@ -203,7 +207,7 @@ static ExprID simplify_expr(ExprPool& pool, ExprBuilder& builder, ExprID expr,
         auto op = static_cast<ExprOperator>(orig_op);
 
         if (is_arithmetic_operator(op)) {
-            ExprID folded = try_fold_arithmetic(pool, op, new_children, orig_type_id);
+            ExprID folded = try_fold_arithmetic(pool, op, new_children);
             if (folded.valid()) return folded;
         } else if (is_comparison_operator(op)) {
             ExprID folded = try_fold_comparison(pool, op, new_children);
