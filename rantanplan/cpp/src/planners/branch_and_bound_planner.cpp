@@ -46,7 +46,7 @@ BranchAndBoundPlanner::BranchAndBoundPlanner(
 }
 
 void BranchAndBoundPlanner::add_timestep_constraints(int timestep) {
-    BasePlanner::add_timestep_constraints(solver_, encoder_, *propagator_strategy_, timestep);
+    BasePlanner::add_timestep_constraints(solver_, encoder_, propagator_strategy_.get(), timestep);
 }
 
 /// Extract the numeric cost value from a Z3 model. Handles Z3's decimal string
@@ -108,7 +108,7 @@ Plan BranchAndBoundPlanner::search() {
     int start_timestep = std::max(0, config.planner.start_timestep);
     schedule_ = HorizonSchedule::from_string(config.planner.horizon_schedule);
 
-    std::string search_msg = "B&B search with propagator: " + propagator_strategy_->get_name();
+    std::string search_msg = "B&B search with propagator: " + get_propagator_strategy_name();
     if (start_timestep > 0) {
         search_msg += " from timestep " + std::to_string(start_timestep);
     }
@@ -122,7 +122,7 @@ Plan BranchAndBoundPlanner::search() {
 
     // Initialize
     solver_.add(encoder_.encode_initial_state());
-    propagator_strategy_->register_timestep_variables(0);
+    register_propagator_variables(0);
     abstract_.initialize();
 
     // Permanent abstract constraints (add once, like encode_actions/frames)
@@ -246,7 +246,7 @@ Plan BranchAndBoundPlanner::search() {
                     Logger::instance().info(
                         "\n*** UNSOLVABLE_PROVEN: no plan exists ***");
                     collect_statistics();
-                    propagator_strategy_->cleanup();
+                    cleanup_propagator();
                     return Plan();
                 } else {
                     // GLOBALLY OPTIMAL
@@ -260,7 +260,7 @@ Plan BranchAndBoundPlanner::search() {
                         ", cost=" + std::to_string(upper_bound) +
                         " (total time: " + std::to_string(total_time) + "s) ***");
                     collect_statistics();
-                    propagator_strategy_->cleanup();
+                    cleanup_propagator();
                     return best_plan;
                 }
             } else if (result == z3::sat) {
@@ -337,7 +337,7 @@ Plan BranchAndBoundPlanner::search() {
     }
 
     collect_statistics();
-    propagator_strategy_->cleanup();
+    cleanup_propagator();
     return best_plan;
 }
 

@@ -348,6 +348,10 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
 
     // Add logging module if requested
     if (config.has_log_file()) {
+        if (!propagator) {
+            propagator = std::make_unique<rantanplan::PropagatorStrategy>(
+                planner->get_solver(), problem, *encoder);
+        }
         propagator->add_module(std::make_unique<rantanplan::LoggingModule>(
             config.logging.log_file, config.planner.strategy));
     }

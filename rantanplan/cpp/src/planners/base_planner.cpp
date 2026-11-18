@@ -88,7 +88,15 @@ void BasePlanner::set_propagator_strategy(std::unique_ptr<PropagatorStrategy> pr
 }
 
 std::string BasePlanner::get_propagator_strategy_name() const {
-    return propagator_strategy_->get_name();
+    return propagator_strategy_ ? propagator_strategy_->get_name() : "none";
+}
+
+void BasePlanner::register_propagator_variables(int timestep) {
+    if (propagator_strategy_) propagator_strategy_->register_timestep_variables(timestep);
+}
+
+void BasePlanner::cleanup_propagator() {
+    if (propagator_strategy_) propagator_strategy_->cleanup();
 }
 
 void BasePlanner::init_deadline() {
@@ -165,7 +173,7 @@ void BasePlanner::collect_statistics() {
 }
 
 void BasePlanner::add_timestep_constraints(z3::solver& solver, BaseEncoder& encoder,
-                                           PropagatorStrategy& propagator, int timestep,
+                                           PropagatorStrategy* propagator, int timestep,
                                            bool prefix_monotone) {
     solver.add(encoder.encode_actions(timestep));
     solver.add(encoder.encode_frames(timestep));
@@ -175,11 +183,11 @@ void BasePlanner::add_timestep_constraints(z3::solver& solver, BaseEncoder& enco
     solver.add(encoder.encode_symmetries(timestep));
     solver.add(encoder.encode_state_constraints(timestep));
 
-    if (!propagator.manages_parallelism_constraints()) {
+    if (!propagator || !propagator->manages_parallelism_constraints()) {
         solver.add(encoder.encode_parallelism(timestep));
     }
 
-    propagator.register_timestep_variables(timestep + 1);
+    if (propagator) propagator->register_timestep_variables(timestep + 1);
 }
 
 } // namespace rantanplan

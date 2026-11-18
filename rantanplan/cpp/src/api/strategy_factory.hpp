@@ -61,6 +61,7 @@ public:
     static std::unique_ptr<BaseEncoder> create_encoder(
         const StrategySpec& spec, PreprocessedProblem& pre, z3::context& ctx);
 
+    /// The propagator hosting the spec's modules; null when it has none.
     static std::unique_ptr<PropagatorStrategy> create_propagator(
         const StrategySpec& spec, z3::solver& solver,
         const Problem& problem, BaseEncoder& encoder);

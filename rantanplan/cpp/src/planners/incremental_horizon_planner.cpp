@@ -35,7 +35,7 @@ void IncrementalHorizonPlanner::debug_output_constraints() {
 }
 
 void IncrementalHorizonPlanner::add_timestep_constraints(int timestep) {
-    BasePlanner::add_timestep_constraints(solver_, encoder_, *propagator_strategy_, timestep);
+    BasePlanner::add_timestep_constraints(solver_, encoder_, propagator_strategy_.get(), timestep);
 }
 
 Plan IncrementalHorizonPlanner::search() {
@@ -47,7 +47,7 @@ Plan IncrementalHorizonPlanner::search() {
     // Initialise the horizon schedule from config.
     schedule_ = HorizonSchedule::from_string(config.planner.horizon_schedule);
 
-    std::string search_msg = "Starting search with propagator: " + propagator_strategy_->get_name();
+    std::string search_msg = "Starting search with propagator: " + get_propagator_strategy_name();
     if (start_timestep > 0) {
         search_msg += " from timestep " + std::to_string(start_timestep);
     }
@@ -63,7 +63,7 @@ Plan IncrementalHorizonPlanner::search() {
 
     // Add initial state constraints (invariant across all horizons).
     solver_.add(encoder_.encode_initial_state());
-    propagator_strategy_->register_timestep_variables(0);
+    register_propagator_variables(0);
 
     // Pre-fill all transitions for [0, start_timestep - 1] so the first SAT call
     // begins from the RPG lower bound without redundant checks.
@@ -170,12 +170,12 @@ Plan IncrementalHorizonPlanner::search() {
                 stats.set("planner.plan_length",      static_cast<double>(plan.length()));
                 stats.set("planner.solution_horizon", static_cast<double>(h));
                 collect_statistics();
-                propagator_strategy_->cleanup();
+                cleanup_propagator();
                 return plan;
             } catch (const std::exception& e) {
                 Logger::instance().error("ERROR during plan extraction: " + std::string(e.what()));
                 collect_statistics();
-                propagator_strategy_->cleanup();
+                cleanup_propagator();
                 return Plan();
             }
 
@@ -199,7 +199,7 @@ Plan IncrementalHorizonPlanner::search() {
     }
 
     collect_statistics();
-    propagator_strategy_->cleanup();
+    cleanup_propagator();
     return Plan();
 }
 

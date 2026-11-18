@@ -120,10 +120,10 @@ public:
         on_intermediate_plan_ = std::move(callback);
     }
 
-    /// Set the propagator strategy for this planner.
+    /// Set the propagator strategy for this planner (null: no propagator).
     void set_propagator_strategy(std::unique_ptr<PropagatorStrategy> propagator);
 
-    /// Get the name of the current propagator strategy.
+    /// Get the name of the current propagator strategy ("none" without one).
     std::string get_propagator_strategy_name() const;
 
     /// Access to the underlying Z3 solver.
@@ -144,7 +144,7 @@ protected:
     BaseEncoder& encoder_;
     z3::context& ctx_;
     z3::solver solver_;
-    std::unique_ptr<PropagatorStrategy> propagator_strategy_;
+    std::unique_ptr<PropagatorStrategy> propagator_strategy_;  ///< null without modules
 
     /// Horizon schedule; concrete planners initialise this from Config in their constructor.
     HorizonSchedule schedule_;
@@ -188,11 +188,18 @@ protected:
     /// Uses get_solver() to access the derived class's solver.
     void collect_statistics();
 
+    /// Register the variables of `timestep` with the propagator, if there is one.
+    void register_propagator_variables(int timestep);
+
+    /// Report the propagator's statistics, if there is one.
+    void cleanup_propagator();
+
     /// Add standard timestep constraints: actions, frames, symmetries, parallelism,
-    /// and propagator variable registration. Optionally includes prefix-monotone
-    /// constraints (omitted by DoubleTailPlanner).
+    /// and propagator variable registration (`propagator` may be null).
+    /// Optionally includes prefix-monotone constraints (omitted by
+    /// DoubleTailPlanner).
     static void add_timestep_constraints(z3::solver& solver, BaseEncoder& encoder,
-                                         PropagatorStrategy& propagator, int timestep,
+                                         PropagatorStrategy* propagator, int timestep,
                                          bool prefix_monotone = true);
 };
 

@@ -222,6 +222,10 @@ std::unique_ptr<PropagatorStrategy> StrategyFactory::create_propagator(
 
     const auto& mods = spec.propagator;
 
+    // Without modules a propagator would only take a callback for every
+    // variable Z3 assigns, with nothing to act on.
+    if (mods.empty()) return nullptr;
+
     // Enable lazy frame mode in the encoder if frame axioms are active.
     //
     // >>> ANY NEW FRAME-PROPAGATOR MODULE MUST BE ADDED HERE, and to validate()
