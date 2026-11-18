@@ -12,6 +12,10 @@ from unified_planning.shortcuts import (
 
 from ..harness import solve, assert_valid
 
+# Bounded types need the Grounded encoder: the default strategy (elsc) refuses
+# declared bounds, so the cases that declare them name a Grounded strategy.
+GROUNDED = "e"
+
 
 def _stat(result, key):
     raw = (result.metrics or {}).get(key)
@@ -110,7 +114,7 @@ def test_closure_follows_values_and_conditions_of_read_writes():
 
 def test_bounded_fluent_counts_as_read():
     problem = _bounded_problem()
-    result = solve(problem)
+    result = solve(problem, strategy=GROUNDED)
     assert _write_only_count(result) == 1
     assert _actions_left_without_effect(result) == 0
     assert_valid(problem, result.plan)

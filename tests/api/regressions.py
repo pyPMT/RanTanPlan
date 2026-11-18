@@ -12,6 +12,10 @@ from unified_planning.engines import PlanGenerationResultStatus
 
 from ..harness import solve, assert_valid
 
+# Bounded types need the Grounded encoder: the default strategy (elsc) refuses
+# declared bounds, so the cases that declare them name a Grounded strategy.
+GROUNDED = "e"
+
 
 def _metric(result, key):
     """A stats value off a PlanGenerationResult, as float, or None. Every stat
@@ -120,7 +124,7 @@ def test_goal_relevance_numeric_value_chaining():
     p.add_action(dec)
     p.add_goal(Equals(lv, 3))
 
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
         f"expected SOLVED, got {r.status} " \
         f"(numeric-value-chained action likely pruned again)"
@@ -163,7 +167,7 @@ def test_goal_relevance_numeric_rhs_chaining():
     p.add_action(setstep)
     p.add_goal(Equals(lv, 3))
 
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
         f"expected SOLVED, got {r.status} " \
         f"(RHS-chained numeric writer likely pruned again)"

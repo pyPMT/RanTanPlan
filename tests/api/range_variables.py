@@ -15,12 +15,16 @@ from unified_planning.plans import SequentialPlan, ActionInstance
 from unified_planning.model.int_variable import IntVariable
 
 from ..harness import solve
+
+# Bounded types need the Grounded encoder: the default strategy (elsc) refuses
+# declared bounds, so the cases that declare them name a Grounded strategy.
+GROUNDED = "e"
 from unified_planning.shortcuts import PlanValidator
 
 
 def _check(p, p_ref):
     """Solve P (range-var, C++ path); validate its plan against range-var-free P_ref."""
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.plan is not None, f"no plan for {p.name}"
     mapped = SequentialPlan([
         ActionInstance(p_ref.action(ai.action.name), ai.actual_parameters)

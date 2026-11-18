@@ -32,6 +32,10 @@ from unified_planning.model.int_variable import IntVariable
 
 from ..harness import solve
 
+# Bounded types need the Grounded encoder: the default strategy (elsc) refuses
+# declared bounds, so the cases that declare them name a Grounded strategy.
+GROUNDED = "e"
+
 _ENV_EM = None
 
 
@@ -66,24 +70,24 @@ def _assert_valid(p_ref, plan, label):
         f"{label}: plan invalid under array-free equivalent ({vr.status})"
 
 
-def _ar_check(p):
+def _ar_check(p, strategy=None):
     """AR oracle: native plan and RantanPlan's AR-solve both validate vs P'.
     Returns the native PlanGenerationResult for extra assertions."""
     p_ar = _ar_compile(p)
-    r = solve(p)
+    r = solve(p, strategy=strategy)
     assert r.plan is not None, f"{p.name}: no native plan"
     _assert_valid(p_ar, _map_plan(p_ar, r.plan), f"{p.name} native")
 
-    r_ar = solve(p_ar)
+    r_ar = solve(p_ar, strategy=strategy)
     assert r_ar.plan is not None, f"{p.name}: no AR-oracle plan"
     _assert_valid(p_ar, r_ar.plan, f"{p.name} AR-oracle")
     return r
 
 
-def _ref_check(p_native, p_ref):
+def _ref_check(p_native, p_ref, strategy=None):
     """Solve the array problem, validate its plan against a hand-written
     array-free reference (same action signatures). Returns the native result."""
-    r = solve(p_native)
+    r = solve(p_native, strategy=strategy)
     assert r.plan is not None, f"{p_native.name}: no native plan"
     _assert_valid(p_ref, _map_plan(p_ref, r.plan), f"{p_native.name} vs reference")
     return r
@@ -119,7 +123,7 @@ def test_1d_int_read_write_goal():
     p.add_action(cp)
     p.add_goal(And(Equals(em.ArrayIndex(a(), Int(0)), 5),
                    Equals(em.ArrayIndex(a(), Int(2)), 1)))  # cp must fire before w
-    _ar_check(p)
+    _ar_check(p, strategy=GROUNDED)
 
 
 def test_swap_one_action_reads_prestate():
@@ -137,7 +141,7 @@ def test_swap_one_action_reads_prestate():
     # A read-post-state bug would give [7,7]; the swap must give [7,3].
     p.add_goal(And(Equals(em.ArrayIndex(a(), Int(0)), 7),
                    Equals(em.ArrayIndex(a(), Int(1)), 3)))
-    r = _ar_check(p)
+    r = _ar_check(p, strategy=GROUNDED)
     assert [ai.action.name for ai in r.plan.actions] == ["swap"]
 
 
@@ -175,7 +179,7 @@ def test_conditional_effect_on_cell():
     act.add_effect(em.ArrayIndex(a(), Int(1)), 5, condition=p_())
     p.add_action(act)
     p.add_goal(Equals(em.ArrayIndex(a(), Int(1)), 5))
-    _ar_check(p)
+    _ar_check(p, strategy=GROUNDED)
 
 
 def test_boolean_array_precond_and_cwa():
@@ -224,7 +228,7 @@ def test_multidim_2d():
     p.add_action(act)
     # g[1][0] must still read the initial 3 (row-major independence).
     p.add_goal(And(Equals(cell(0, 1), 7), Equals(cell(1, 0), 3)))
-    _ar_check(p)
+    _ar_check(p, strategy=GROUNDED)
 
 
 def test_initial_state_both_shapes():
@@ -243,7 +247,7 @@ def test_initial_state_both_shapes():
     p.add_action(act)
     p.add_goal(And(Equals(em.ArrayIndex(x(), Int(0)), 5),   # 1 + 4
                    Equals(em.ArrayIndex(y(), Int(0)), 3)))
-    _ar_check(p)
+    _ar_check(p, strategy=GROUNDED)
 
 
 def test_default_initial_value_applies_to_cells():
@@ -282,7 +286,7 @@ def test_default_with_partial_explicit_override():
     p.add_goal(And(Equals(em.ArrayIndex(a(), Int(0)), 2),
                    Equals(em.ArrayIndex(a(), Int(1)), 4),
                    Equals(em.ArrayIndex(a(), Int(2)), 0)))
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
 
 
@@ -381,7 +385,7 @@ def test_size1_array_degenerates_to_scalar():
     act.add_effect(em.ArrayIndex(a(), Int(0)), 8)
     p.add_action(act)
     p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 8))
-    _ar_check(p)
+    _ar_check(p, strategy=GROUNDED)
 
 
 # ═══════════════════════ whole-array literals (AR oracle) ════════════════════
@@ -405,7 +409,7 @@ def test_whole_array_goal_equality_literal():
     act.add_effect(cell(1, 1), 6)
     p.add_action(act)
     p.add_goal(Equals(g(), [[5, 2], [3, 6]]))   # whole-array literal goal
-    r = _ar_check(p)
+    r = _ar_check(p, strategy=GROUNDED)
     assert [ai.action.name for ai in r.plan.actions] == ["seta"]
 
 
@@ -424,7 +428,7 @@ def test_whole_array_goal_disequality_literal():
     bump.add_effect(em.ArrayIndex(a(), Int(0)), 7)
     p.add_action(bump)
     p.add_goal(Not(Equals(a(), [1, 2])))        # must differ from [1, 2]
-    r = _ar_check(p)
+    r = _ar_check(p, strategy=GROUNDED)
     assert [ai.action.name for ai in r.plan.actions] == ["bump"]
 
 
@@ -458,7 +462,7 @@ def test_whole_array_assignment_effect_literal():
     ref.add_action(rset)
     ref.add_goal(And(Equals(a0(), 3), Equals(a1(), 4)))
 
-    r = _ref_check(p, ref)
+    r = _ref_check(p, ref, strategy=GROUNDED)
     assert [ai.action.name for ai in r.plan.actions] == ["setall"]
 
 
@@ -490,7 +494,7 @@ def test_index_arithmetic_int_param():
     ref.add_action(rsh)
     ref.add_goal(Equals(a1(), 1))
 
-    r = _ref_check(p, ref)
+    r = _ref_check(p, ref, strategy=GROUNDED)
     assert [ai.actual_parameters[0].int_constant_value()
             for ai in r.plan.actions] == [0]
 
@@ -527,7 +531,7 @@ def test_forall_effect_range_variable_reverse():
     ref.add_action(rrev)
     ref.add_goal(And(Equals(a0(), 0), Equals(a1(), 1), Equals(a2(), 2)))
 
-    r = _ref_check(p, ref)
+    r = _ref_check(p, ref, strategy=GROUNDED)
     assert [ai.action.name for ai in r.plan.actions] == ["rev"]
 
 
@@ -560,7 +564,7 @@ def test_forall_effect_parameter_dependent_bound():
     ref.add_action(rflip)
     ref.add_goal(And(Equals(a0(), 0), Equals(a1(), 1)))
 
-    _ref_check(p, ref)
+    _ref_check(p, ref, strategy=GROUNDED)
 
 
 def test_forall_effect_arithmetic_range_bound():
@@ -597,7 +601,7 @@ def test_forall_effect_arithmetic_range_bound():
     ref.add_action(rf)
     ref.add_goal(And(Equals(a0(), 9), Equals(a1(), 9), Equals(a2(), 9)))
 
-    r_res = _ref_check(p, ref)
+    r_res = _ref_check(p, ref, strategy=GROUNDED)
     assert [ai.actual_parameters[0].int_constant_value()
             for ai in r_res.plan.actions] == [3]
 
@@ -628,7 +632,7 @@ def test_quantified_forall_goal_index():
     rz.add_effect(a2(), 0, condition=Equals(rk, 2))
     ref.add_action(rz)
     ref.add_goal(And(Equals(a0(), 0), Equals(a1(), 0), Equals(a2(), 0)))
-    _ref_check(p, ref)
+    _ref_check(p, ref, strategy=GROUNDED)
 
 
 def test_quantified_exists_goal_index():
@@ -656,7 +660,7 @@ def test_quantified_exists_goal_index():
     rs.add_effect(a2(), 5, condition=Equals(rk, 2))
     ref.add_action(rs)
     ref.add_goal(Or(Equals(a0(), 5), Equals(a1(), 5), Equals(a2(), 5)))
-    _ref_check(p, ref)
+    _ref_check(p, ref, strategy=GROUNDED)
 
 
 # ═══════════════════════════ edge cases ══════════════════════════════════════
@@ -686,7 +690,7 @@ def test_oob_by_parameter_enumeration():
     ref.add_action(rst)
     ref.add_goal(Equals(a1(), 1))
 
-    r = _ref_check(p, ref)
+    r = _ref_check(p, ref, strategy=GROUNDED)
     for ai in r.plan.actions:
         assert 0 <= ai.actual_parameters[0].int_constant_value() <= 1, \
             "an out-of-bounds instance leaked into the plan"
@@ -708,7 +712,7 @@ def test_undefined_positions_discard_and_neighbours():
     st.add_effect(em.ArrayIndex(a(), st.parameter("c")), 9)
     p.add_action(st)
     p.add_goal(Equals(em.ArrayIndex(a(), Int(2)), 9))
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.plan is not None and r.status == PlanGenerationResultStatus.SOLVED_SATISFICING
     for ai in r.plan.actions:
         assert ai.actual_parameters[0].int_constant_value() in (0, 2), \
@@ -730,7 +734,7 @@ def test_oob_precondition_read_discard():
     act.add_effect(flag(), True)
     p.add_action(act)
     p.add_goal(flag())
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     for ai in r.plan.actions:
         assert ai.actual_parameters[0].int_constant_value() == 2, \
@@ -749,7 +753,7 @@ def test_oob_effect_rhs_read_discard():
     cp.add_effect(em.ArrayIndex(a(), Int(0)), em.ArrayIndex(a(), cp.parameter("k")))
     p.add_action(cp)
     p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 3))
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     for ai in r.plan.actions:
         assert ai.actual_parameters[0].int_constant_value() == 2, \
@@ -789,7 +793,7 @@ def test_guarded_oob_permissive_survives():
     p.add_goal(And(Equals(em.ArrayIndex(a(), Int(1)), 5),
                    Equals(em.ArrayIndex(a(), Int(0)), 0)))
 
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     assert [ai.actual_parameters[0].int_constant_value() for ai in r.plan.actions] == [1], \
         "only the guarded-OOB boundary instance step(1) reaches the goal"
@@ -841,7 +845,7 @@ def test_guarded_undefined_effect_blocks_where_condition_holds():
     poke(2) needs flag false, so every plan lowers the flag first. Dropping the
     effect without ¬flag let poke(2) reach the goal in one step."""
     for side in ("target", "value"):
-        r = solve(_guarded_undefined_effect(side, with_lower=True))
+        r = solve(_guarded_undefined_effect(side, with_lower=True), strategy=GROUNDED)
         assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, (side, r.status)
         names = [ai.action.name for ai in r.plan.actions]
         assert "lower" in names and "poke" in names, (side, names)
@@ -876,7 +880,7 @@ def test_state_invariant_with_cell_read():
     p.add_action(bad)
     p.add_trajectory_constraint(Always(LE(em.ArrayIndex(a(), Int(1)), Int(5))))
     p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 1))
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     assert [ai.action.name for ai in r.plan.actions] == ["good"], \
         f"invariant not enforced: {r.plan}"
@@ -896,7 +900,7 @@ def test_action_cost_with_cell_read():
     p.add_action(w)
     p.add_goal(Equals(em.ArrayIndex(a(), Int(1)), 1))
     p.add_quality_metric(MinimizeActionCosts({w: em.Plus(em.ArrayIndex(a(), Int(0)), 1)}))
-    r = solve(p, optimal=True)
+    r = solve(p, optimal=True, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_OPTIMALLY, r.status
 
 
@@ -931,7 +935,7 @@ def test_same_cell_collision_instance_dependent():
     ref.add_action(rwp)
     ref.add_goal(And(Equals(a0(), 5), Equals(a1(), 6)))
 
-    r = _ref_check(p, ref)
+    r = _ref_check(p, ref, strategy=GROUNDED)
     for ai in r.plan.actions:
         vs = [x.int_constant_value() for x in ai.actual_parameters]
         assert vs[0] != vs[1], "an instance assigning one cell two values leaked into the plan"
@@ -973,7 +977,7 @@ def test_same_cell_increases_add_up():
     ref.add_action(rbump)
     ref.add_goal(And(Equals(a0(), 2), Equals(a1(), 0)))
 
-    r = _ref_check(p, ref)
+    r = _ref_check(p, ref, strategy=GROUNDED)
     assert [[x.int_constant_value() for x in ai.actual_parameters]
             for ai in r.plan.actions] == [[0, 0]], r.plan
 
@@ -1061,7 +1065,7 @@ def test_same_cell_exclusive_guards():
     ref.add_action(rflip)
     ref.add_goal(Equals(a0(), 2))
 
-    _ref_check(p, ref)
+    _ref_check(p, ref, strategy=GROUNDED)
 
 
 def test_same_cell_folded_increases_add_up():
@@ -1089,7 +1093,7 @@ def test_same_cell_folded_increases_add_up():
     ref.add_action(radd3)
     ref.add_goal(Equals(a0(), 3))
 
-    r = _ref_check(p, ref)
+    r = _ref_check(p, ref, strategy=GROUNDED)
     assert [ai.action.name for ai in r.plan.actions] == ["add3"]
 
 
@@ -1124,7 +1128,7 @@ def test_non_array_regression():
     dec.add_decrease_effect(level, 2)
     p.add_action(dec)
     p.add_goal(Equals(level, 1))
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.plan is not None, r.status
     assert_valid(p, r.plan)
 
@@ -1267,7 +1271,7 @@ def test_oob_initial_state_assignment_dropped():
     w.add_effect(em.ArrayIndex(a(), Int(0)), 1)
     p.add_action(w)
     p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 1))
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     assert [ai.action.name for ai in r.plan.actions] == ["w"]
 
@@ -1371,7 +1375,7 @@ def test_sliding_puzzle_2x2():
     p.add_action(slide)
     p.add_goal(And(*[Equals(cell(r, c), goal[r][c]) for r in range(2) for c in range(2)]))
 
-    r = solve(p)
+    r = solve(p, strategy=GROUNDED)
     assert r.plan is not None, f"puzzle: no plan ({r.status})"
 
     # Replay the plan through a faithful simulator (checks preconditions + swap).
