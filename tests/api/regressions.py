@@ -2264,6 +2264,40 @@ def test_split_instances_are_distinct_actions():
             assert done, f"{case}: {names}"
 
 
+def _product_with_an_unbounded_factor_problem():
+    """x only decreases, so the grounder widens its lower bound to -inf; y is
+    0 or 3. fin needs x * y <= -5: dec_x, dec_x, set_y, fin."""
+    x, y = Fluent("x", RealType()), Fluent("y", RealType())
+    g = Fluent("g", BoolType())
+    p = Problem("product_with_an_unbounded_factor")
+    p.add_fluent(x, default_initial_value=0)
+    p.add_fluent(y, default_initial_value=0)
+    p.add_fluent(g, default_initial_value=False)
+    dec_x = InstantaneousAction("dec_x")
+    dec_x.add_decrease_effect(x(), 1)
+    set_y = InstantaneousAction("set_y")
+    set_y.add_effect(y(), 3)
+    fin = InstantaneousAction("fin")
+    fin.add_precondition(LE(Times(x(), y()), -5))
+    fin.add_effect(g(), True)
+    for a in (dec_x, set_y, fin):
+        p.add_action(a)
+    p.add_goal(g())
+    return p
+
+
+def test_a_product_with_an_unbounded_factor_is_not_pruned():
+    """Interval arithmetic took 0 * -inf as NaN: [-inf, 0] * [0, 3] was
+    [NaN, NaN], every comparison with NaN is false, and the grounder pruned
+    fin for good. The task came out UNSOLVABLE_PROVEN."""
+    for strategy in _registered("seq", "e", "e-lin"):
+        p = _product_with_an_unbounded_factor_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: {r.status}"
+        assert_valid(p, r.plan)
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -2318,4 +2352,5 @@ CASES = [
     test_bb_loop_formulas_keep_external_support,
     test_bb_sdac_actions_may_wait_for_a_cheaper_state,
     test_split_instances_are_distinct_actions,
+    test_a_product_with_an_unbounded_factor_is_not_pruned,
 ]
