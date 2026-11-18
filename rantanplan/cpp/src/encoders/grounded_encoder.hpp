@@ -91,6 +91,11 @@ protected:
     // Helper function to print EPC index for debugging
     void print_epc_index(const std::string& context) const;
     
+    /// Written state variables whose fluent declares bounds, with that fluent
+    /// (filled with the EPC index). A variable no action writes keeps its
+    /// initial value, which UP requires to lie within the bounds.
+    std::vector<std::pair<ExprID, const Fluent*>> declared_bounded_;
+
     // Member variables accessible to derived classes
     const Problem& problem_; // The planning problem instance
     z3::context& ctx_;       // Z3 context (shared)
