@@ -37,7 +37,8 @@ void AbstractSuffixEncoder::initialize() {
     // "abs_" + name() made all groundings of a schema share one variable (one
     // grounding could not be used without every grounding's preconditions and
     // costs). '!' never occurs in planning identifiers, so neither these names
-    // nor mod!<i> can collide with state/action variables ("<name>_<args>_<t>").
+    // nor mod!<i> can collide with state variables ("<name>_<args>_<t>") or
+    // action variables ("<name>_<args>!<id>_<t>", one '!' and then a "_").
     action_abs_.reserve(actions.size());
     for (const auto& action : actions) {
         std::string name = "abs!" + std::to_string(action.id()) + "!" + action.label();

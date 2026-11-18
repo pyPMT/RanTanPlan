@@ -44,7 +44,7 @@ private:
     // state_vars_[0]["at_airplane1_city1"] -> z3::expr(bool variable for fluent at timestep 0)
     std::vector<std::unordered_map<std::string, std::shared_ptr<z3::expr>>> state_vars_;
     
-    // action_vars_[0]["move_airplane1_city1_city2"] -> z3::expr(bool variable for action at timestep 0)
+    // action_vars_[0]["move_airplane1_city1_city2!7_0"] -> z3::expr(bool variable for action 7 at timestep 0)
     std::vector<std::unordered_map<std::string, std::shared_ptr<z3::expr>>> action_vars_;
     
     // Reverse mappings from variable names to fluents/actions and timesteps

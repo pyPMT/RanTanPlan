@@ -122,7 +122,11 @@ std::string Z3VariableFactory::get_action_var_name(const Action& action) const {
     for (const auto& param : action.parameters()) {
         name += "_" + param.name();
     }
-    return name;
+    // Z3 interns constants by name, and the instances TermResolutionPass
+    // splits an action into share its name and parameters: the id, the
+    // action's place in Problem::actions(), keeps one variable per ground
+    // action. '!' never occurs in planning identifiers.
+    return name + "!" + std::to_string(action.id());
 }
 
 std::string Z3VariableFactory::get_action_var_name(const Action& action, int timestep) const {

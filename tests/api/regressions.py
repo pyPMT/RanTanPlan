@@ -2150,6 +2150,72 @@ def test_bb_sdac_actions_may_wait_for_a_cheaper_state():
             f"{strategy}: claimed optimal {[str(a) for a in r.plan.actions]}, but b ; a costs 2"
 
 
+def _split_instances_problem(move_to):
+    """`copy` reads arr[ptr], an index the state decides, so term resolution
+    splits it into one instance per value of ptr, each with the name and
+    parameters of copy:
+
+        copy     : x := arr[ptr] when flag; done := true
+        lower    : flag := false
+        move_ptr : ptr := move_to
+        init  arr = [5, 6, 7], ptr = 1 in [0, 3], flag;  goal  done
+
+    ptr takes two values, 1 and move_to, so two instances survive grounding,
+    with preconditions on ptr that exclude each other (with move_to = 3, the
+    instance outside the array needs flag false)."""
+    arr = Fluent("arr", ArrayType(3, IntType(0, 9)))
+    ptr = Fluent("ptr", IntType(0, 3))
+    x = Fluent("x", IntType(0, 9))
+    flag, done = Fluent("flag", BoolType()), Fluent("done", BoolType())
+    p = Problem(f"split_instances_{move_to}")
+    em = p.environment.expression_manager
+    p.add_fluent(arr, default_initial_value=0)
+    p.add_fluent(ptr, default_initial_value=0)
+    p.add_fluent(x, default_initial_value=0)
+    p.add_fluent(flag, default_initial_value=False)
+    p.add_fluent(done, default_initial_value=False)
+    p.set_initial_value(arr, [5, 6, 7])
+    p.set_initial_value(ptr(), 1)
+    p.set_initial_value(flag(), True)
+    copy = InstantaneousAction("copy")
+    copy.add_effect(x(), em.ArrayIndex(arr(), ptr()), condition=flag())
+    copy.add_effect(done(), True)
+    lower = InstantaneousAction("lower")
+    lower.add_effect(flag(), False)
+    move_ptr = InstantaneousAction("move_ptr")
+    move_ptr.add_effect(ptr(), move_to)
+    for a in (copy, lower, move_ptr):
+        p.add_action(a)
+    p.add_goal(done())
+    return p
+
+
+def test_split_instances_are_distinct_actions():
+    """Each split instance of an action is a ground action of its own, with
+    its own SMT variable. The variable was named after the action's name and
+    parameters, which the instances share, so they were one variable: taking
+    copy took every instance and conjoined their preconditions, and copy
+    could never run (UNSOLVABLE_INCOMPLETELY, where [copy] is a plan). UP's
+    validator does not take arrays, so the plan is replayed here."""
+    for strategy in _registered("seq", "e", "f", "r2e"):
+        for move_to in (0, 3):
+            case = f"{strategy}, move_to={move_to}"
+            r = solve(_split_instances_problem(move_to), strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"{case}: {r.status}"
+            names = [a.action.name for a in r.plan.actions]
+            ptr, flag, done = 1, True, False
+            for name in names:
+                if name == "copy":
+                    assert not flag or 0 <= ptr < 3, f"{case}: copy reads arr[{ptr}]: {names}"
+                    done = True
+                elif name == "lower":
+                    flag = False
+                elif name == "move_ptr":
+                    ptr = move_to
+            assert done, f"{case}: {names}"
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -2202,4 +2268,5 @@ CASES = [
     test_bb_abstract_actions_are_per_grounding,
     test_bb_loop_formulas_keep_external_support,
     test_bb_sdac_actions_may_wait_for_a_cheaper_state,
+    test_split_instances_are_distinct_actions,
 ]
