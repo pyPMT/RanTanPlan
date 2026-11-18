@@ -76,12 +76,13 @@ OPTIMAL_SLOW_FIRST_PLAN = {
 
 ## Strategies to test with --mode optimal (replaces the old -opt registry entries).
 ## B&B is one planner; what varies is the encoder and the step semantics, so one
-## strategy per (encoder, semantics) pair: the propagator and lazy-interference
-## variants (f-p, e-p, fl, flsc, el) add nothing B&B-specific.
+## strategy per (encoder, semantics) pair, and e-lin, the default, for its
+## chains: the propagator and lazy-interference variants (f-p, e-p, fl, flsc,
+## el) add nothing B&B-specific.
 OPTIMAL_MODE_STRATEGIES = [
     "seq", "r2e",
     "f",
-    "e", "elsc",
+    "e", "e-lin", "elsc",
 ]
 
 QUICK_OPTIMAL_MODE_STRATEGIES = [
