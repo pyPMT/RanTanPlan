@@ -7,6 +7,7 @@
 #include "../../analysis/interference_analysis.hpp"
 #include "../../analysis/action_footprint.hpp"
 #include <z3++.h>
+#include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
