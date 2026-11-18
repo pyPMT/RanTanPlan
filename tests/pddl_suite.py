@@ -29,7 +29,7 @@ QUICK_TEST_DIRS = [
     "pddl/test/rover",
     "pddl/test/gripper-round-1-adl",
     "pddl/test/hydropower",
-    "pddl/test/mprime",              # guards the elsc-fp extraction bug (duplicate-effect pass)
+    "pddl/test/mprime",              # guards the elsc-fp extraction bug (effect-normalization pass)
     "pddl/test/sdac-simple",
     "pddl/test/sdac-zero-bound",
     "pddl/test/worksworld",
@@ -194,7 +194,7 @@ def run_test(name, domain, problem, strategy, verbose=False, up_grounding=False,
 
         # Corpus-wide invariant: one ground atom has exactly one ExprID.
         # Everything that groups by fluent id assumes it — the chained encoder's
-        # chain links, DuplicateEffectPass's write counts, the RPG tables — and
+        # chain links, EffectNormalizationPass's writes per fluent, the RPG tables — and
         # every one of them MIS-GROUPS SILENTLY if it breaks, so nothing else
         # here would fail. Measured 0 across all 66 pddl/test domains when this
         # was added. Checked before the status check on purpose: the stat is

@@ -290,7 +290,7 @@ bool SemanticInterferencePredicate::are_simply_commuting(const Action& a1,
     // extraction, which asks about all n² ordered pairs. Being symmetric they
     // formed 2-cycles, and Graph::topological_sort has no cycle detection, so it
     // silently emitted a non-topological order — an invalid plan out of a sound
-    // model. See DuplicateEffectPass's header for the full chain.
+    // model.
     std::unordered_map<ExprID, std::vector<const EffectExpression*>> a1_effects;
     std::unordered_map<ExprID, std::vector<const EffectExpression*>> a2_effects;
 

@@ -6,7 +6,7 @@ They live in the API suite so they run on every invocation, including
 """
 from unified_planning.shortcuts import (
     Fluent, InstantaneousAction, Problem, BoolType, IntType, UserType, Object,
-    And, Count, Equals, GE, Iff, LE, Not, Or, Times,
+    And, Count, Equals, GE, GT, Iff, LE, LT, Not, Or, Plus, Times,
 )
 from unified_planning.engines import PlanGenerationResultStatus
 
@@ -419,9 +419,9 @@ def test_chained_encoder_composes_every_write_to_one_fluent():
     unsatisfiable constraint that makes the action unselectable and the goal
     unreachable.
 
-    Chained encoders only: under the non-chained GroundedEncoder this shape is
-    still encoded as that unsatisfiable conjunction, which is a separate known
-    gap (see DuplicateEffectPass's header).
+    EffectNormalizationPass now sums the two writes into one before any encoder
+    sees them, so this checks the end-to-end result, not the chained encoder's
+    own composition.
     """
     for strategy in ("elsc", "flsc", "elsc-fp"):
         p = _two_writes_to_one_fluent_problem()
@@ -457,9 +457,8 @@ def test_duplicate_writes_do_not_fabricate_interference():
         act.add_increase_effect(fluent(), 1)
         p.add_action(act)
 
-    # egsc, not egs: the eager graph is built the same way either side, but the
-    # non-chained encoder still turns this action's two writes into an
-    # unsatisfiable conjunction, so only the chained variant reaches a plan.
+    # EffectNormalizationPass merges `both`'s two writes into one first, so this
+    # checks the end-to-end result.
     r = solve(p, strategy="egsc")
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
         f"expected SOLVED, got {r.status}"
@@ -521,8 +520,8 @@ def test_ground_atoms_have_exactly_one_expr_id():
     Interning distinguishes nodes by type_id; the Z3 variable name is built from
     payload strings only. So two ids can denote one atom, and everything that
     groups by fluent id then mis-groups SILENTLY — the chained encoder builds two
-    chain links for one fluent, DuplicateEffectPass counts one write as two, the
-    RPG keeps two reachability entries. Measured 0 across all 66 pddl/test
+    chain links for one fluent, EffectNormalizationPass takes two writes to one
+    atom for writes to two fluents, the RPG keeps two reachability entries. Measured 0 across all 66 pddl/test
     domains; the PDDL suite asserts this per instance, this covers the API path.
     """
     p = _two_writes_to_one_fluent_problem()
@@ -786,6 +785,603 @@ def test_interference_sees_every_dependency():
                     raise AssertionError(f"{strategy}/{case}: {names}: {e}")
 
 
+# Strategies the effect-normalization tests below run on (those registered):
+# every encoder and parallelism path, without the semantic-interference
+# strategies on the Grounded encoder.
+NORMALIZATION_STRATEGIES = ("seq", "e", "f", "r2e", "egsc", "fgsc",
+                            "elsc", "flsc", "cgb", "elsc-dt")
+
+
+def _registered(*names):
+    """Those of `names` that are registered strategies in this build."""
+    from rantanplan import _rantanplan
+    registered = set(_rantanplan.list_strategies())
+    return [n for n in names if n in registered]
+
+
+def _rolling_ball_problem():
+    """Case 1. A ball that grows as it rolls on snow, as in the Snowman game
+   :
+
+        roll : WHEN small:  small := false, medium := true
+               WHEN medium: medium := false, large := true
+        init  small;  goal  large           (solvable: roll; roll)
+
+    The two conditional effects on `medium` set and clear it under guards
+    that cannot both hold in a reachable state (a ball has one size), but
+    nothing in the action says so."""
+    small, medium, large = (Fluent(n, BoolType()) for n in ("small", "medium", "large"))
+    roll = InstantaneousAction("roll")
+    roll.add_effect(small(), False, condition=small())
+    roll.add_effect(medium(), True, condition=small())
+    roll.add_effect(medium(), False, condition=medium())
+    roll.add_effect(large(), True, condition=medium())
+    p = Problem("rolling_ball")
+    for f in (small, medium, large):
+        p.add_fluent(f, default_initial_value=False)
+    p.set_initial_value(small(), True)
+    p.add_action(roll)
+    p.add_goal(large())
+    return p
+
+
+def test_boolean_set_and_clear_is_add_after_delete():
+    """An action that sets and clears one Boolean atom is well defined: PDDL
+    and Unified Planning apply the clear before the set, so the atom ends up
+    true (add after delete).
+
+    Dropping such an action (as the planner once did whenever the set and the
+    clear could both hold given the precondition alone) removes `roll`, and the
+    problem is reported PROVEN unsolvable, as every Snowman level was.
+    EffectNormalizationPass makes each clear apply only when no set of the
+    same atom does, and keeps the action."""
+    for strategy in _registered(*NORMALIZATION_STRATEGIES):
+        p = _rolling_ball_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: expected SOLVED, got {r.status} (an action that sets " \
+            f"and clears one atom was dropped again)"
+        assert_valid(p, r.plan)
+
+
+def test_unconditional_set_and_clear_keeps_the_action():
+    """Case 1, unconditional, as a reflexive grounding produces it (a move
+    from a place to itself deletes and adds the same `at`): the atom stays
+    true, and the action's other effects still happen.
+
+        stay : (not (at)), (at), done := true
+        init  at;  goal  done AND at        (solvable: stay)"""
+    for strategy in _registered(*NORMALIZATION_STRATEGIES):
+        at = Fluent("at", BoolType())
+        done = Fluent("done", BoolType())
+        stay = InstantaneousAction("stay")
+        stay.add_precondition(at())
+        stay.add_effect(at(), False)
+        stay.add_effect(at(), True)
+        stay.add_effect(done(), True)
+        p = Problem("stay_in_place")
+        p.add_fluent(at, default_initial_value=False)
+        p.add_fluent(done, default_initial_value=False)
+        p.set_initial_value(at(), True)
+        p.add_action(stay)
+        p.add_goal(done())
+        p.add_goal(at())
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: expected SOLVED, got {r.status} (the reflexive action " \
+            f"was dropped again)"
+        assert_valid(p, r.plan)
+
+
+def _complex_set_and_clear_problem(case):
+    """Case 1 with complex guards. One action that sets and clears the atom
+    `f`, twice each, under conditions with disjunction, negation and numeric
+    comparisons:
+
+        bump : WHEN (p OR n > 2)          f := true
+               WHEN r                     f := true
+               WHEN (NOT q AND n < 4)     f := false
+               WHEN (q AND NOT r)         f := false
+               n += 1
+        p, q, r false throughout; n an unbounded Int (r2e refuses
+        declared bounds), kept below 5 by bump's precondition n < 5
+
+    Case "both": init n = 3, f false; at n = 3 the first set and the first
+    clear both hold, so add after delete makes f TRUE. Goal f AND n = 4:
+    only `bump` from n = 3 reaches it.
+    Case "clear": init n = 0, f true; only the first clear holds, so f
+    becomes FALSE. Goal (NOT f) AND n = 1."""
+    p, q, r, f = (Fluent(name, BoolType()) for name in ("p", "q", "r", "f"))
+    n = Fluent("n", IntType())
+    bump = InstantaneousAction("bump")
+    bump.add_precondition(LT(n(), 5))
+    bump.add_effect(f(), True, condition=Or(p(), GT(n(), 2)))
+    bump.add_effect(f(), True, condition=r())
+    bump.add_effect(f(), False, condition=And(Not(q()), LT(n(), 4)))
+    bump.add_effect(f(), False, condition=And(q(), Not(r())))
+    bump.add_increase_effect(n(), 1)
+    prob = Problem(f"complex_set_and_clear_{case}")
+    for fl in (p, q, r, f):
+        prob.add_fluent(fl, default_initial_value=False)
+    prob.add_fluent(n, default_initial_value=0)
+    prob.add_action(bump)
+    if case == "both":
+        prob.set_initial_value(n(), 3)
+        prob.add_goal(f())
+        prob.add_goal(Equals(n(), 4))
+    else:
+        prob.set_initial_value(f(), True)
+        prob.add_goal(Not(f()))
+        prob.add_goal(Equals(n(), 1))
+    return prob
+
+
+def test_complex_set_and_clear_conditions():
+    """Add after delete with arbitrary conditions: in the state where a set
+    and a clear of one atom both apply, the atom ends up true ("both"), and a
+    clear still applies where no set does ("clear"). The plan must be the one
+    `bump`, and UP must accept it."""
+    for strategy in _registered(*NORMALIZATION_STRATEGIES):
+        for case in ("both", "clear"):
+            prob = _complex_set_and_clear_problem(case)
+            r = solve(prob, strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"{strategy}/{case}: expected SOLVED, got {r.status}"
+            assert [ai.action.name for ai in r.plan.actions] == ["bump"], r.plan
+            assert_valid(prob, r.plan)
+
+
+# ---------------------------------------------------------------------------
+# Several writes to one fluent in one action (EffectNormalizationPass). Each
+# problem's docstring names its case, numbered as in the pass's class comment,
+# which has an example of each; case 1 is tested above, from
+# _rolling_ball_problem on. Every test runs on NORMALIZATION_STRATEGIES and
+# checks the plan with Unified Planning's validator.
+# ---------------------------------------------------------------------------
+
+def _computed_boolean_writes_problem():
+    """Case 2. `poll` assigns `alarm` two computed values; Unified Planning
+    makes it true if either is true (here `heat`).
+
+        poll      : alarm := smoke, alarm := heat
+        ventilate : smoke := false, heat := false   (keeps both dynamic)
+        init  heat;  goal  alarm            (solvable: poll)
+
+    Dropping `poll`, as the pass once did, left the goal unreachable."""
+    alarm, smoke, heat = (Fluent(n, BoolType()) for n in ("alarm", "smoke", "heat"))
+    poll = InstantaneousAction("poll")
+    poll.add_effect(alarm(), smoke())
+    poll.add_effect(alarm(), heat())
+    ventilate = InstantaneousAction("ventilate")
+    ventilate.add_effect(smoke(), False)
+    ventilate.add_effect(heat(), False)
+    p = Problem("computed_boolean_writes")
+    for f in (alarm, smoke, heat):
+        p.add_fluent(f, default_initial_value=False)
+    p.set_initial_value(heat(), True)
+    p.add_action(poll)
+    p.add_action(ventilate)
+    p.add_goal(alarm())
+    return p
+
+
+def test_computed_boolean_writes_are_merged():
+    """Case 2: `poll`'s two writes of `alarm` become one."""
+    for strategy in _registered(*NORMALIZATION_STRATEGIES):
+        p = _computed_boolean_writes_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: expected SOLVED, got {r.status}"
+        assert_valid(p, r.plan)
+        assert _metric(r, "effect_normalization.boolean_computed_merged") == 1, strategy
+
+
+def _cancelling_writes_problem():
+    """Case 3, as in sugar's reflexive sugar-cane-mills(r, m, m): `act`
+    increases and decreases `x` by 1, which cancel, but it also sets `done`.
+    `wiggle` does nothing else, so it changes nothing.
+
+        act    : PRE not done   effect x += 1, x -= 1, done := true
+        wiggle : x += 1, x -= 1
+        init  x = 0;  goal  done AND x = 0      (solvable: act)
+
+    Dropping `act`, as the pass once did, left the goal unreachable."""
+    x = Fluent("x", IntType())
+    done = Fluent("done", BoolType())
+    act = InstantaneousAction("act")
+    act.add_precondition(Not(done()))
+    act.add_increase_effect(x(), 1)
+    act.add_decrease_effect(x(), 1)
+    act.add_effect(done(), True)
+    wiggle = InstantaneousAction("wiggle")
+    wiggle.add_increase_effect(x(), 1)
+    wiggle.add_decrease_effect(x(), 1)
+    p = Problem("cancelling_writes")
+    p.add_fluent(x, default_initial_value=0)
+    p.add_fluent(done, default_initial_value=False)
+    p.add_action(act)
+    p.add_action(wiggle)
+    p.add_goal(done())
+    p.add_goal(Equals(x(), 0))
+    return p
+
+
+def test_cancelling_writes_keep_the_action():
+    """Case 3: `act` keeps its other effect; `wiggle`, left with no effect,
+    is removed."""
+    for strategy in _registered(*NORMALIZATION_STRATEGIES):
+        p = _cancelling_writes_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: expected SOLVED, got {r.status}"
+        assert_valid(p, r.plan)
+        assert _metric(r, "effect_normalization.additive_merged") == 2, strategy
+        assert _metric(r, "effect_normalization.actions_removed_no_effect") == 1, strategy
+
+
+def _harvest_problem():
+    """Case 4 with different amounts: two guarded increases of `yield`.
+
+        water     : PRE not watered     effect watered := true
+        fertilise : PRE not fertilised  effect fertilised := true
+        harvest   : PRE not harvested   effect harvested := true,
+                    WHEN watered: yield += 2,  WHEN fertilised: yield += 3
+        init  yield = 0;  goal  harvested AND yield = 5
+        (solvable: water, fertilise, harvest)
+
+    Both increases apply together; one equation per write made them
+    contradict, so `harvest` was unusable exactly where the goal needs it."""
+    watered, fertilised, harvested = (
+        Fluent(n, BoolType()) for n in ("watered", "fertilised", "harvested"))
+    yld = Fluent("yield", IntType())
+    water = InstantaneousAction("water")
+    water.add_precondition(Not(watered()))
+    water.add_effect(watered(), True)
+    fertilise = InstantaneousAction("fertilise")
+    fertilise.add_precondition(Not(fertilised()))
+    fertilise.add_effect(fertilised(), True)
+    harvest = InstantaneousAction("harvest")
+    harvest.add_precondition(Not(harvested()))
+    harvest.add_effect(harvested(), True)
+    harvest.add_increase_effect(yld(), 2, condition=watered())
+    harvest.add_increase_effect(yld(), 3, condition=fertilised())
+    p = Problem("harvest")
+    for f in (watered, fertilised, harvested):
+        p.add_fluent(f, default_initial_value=False)
+    p.add_fluent(yld, default_initial_value=0)
+    for a in (water, fertilise, harvest):
+        p.add_action(a)
+    p.add_goal(harvested())
+    p.add_goal(Equals(yld(), 5))
+    return p
+
+
+def _equal_guarded_increases_problem():
+    """Case 4 with equal amounts, and a shortest plan that is valid only if
+    the two increases counted as one:
+
+        act    : PRE not done   effect done := true,
+                 WHEN p: x += 1,  WHEN q: x += 1
+        calm   : p := false, q := false         (keeps p and q dynamic)
+        reset  : PRE x >= 2     effect x := 0
+        finish : PRE done AND x <= 1   effect finished := true
+        init  p, q, x = 0;  goal  finished
+        (solvable in three steps: act, reset, finish or calm, act, finish)
+
+    One equation per write recorded x = 1 after `act`, so [act, finish]
+    looked valid; Unified Planning rejects it (x = 2)."""
+    p_, q_, done, finished = (Fluent(n, BoolType()) for n in ("p", "q", "done", "finished"))
+    x = Fluent("x", IntType())
+    act = InstantaneousAction("act")
+    act.add_precondition(Not(done()))
+    act.add_effect(done(), True)
+    act.add_increase_effect(x(), 1, condition=p_())
+    act.add_increase_effect(x(), 1, condition=q_())
+    calm = InstantaneousAction("calm")
+    calm.add_effect(p_(), False)
+    calm.add_effect(q_(), False)
+    reset = InstantaneousAction("reset")
+    reset.add_precondition(GE(x(), 2))
+    reset.add_effect(x(), 0)
+    finish = InstantaneousAction("finish")
+    finish.add_precondition(And(done(), LE(x(), 1)))
+    finish.add_effect(finished(), True)
+    prob = Problem("equal_guarded_increases")
+    for f in (p_, q_, done, finished):
+        prob.add_fluent(f, default_initial_value=False)
+    prob.set_initial_value(p_(), True)
+    prob.set_initial_value(q_(), True)
+    prob.add_fluent(x, default_initial_value=0)
+    for a in (act, calm, reset, finish):
+        prob.add_action(a)
+    prob.add_goal(finished())
+    return prob
+
+
+def test_guarded_increases_are_split():
+    """Case 4: two guards that can hold together give three writes (one, the
+    other, both)."""
+    for strategy in _registered(*NORMALIZATION_STRATEGIES):
+        for build in (_harvest_problem, _equal_guarded_increases_problem):
+            p = build()
+            r = solve(p, strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"{strategy}: expected SOLVED, got {r.status}"
+            assert_valid(p, r.plan)
+            assert _metric(r, "effect_normalization.additive_split_max_writes") == 3, strategy
+
+
+def test_increases_with_the_same_guard_are_summed():
+    """Case 4, first step: _two_writes_to_one_fluent_problem guards both
+    increases of `g` with `flag`, so they become one write, `g += 3`, and
+    every strategy solves it."""
+    for strategy in _registered(*NORMALIZATION_STRATEGIES):
+        p = _two_writes_to_one_fluent_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: expected SOLVED, got {r.status}"
+        assert_valid(p, r.plan)
+        assert _metric(r, "effect_normalization.additive_merged") == 1, strategy
+
+
+def _five_guarded_increases_problem():
+    """Case 4 above the warning: five guarded increases of `x`, whose guards
+    can all hold together, give 2^5 - 1 = 31 writes.
+
+        bump : PRE not done   effect done := true,
+               WHEN c1: x += 1, ..., WHEN c5: x += 5
+        drop : c1 := false, ..., c5 := false    (keeps the guards dynamic)
+        init  c1 ... c5, x = 0;  goal  done AND x = 15      (solvable: bump)"""
+    cs = [Fluent(f"c{i}", BoolType()) for i in range(1, 6)]
+    done = Fluent("done", BoolType())
+    x = Fluent("x", IntType())
+    bump = InstantaneousAction("bump")
+    bump.add_precondition(Not(done()))
+    bump.add_effect(done(), True)
+    for i, c in enumerate(cs, start=1):
+        bump.add_increase_effect(x(), i, condition=c())
+    drop = InstantaneousAction("drop")
+    for c in cs:
+        drop.add_effect(c(), False)
+    p = Problem("five_guarded_increases")
+    for c in cs:
+        p.add_fluent(c, default_initial_value=False)
+        p.set_initial_value(c(), True)
+    p.add_fluent(done, default_initial_value=False)
+    p.add_fluent(x, default_initial_value=0)
+    p.add_action(bump)
+    p.add_action(drop)
+    p.add_goal(done())
+    p.add_goal(Equals(x(), 15))
+    return p
+
+
+def test_many_guarded_increases_are_split():
+    """Case 4 above the warning (more than 4 guards): all 31 writes, with no
+    limit."""
+    for strategy in _registered(*NORMALIZATION_STRATEGIES):
+        p = _five_guarded_increases_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: expected SOLVED, got {r.status}"
+        assert_valid(p, r.plan)
+        assert _metric(r, "effect_normalization.additive_split_max_writes") == 31, strategy
+
+
+def _conflicting_assignments_problem():
+    """Case 6. `calibrate` assigns `temp` two different values; Unified
+    Planning rejects it where it is both hot and humid.
+
+        calibrate : WHEN hot: temp := 50,  WHEN humid: temp := 40
+        dry       : humid := false
+        cool      : hot := false
+        init  hot, humid, temp = 0;  goal  temp = 50   (solvable: dry, calibrate)
+
+    [calibrate] alone would be invalid. Dropping `calibrate`, as the pass
+    once did, left the goal unreachable."""
+    hot, humid = Fluent("hot", BoolType()), Fluent("humid", BoolType())
+    temp = Fluent("temp", IntType())
+    calibrate = InstantaneousAction("calibrate")
+    calibrate.add_effect(temp(), 50, condition=hot())
+    calibrate.add_effect(temp(), 40, condition=humid())
+    dry = InstantaneousAction("dry")
+    dry.add_effect(humid(), False)
+    cool = InstantaneousAction("cool")
+    cool.add_effect(hot(), False)
+    p = Problem("conflicting_assignments")
+    for f in (hot, humid):
+        p.add_fluent(f, default_initial_value=False)
+        p.set_initial_value(f(), True)
+    p.add_fluent(temp, default_initial_value=0)
+    for a in (calibrate, dry, cool):
+        p.add_action(a)
+    p.add_goal(Equals(temp(), 50))
+    return p
+
+
+def test_conflicting_assignments_restrict_the_precondition():
+    """Case 6: `calibrate` stays usable where only one of its guards holds."""
+    for strategy in _registered(*NORMALIZATION_STRATEGIES):
+        p = _conflicting_assignments_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: expected SOLVED, got {r.status}"
+        assert_valid(p, r.plan)
+        assert _metric(r, "effect_normalization.assign_conflicts_restricted") == 1, strategy
+
+
+def _reflexive_assignments_problem():
+    """Case 6, unconditional, from a reflexive grounding: set_levels(a, b)
+    assigns level(a) := 3 and level(b) := 5, so set_levels(t, t) assigns
+    level(t) two values and Unified Planning can never execute it.
+
+        init  level(t1) = level(t2) = 0;  goal  level(t1) = 3 AND level(t2) = 5
+        (solvable: set_levels(t1, t2))"""
+    Tank = UserType("Tank")
+    t1, t2 = Object("t1", Tank), Object("t2", Tank)
+    level = Fluent("level", IntType(), t=Tank)
+    set_levels = InstantaneousAction("set_levels", a=Tank, b=Tank)
+    set_levels.add_effect(level(set_levels.parameter("a")), 3)
+    set_levels.add_effect(level(set_levels.parameter("b")), 5)
+    p = Problem("reflexive_assignments")
+    p.add_objects([t1, t2])
+    p.add_fluent(level, default_initial_value=0)
+    p.add_action(set_levels)
+    p.add_goal(Equals(level(t1), 3))
+    p.add_goal(Equals(level(t2), 5))
+    return p
+
+
+def test_reflexive_conflicting_assignments_are_removed():
+    """Case 6, unconditional: set_levels(t1, t1) and set_levels(t2, t2) can
+    never apply, and are removed."""
+    for strategy in _registered(*NORMALIZATION_STRATEGIES):
+        p = _reflexive_assignments_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: expected SOLVED, got {r.status}"
+        assert_valid(p, r.plan)
+        assert _metric(r, "effect_normalization.actions_removed_never_applicable") == 2, strategy
+
+
+def _assignment_and_increase_problem():
+    """Case 7. A refuel idiom with >= where > was meant: at fuel = 0 both
+    writes apply, and Unified Planning rejects `refuel` there.
+
+        refuel : WHEN fuel + 200 <= 200: fuel += 200,
+                 WHEN fuel + 200 >= 200: fuel := 200
+        add10  : PRE fuel <= 0   effect fuel += 10
+        init  fuel = 0;  goal  fuel = 200      (solvable: add10, refuel)
+
+    One equation per write accepted [refuel] (both give 200), which Unified
+    Planning rejects."""
+    fuel = Fluent("fuel", IntType())
+    refuel = InstantaneousAction("refuel")
+    refuel.add_increase_effect(fuel(), 200, condition=LE(Plus(fuel(), 200), 200))
+    refuel.add_effect(fuel(), 200, condition=GE(Plus(fuel(), 200), 200))
+    add10 = InstantaneousAction("add10")
+    add10.add_precondition(LE(fuel(), 0))
+    add10.add_increase_effect(fuel(), 10)
+    p = Problem("assignment_and_increase")
+    p.add_fluent(fuel, default_initial_value=0)
+    p.add_action(refuel)
+    p.add_action(add10)
+    p.add_goal(Equals(fuel(), 200))
+    return p
+
+
+def test_assignment_and_increase_restrict_the_precondition():
+    """Case 7: `refuel` is inapplicable at fuel = 0, where both writes
+    apply."""
+    for strategy in _registered(*NORMALIZATION_STRATEGIES):
+        p = _assignment_and_increase_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: expected SOLVED, got {r.status}"
+        assert_valid(p, r.plan)
+        assert _metric(r, "effect_normalization.assign_conflicts_restricted") == 1, strategy
+
+
+def _same_assignment_twice_problem():
+    """Case 5. `reset` assigns `x` the same value under two guards that hold
+    together; Unified Planning accepts that, and the pass leaves it alone.
+
+        reset : PRE not done   effect done := true,
+                WHEN a: x := 5,  WHEN b: x := 5
+        calm  : a := false, b := false          (keeps a and b dynamic)
+        init  a, b, x = 0;  goal  done AND x = 5      (solvable: reset)
+
+    Treating the two writes as a conflict (case 6) would make `reset`
+    inapplicable where a and b both hold, and after `calm` it would assign
+    nothing, so the goal would be unreachable."""
+    a, b, done = (Fluent(n, BoolType()) for n in ("a", "b", "done"))
+    x = Fluent("x", IntType())
+    reset = InstantaneousAction("reset")
+    reset.add_precondition(Not(done()))
+    reset.add_effect(done(), True)
+    reset.add_effect(x(), 5, condition=a())
+    reset.add_effect(x(), 5, condition=b())
+    calm = InstantaneousAction("calm")
+    calm.add_effect(a(), False)
+    calm.add_effect(b(), False)
+    p = Problem("same_assignment_twice")
+    for f in (a, b, done):
+        p.add_fluent(f, default_initial_value=False)
+    p.set_initial_value(a(), True)
+    p.set_initial_value(b(), True)
+    p.add_fluent(x, default_initial_value=0)
+    p.add_action(reset)
+    p.add_action(calm)
+    p.add_goal(done())
+    p.add_goal(Equals(x(), 5))
+    return p
+
+
+def test_same_assignment_twice_is_left_alone():
+    """Case 5: the precondition of `reset` is not restricted."""
+    for strategy in _registered(*NORMALIZATION_STRATEGIES):
+        p = _same_assignment_twice_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: expected SOLVED, got {r.status}"
+        assert_valid(p, r.plan)
+        assert _metric(r, "effect_normalization.assign_conflicts_restricted") == 0, strategy
+
+
+def _exclusive_guards_problem():
+    """Cases 4 and 7 with guards that exclude each other, which the pass must
+    leave alone: no state satisfies both guards, so the writes never apply
+    together.
+
+        sail   : PRE not sailed   effect sailed := true,
+                 WHEN load = 0: fuel -= 1,  WHEN not (load = 0): fuel -= 2
+        refuel : WHEN fuel + 5 <= 10: fuel += 5,
+                 WHEN fuel + 5 > 10:  fuel := 10
+        stow   : load := 1                      (keeps load dynamic)
+        init  fuel = 7, load = 0;  goal  sailed AND fuel = 9
+        (solvable: refuel, sail)
+
+    `sail` has petrobras's shape, a condition and its negation, which the
+    overlap check answers without the solver. `refuel` is the clip-to-capacity
+    idiom, whose guards the solver proves exclusive."""
+    sailed = Fluent("sailed", BoolType())
+    fuel, load = Fluent("fuel", IntType()), Fluent("load", IntType())
+    sail = InstantaneousAction("sail")
+    sail.add_precondition(Not(sailed()))
+    sail.add_effect(sailed(), True)
+    sail.add_decrease_effect(fuel(), 1, condition=Equals(load(), 0))
+    sail.add_decrease_effect(fuel(), 2, condition=Not(Equals(load(), 0)))
+    refuel = InstantaneousAction("refuel")
+    refuel.add_increase_effect(fuel(), 5, condition=LE(Plus(fuel(), 5), 10))
+    refuel.add_effect(fuel(), 10, condition=GT(Plus(fuel(), 5), 10))
+    stow = InstantaneousAction("stow")
+    stow.add_effect(load(), 1)
+    p = Problem("exclusive_guards")
+    p.add_fluent(sailed, default_initial_value=False)
+    p.add_fluent(fuel, default_initial_value=7)
+    p.add_fluent(load, default_initial_value=0)
+    for a in (sail, refuel, stow):
+        p.add_action(a)
+    p.add_goal(sailed())
+    p.add_goal(Equals(fuel(), 9))
+    return p
+
+
+def test_exclusive_guards_are_left_alone():
+    """Nothing is split, merged or restricted, and only `refuel`'s guards
+    take a solver query."""
+    for strategy in _registered(*NORMALIZATION_STRATEGIES):
+        p = _exclusive_guards_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: expected SOLVED, got {r.status}"
+        assert_valid(p, r.plan)
+        assert _metric(r, "effect_normalization.additive_split") == 0, strategy
+        assert _metric(r, "effect_normalization.additive_merged") == 0, strategy
+        assert _metric(r, "effect_normalization.assign_conflicts_restricted") == 0, strategy
+        assert _metric(r, "effect_normalization.overlap_queries") == 1, strategy
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -802,4 +1398,17 @@ CASES = [
     test_step_limit_is_not_a_proof_of_unsolvability,
     test_interference_sees_every_dependency,
     test_landmark_residual_counts_every_contributor,
+    test_boolean_set_and_clear_is_add_after_delete,
+    test_unconditional_set_and_clear_keeps_the_action,
+    test_complex_set_and_clear_conditions,
+    test_computed_boolean_writes_are_merged,
+    test_cancelling_writes_keep_the_action,
+    test_guarded_increases_are_split,
+    test_increases_with_the_same_guard_are_summed,
+    test_many_guarded_increases_are_split,
+    test_conflicting_assignments_restrict_the_precondition,
+    test_reflexive_conflicting_assignments_are_removed,
+    test_assignment_and_increase_restrict_the_precondition,
+    test_same_assignment_twice_is_left_alone,
+    test_exclusive_guards_are_left_alone,
 ]

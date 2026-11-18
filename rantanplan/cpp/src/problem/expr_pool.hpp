@@ -122,7 +122,7 @@ public:
     // Anything that groups by fluent ExprID therefore silently assumes one
     // ground atom has one id. That assumption is pervasive and was never
     // enforced — SemanticInterferencePredicate's effects_by_fluent,
-    // ChainedGroundedEncoder's variable_modifiers_, DuplicateEffectPass's write
+    // ChainedGroundedEncoder's variable_modifiers_, EffectNormalizationPass's write
     // counting, NumericRelaxedPlanningGraph's reachability/bounds tables, and
     // the footprint filter in action_footprint.hpp all key on it. If it ever
     // broke, each would mis-group rather than fail loudly.
