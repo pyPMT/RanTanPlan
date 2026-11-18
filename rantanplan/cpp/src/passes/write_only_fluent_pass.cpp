@@ -15,16 +15,13 @@ namespace rantanplan {
 // Read analysis
 // ============================================================================
 
-/// The effects that write each written fluent.
-///
-/// Every fluent set in this pass holds canonical ids
-/// (ExprPool::canonical_state_variable()): one ground atom can be interned
-/// under two ids, and a read under one id must keep a write under the other.
+/// The effects that write each written fluent. Keyed by fluent id, as every
+/// fluent set in this pass: one ground atom has one id (enforced in
+/// preprocess(); see ExprPool's "Ground-atom identity" comment).
 using WritesByFluent = std::unordered_map<ExprID, std::vector<const EffectExpression*>>;
 
 /// Every effect of every action, keyed by the fluent it writes.
 static WritesByFluent collect_writes(const Problem& problem) {
-    const ExprPool& pool = problem.pool();
     WritesByFluent writes;
     for (const Action& action : problem.actions()) {
         for (const Effect& effect : action.effects()) {
@@ -33,7 +30,7 @@ static WritesByFluent collect_writes(const Problem& problem) {
             // planning problem. Counting every effect as a write is safe: in
             // close_over_writes it can only add reads, never remove one.
             const EffectExpression& write = effect.effect_expression();
-            writes[pool.canonical_state_variable(write.fluent_id())].push_back(&write);
+            writes[write.fluent_id()].push_back(&write);
         }
     }
     return writes;
@@ -41,10 +38,10 @@ static WritesByFluent collect_writes(const Problem& problem) {
 
 /// The fluents read directly: those in action preconditions and explicit
 /// action costs, goals and declared state invariants (FluentCollector walks
-/// an expression; canonicalise what it returns). Also every written fluent
-/// whose type declares bounds, since the bounds are checked in every state:
-/// resolve its schema through its head symbol, as CWAInitialStatePass does,
-/// and ask Fluent::has_declared_bounds().
+/// an expression). Also every written fluent whose type declares bounds,
+/// since the bounds are checked in every state: resolve its schema through
+/// its head symbol, as CWAInitialStatePass does, and ask
+/// Fluent::has_declared_bounds().
 static std::unordered_set<ExprID> collect_direct_reads(const Problem& problem,
                                                        const WritesByFluent& writes) {
     std::unordered_set<ExprID> read;
@@ -70,10 +67,10 @@ static std::unordered_set<ExprID> collect_direct_reads(const Problem& problem,
         collector.collect_from_id(invariant);
     }
 
-    const ExprPool& pool = problem.pool();
-    for (ExprID atom : collector.get_fluents()) read.insert(pool.canonical_state_variable(atom));
+    read = collector.get_fluents();
 
     // - fluents with declared bounds
+    const ExprPool& pool = problem.pool();
     for (const auto& [atom, _] : writes) {
         // An effect target is a state variable headed by its FLUENT_SYMBOL
         // (ExprPool::intern_state_variable). If no schema has that name, keep
@@ -90,8 +87,7 @@ static std::unordered_set<ExprID> collect_direct_reads(const Problem& problem,
 /// read too, and so are those in its condition when the effect is
 /// conditional, since the condition decides whether the write happens. Those
 /// fluents can have writes of their own, so this repeats (a worklist) until
-/// nothing is added. Writes to unread fluents are never followed. Ids are
-/// canonical, as everywhere in this pass.
+/// nothing is added. Writes to unread fluents are never followed.
 ///
 /// Example: the goal is (>= (total) 10) and the effects are
 ///   (increase (total) (rate))   (increase (rate) (base))   (increase (base) 1)
@@ -106,7 +102,6 @@ static std::unordered_set<ExprID> collect_direct_reads(const Problem& problem,
 /// would make raining read.
 static void close_over_writes(const Problem& problem, const WritesByFluent& writes,
                               std::unordered_set<ExprID>& read) {
-    const ExprPool& pool = problem.pool();
     std::vector<ExprID> worklist(read.begin(), read.end());
     while (!worklist.empty()) {
         ExprID f = worklist.back();
@@ -122,8 +117,7 @@ static void close_over_writes(const Problem& problem, const WritesByFluent& writ
             if (e->is_conditional()) deps.collect_from_id(e->condition_id());
         }
         for (ExprID d : deps.get_fluents()) {
-            ExprID atom = pool.canonical_state_variable(d);
-            if (read.insert(atom).second) worklist.push_back(atom);  // new: follow its writes too
+            if (read.insert(d).second) worklist.push_back(d);  // new: follow its writes too
         }
     }
 }
@@ -140,8 +134,7 @@ static void close_over_writes(const Problem& problem, const WritesByFluent& writ
 static Problem without_write_only(const Problem& problem,
                                   const std::unordered_set<ExprID>& write_only,
                                   size_t& removed_effects) {
-    const ExprPool& pool = problem.pool();
-    auto removed = [&](ExprID id) { return write_only.count(pool.canonical_state_variable(id)) > 0; };
+    auto removed = [&](ExprID id) { return write_only.count(id) > 0; };
 
     std::vector<Action> actions = problem.actions();
     for (Action& action : actions) {

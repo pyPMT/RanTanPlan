@@ -54,19 +54,13 @@ inline std::unordered_set<ExprID> compute_action_footprint(const Problem& proble
                                                            const Action& action) {
     std::unordered_set<ExprID> footprint;
     FluentCollector collector(problem);
-    // Footprints are compared by intersection, so they must be keyed by GROUND
-    // ATOM, not by node: interning distinguishes a type_id the Z3 variable name
-    // does not, so two ids can denote one atom. Comparing raw ids would then see
-    // two actions as disjoint when they touch the same fluent, and the filter
-    // would skip a check it should have run. See ExprPool's "Ground-atom
-    // identity" comment; pool.aliased_state_variables reports whether any
-    // aliasing exists in practice.
-    const ExprPool& pool = problem.pool();
-    auto atom = [&pool](ExprID id) { return pool.canonical_state_variable(id); };
+    // Footprints are compared by intersection, keyed by fluent id: one ground
+    // atom has one id (enforced in preprocess(); see ExprPool's "Ground-atom
+    // identity" comment).
 
     for (const Effect& effect : action.effects()) {
         const EffectExpression& e = effect.effect_expression();
-        footprint.insert(atom(e.fluent_id()));        // written
+        footprint.insert(e.fluent_id());              // written
         collector.collect_from_id(e.value_id());      // read on the RHS
         // Deliberately NOT gated on is_conditional(). collect_from_id ignores an
         // invalid id, and a guard normalised away (EXPR_NULL, or the TRUE
@@ -80,7 +74,7 @@ inline std::unordered_set<ExprID> compute_action_footprint(const Problem& proble
         collector.collect_from_id(action.precondition_id());
     }
 
-    for (ExprID fid : collector.get_fluents()) footprint.insert(atom(fid));
+    for (ExprID fid : collector.get_fluents()) footprint.insert(fid);
     return footprint;
 }
 

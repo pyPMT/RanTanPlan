@@ -119,21 +119,37 @@ public:
     // for `at(truck1, depot)` that differ only in an argument's type_id both
     // become the variable `at_truck1_depot`.
     //
-    // Anything that groups by fluent ExprID therefore silently assumes one
-    // ground atom has one id. That assumption is pervasive and was never
-    // enforced — SemanticInterferencePredicate's effects_by_fluent,
-    // ChainedGroundedEncoder's variable_modifiers_, EffectNormalizationPass's write
-    // counting, NumericRelaxedPlanningGraph's reachability/bounds tables, and
-    // the footprint filter in action_footprint.hpp all key on it. If it ever
-    // broke, each would mis-group rather than fail loudly.
+    // Anything that groups by fluent ExprID assumes one ground atom has one id:
+    // WriteOnlyFluentPass's reads and writes, SemanticInterferencePredicate's
+    // effects_by_fluent, ChainedGroundedEncoder's variable_modifiers_,
+    // EffectNormalizationPass's write counting, NumericRelaxedPlanningGraph's
+    // reachability/bounds tables and the footprint filter in
+    // action_footprint.hpp. Each would mis-group, not fail, if it broke. So
+    // the assumption is enforced: preprocess() (api/solver_api.cpp) stops with
+    // an error when aliased_state_variable_count() is nonzero.
     //
-    // Rather than collapse the interning key (set_lowering_pass.cpp:147 and
-    // array_lowering.cpp deliberately rely on type_id keeping nodes distinct),
-    // this maps every state variable onto a representative sharing its payload
-    // signature. Callers that mean "the same ground atom" use the
-    // representative; callers that mean "the same node" keep using the id.
-    // Maintained incrementally in intern() because passes keep interning
-    // throughout preprocessing — a cache built once would go stale.
+    // An alias needs two producers that build one atom with a different type
+    // somewhere: an argument constant typed by a parameter's declared
+    // (super)type instead of the object's own type, or a head symbol typed
+    // differently (say, bounded against base numeric type). Today the
+    // converter and the grounder both type an object constant by the object's
+    // own type, and minted cells (array and set lowering) are interned once
+    // and reused.
+    //
+    // The signature covers atoms whose arguments are named constants only. No
+    // atom with integer arguments exists today (integer fluent parameters are
+    // unsupported, set elements must be user types). Before supporting either,
+    // extend state_variable_signature() to integer payloads and give every
+    // integer argument one type, say the fluent's declared parameter type: the
+    // converter types an integer constant as up:int, while intern_int_constant()
+    // (used by IntParameterInstantiationPass) leaves it untyped, so goal
+    // visited(3) and the effect visited(?i) with ?i = 3 would be two nodes.
+    //
+    // The interning key itself stays finer (set_lowering_pass.cpp:147 and
+    // array_lowering.cpp rely on type_id keeping nodes distinct). Instead each
+    // state variable is mapped onto a representative sharing its payload
+    // signature, maintained incrementally in intern() because passes keep
+    // interning throughout preprocessing (a cache built once would go stale).
 
     /// Representative id for a ground state variable: the first one interned
     /// with the same head symbol and argument payloads. Identity on any other
@@ -144,9 +160,8 @@ public:
         return rep.valid() ? rep : id;
     }
 
-    /// State variables that are not their own representative. ZERO means every
-    /// ground atom has exactly one id and the assumption above holds; a nonzero
-    /// value means it does not, and every consumer listed above is affected.
+    /// State variables ever interned that are not their own representative.
+    /// Only grows. preprocess() refuses a problem when it is nonzero.
     size_t aliased_state_variable_count() const { return aliased_sv_count_; }
 
     /// Access a node by ID.

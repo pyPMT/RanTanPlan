@@ -194,9 +194,10 @@ def run_test(name, domain, problem, strategy, verbose=False, up_grounding=False,
 
         # Corpus-wide invariant: one ground atom has exactly one ExprID.
         # Everything that groups by fluent id assumes it — the chained encoder's
-        # chain links, EffectNormalizationPass's writes per fluent, the RPG tables — and
-        # every one of them MIS-GROUPS SILENTLY if it breaks, so nothing else
-        # here would fail. Measured 0 across all 66 pddl/test domains when this
+        # chain links, EffectNormalizationPass's writes per fluent, the RPG tables,
+        # WriteOnlyFluentPass — so preprocessing stops with an error if it breaks,
+        # and the status check below fails too; this names the cause whenever the
+        # stat still arrives. Measured 0 across all 66 pddl/test domains when this
         # was added. Checked before the status check on purpose: the stat is
         # emitted after preprocessing, so it is meaningful even on instances that
         # come back UNSOLVABLE_PROVEN and would otherwise return early.

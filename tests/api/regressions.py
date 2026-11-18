@@ -526,6 +526,9 @@ def test_ground_atoms_have_exactly_one_expr_id():
     """
     p = _two_writes_to_one_fluent_problem()
     r = solve(p, strategy="elsc")
+    # Preprocessing stops with an error on an alias, and then no stat arrives.
+    assert r.status != PlanGenerationResultStatus.INTERNAL_ERROR, \
+        "; ".join(m.message for m in r.log_messages or [])
     aliased = _metric(r, "pool.aliased_state_variables")
     assert aliased is not None, "pool.aliased_state_variables not reported"
     assert aliased == 0, \

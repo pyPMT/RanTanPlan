@@ -255,33 +255,25 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     rantanplan::Stats::instance().set("pipeline.final_actions",
                                       static_cast<double>(pipeline_result.problem.actions().size()));
 
-    // How many state variables share a ground atom with an earlier node. ZERO is
-    // the expected and healthy value: it means every ground atom has exactly one
-    // ExprID, which everything that groups by fluent id silently assumes — the
-    // chained encoder's chain links, EffectNormalizationPass's writes per fluent, the RPG
-    // tables, the interference footprints. A nonzero value is not a failure (the
-    // footprint filter is keyed by representative and copes) but it means those
-    // other consumers are mis-grouping. See ExprPool's "Ground-atom identity".
+    // One ground atom, one ExprID: everything that groups by fluent id relies on
+    // it (WriteOnlyFluentPass's reads and writes, EffectNormalizationPass's
+    // writes per fluent, the RPG tables, the chained encoder's chain links, the
+    // interference footprints), and each would mis-group SILENTLY otherwise:
+    // WriteOnlyFluentPass, for one, would remove a fluent that is read under
+    // another id. No alias has ever been seen (0 on all pddl/test domains), so
+    // the planner stops rather than repair one. The pool's count only grows, so
+    // this also catches an alias that a pass has since removed from the
+    // problem. See ExprPool's "Ground-atom identity".
     const size_t aliased_sv =
         pipeline_result.problem.pool().aliased_state_variable_count();
     rantanplan::Stats::instance().set("pool.aliased_state_variables",
                                       static_cast<double>(aliased_sv));
     if (aliased_sv > 0) {
-        // Loud, because everything below fails SILENTLY when this happens: the
-        // chained encoder builds one chain link per id, so one fluent gets two
-        // and the second overwrites the first; EffectNormalizationPass takes
-        // two writes to one atom for writes to two fluents and leaves both,
-        // which the Grounded encoders cannot compose; the RPG keeps two
-        // reachability entries for one atom. Only the interference footprint
-        // copes, because it keys on canonical_state_variable(). Measured as 0
-        // across all 66 pddl/test domains when this check was added, so a
-        // nonzero value means something upstream changed.
-        rantanplan::Logger::instance().info(
-            "WARNING: " + std::to_string(aliased_sv) + " ground state variable(s) "
-            "have more than one ExprID — the same atom interned twice, differing "
-            "only in a type_id. Everything that groups by fluent id (chained "
-            "encoder, effect-normalization pass, RPG tables) will mis-group these. "
-            "See ExprPool's \"Ground-atom identity\" comment.");
+        throw std::runtime_error(
+            std::to_string(aliased_sv) + " ground state variable(s) have more than "
+            "one ExprID: the same atom interned twice, differing only in a type_id. "
+            "Everything that groups by fluent id would mis-group them. See ExprPool's "
+            "\"Ground-atom identity\" comment.");
     }
 
     // Debug: dump problem info after pipeline
