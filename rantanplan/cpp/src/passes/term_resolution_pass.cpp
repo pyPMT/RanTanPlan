@@ -368,8 +368,9 @@ public:
                                             pool_.intern_int_constant(p))));
             // Boundary instance: `e < 0 ∨ e ≥ n`, index -> the statically
             // out-of-bounds constant n. ArrayLoweringPass then applies the
-            // Def. 9 permissive policy at compile time: guarded writes are
-            // dropped, OR/COUNT absorb the ⊥ read, and an unconditional ⊥
+            // permissive policy at compile time: a guarded
+            // write is dropped with ¬guard added to the precondition,
+            // OR/COUNT absorb the ⊥ read, and an unconditional ⊥
             // discards the instance (see undefinedness-semantics.md).
             ExprID zero = pool_.intern_int_constant(0);
             ExprID n = pool_.intern_int_constant(target->dim_size);

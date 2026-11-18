@@ -795,6 +795,69 @@ def test_guarded_oob_permissive_survives():
         "only the guarded-OOB boundary instance step(1) reaches the goal"
 
 
+def _guarded_undefined_effect(side, with_lower):
+    """The problem of the two tests below: poke(2)'s conditional effect has an
+    out-of-bounds target (side='target') or value (side='value')."""
+    em = _em()
+    a = Fluent(f"gue_{side}_a", ArrayType(2, IntType(0, 9)))
+    x = Fluent(f"gue_{side}_x", IntType(0, 9))
+    flag = Fluent(f"gue_{side}_flag", BoolType())
+    done = Fluent(f"gue_{side}_done", BoolType())
+    p = Problem(f"gue_{side}")
+    p.add_fluent(a, default_initial_value=0)
+    p.add_fluent(x, default_initial_value=0)
+    p.add_fluent(flag, default_initial_value=False)
+    p.add_fluent(done, default_initial_value=False)
+    p.set_initial_value(flag(), True)
+    poke = InstantaneousAction("poke", k=IntType(2, 2))   # k = 2 is out of bounds
+    k = poke.parameter("k")
+    if side == "target":
+        poke.add_effect(em.ArrayIndex(a(), k), 1, condition=flag())
+    else:
+        poke.add_effect(x(), em.ArrayIndex(a(), k), condition=flag())
+    poke.add_effect(done(), True)
+    p.add_action(poke)
+    if with_lower:
+        lower = InstantaneousAction("lower")
+        lower.add_effect(flag(), False)
+        p.add_action(lower)
+    p.add_goal(done())
+    return p
+
+
+def test_guarded_undefined_effect_blocks_where_condition_holds():
+    """A conditional effect ⟨C ▷ l := r⟩ whose target l or
+    value r is undefined is removed and ¬C joins the precondition, so the action
+    is inapplicable wherever C holds (not applicable with the effect skipped).
+
+        a : array[2] of int[0,9];  flag (init true), done (init false)
+        lower      : flag := false
+        poke(k), k in 2..2 (a[2] is out of bounds)
+          eff : a[k] := 1   WHEN flag      (side = target)
+                x := a[k]   WHEN flag      (side = value)
+          eff : done := true
+        goal : done
+
+    poke(2) needs flag false, so every plan lowers the flag first. Dropping the
+    effect without ¬flag let poke(2) reach the goal in one step."""
+    for side in ("target", "value"):
+        r = solve(_guarded_undefined_effect(side, with_lower=True))
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, (side, r.status)
+        names = [ai.action.name for ai in r.plan.actions]
+        assert "lower" in names and "poke" in names, (side, names)
+        assert names.index("lower") < names.index("poke"), (side, names)
+
+
+def test_guarded_undefined_effect_never_applicable_when_condition_static():
+    """The same action without `lower`: flag is always true, so poke(2) is never
+    applicable and the goal is unreachable."""
+    for side in ("target", "value"):
+        r = solve(_guarded_undefined_effect(side, with_lower=False))
+        assert r.plan is None, (side, [ai.action.name for ai in r.plan.actions])
+        assert r.status in (PlanGenerationResultStatus.UNSOLVABLE_PROVEN,
+                            PlanGenerationResultStatus.UNSOLVABLE_INCOMPLETELY), (side, r.status)
+
+
 def test_state_invariant_with_cell_read():
     """A declared state invariant containing a cell read is lowered and
     enforced: the action violating it cannot be used."""
@@ -1354,6 +1417,8 @@ CASES = [
     test_oob_precondition_read_discard,
     test_oob_effect_rhs_read_discard,
     test_guarded_oob_permissive_survives,
+    test_guarded_undefined_effect_blocks_where_condition_holds,
+    test_guarded_undefined_effect_never_applicable_when_condition_static,
     test_state_invariant_with_cell_read,
     test_action_cost_with_cell_read,
     test_same_cell_collision_instance_dependent,

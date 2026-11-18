@@ -1,6 +1,7 @@
 #include "array_lowering.hpp"
 
 #include "../problem/const_fold.hpp"
+#include "../problem/expr_builder.hpp"
 #include "../problem/expr_enums.hpp"
 #include "../problem/expr_walk.hpp"
 #include "../util/logger.hpp"
@@ -361,13 +362,16 @@ private:
 // Action lowering (L1 reads + L3 writes + discards).
 // ---------------------------------------------------------------------------
 
-/// Lower one action under permissive undefinedness (paper Def. 9). Returns
-/// nullopt if the whole instance is discarded: the precondition or cost
-/// evaluates to ⊥ (undefined ⇒ never applicable), or an *unconditional* effect
-/// writes/reads an out-of-bounds cell. A *conditional* effect whose condition,
-/// target, or RHS is ⊥ is instead dropped (it can never validly fire), leaving
-/// the rest of the action intact — this is what lets a guarded out-of-bounds
-/// access (`a[i+1]:=v WHEN i<last`) survive at the boundary.
+/// Lower one action under permissive undefinedness. Returns nullopt if the
+/// whole instance is discarded: the precondition or cost evaluates to ⊥
+/// (undefined ⇒ never applicable), or an *unconditional* effect writes/reads an
+/// out-of-bounds cell. A *conditional* effect ⟨C ▷ l := r⟩:
+///   * whose condition C is ⊥ is dropped (it never fires);
+///   * whose target l or value r is ⊥ is dropped and ¬C joins the
+///     precondition: the effect would be invalid where C holds, so the action
+///     must be inapplicable there.
+/// A guarded boundary access (`a[i+1]:=v WHEN i<last` at i = last) keeps its
+/// action: C is false there, so ¬C adds nothing.
 ///
 /// Two effects may write one cell (`a[i] += 1; a[j] += 1` at i = j). The
 /// instance is kept: a cell is an ordinary fluent, and EffectNormalizationPass
@@ -391,6 +395,10 @@ std::optional<Action> lower_action(const Action& action, ArrayLowerer& lowerer,
         out.set_cost_id(*cost);
     }
 
+    // Conditions of dropped effects whose target or value is undefined: the
+    // action is inapplicable wherever one of them holds.
+    std::vector<ExprID> blocking;
+
     for (const auto& eff : action.effects()) {
         const auto& ee = eff.effect_expression();
         // Pass-ordering invariant: forall-effects are expanded by the
@@ -413,14 +421,25 @@ std::optional<Action> lower_action(const Action& action, ArrayLowerer& lowerer,
         std::optional<ExprID> fluent = lowerer.rewrite_permissive(ee.fluent_id(), ctx);
         std::optional<ExprID> value  = lowerer.rewrite_permissive(ee.value_id(), ctx);
         if (!fluent || !value) {
-            // Out-of-bounds write target or RHS: a conditional effect is dropped
-            // (guarded, cannot validly fire); an unconditional one makes the
-            // whole action inapplicable.
-            if (conditional) continue;
-            return std::nullopt;
+            // Out-of-bounds or undefined-position target or RHS: an
+            // unconditional effect makes the whole action inapplicable; a
+            // conditional one is dropped and blocks the action where C holds.
+            if (!conditional) return std::nullopt;
+            blocking.push_back(cond);
+            continue;
         }
 
         out.add_effect(Effect(EffectExpression(ee.kind(), *fluent, *value, cond, &pool)));
+    }
+
+    if (!blocking.empty()) {
+        ExprBuilder b(pool);
+        std::vector<ExprID> parts;
+        if (out.has_precondition()) parts.push_back(out.precondition_id());
+        for (ExprID c : blocking) parts.push_back(b.make_not(c));
+        ExprID pre = b.make_and(std::move(parts));
+        if (pool.is_false_constant(pre)) return std::nullopt;  // some C is always true
+        if (!pool.is_true_constant(pre)) out.set_precondition_id(pre);
     }
     return out;
 }

@@ -23,8 +23,11 @@ namespace rantanplan {
 ///     cell fluent, in preconditions, effect conditions, effect RHS, costs,
 ///     goals, state invariants, and initial-state targets;
 ///   * discards a ground action whose folded index lands out of bounds or on
-///     an undefined position (strict-⊥ inapplicability); two effects writing
-///     one cell are kept, for EffectNormalizationPass to combine;
+///     an undefined position (strict-⊥ inapplicability), except under OR/COUNT
+///     and in conditional effects: one with an undefined target or value is
+///     dropped and its condition negated into the precondition;
+///     two effects writing one cell are kept, for EffectNormalizationPass to
+///     combine;
 ///   * hard-errors on an out-of-bounds / undefined goal or initial-state
 ///     access (the model itself is ill-formed);
 ///   * rejects whole-array operations (`eq(a,b)`, whole-array assign — L5)
