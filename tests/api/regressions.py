@@ -10,6 +10,7 @@ from unified_planning.shortcuts import (
     Fluent, InstantaneousAction, Problem, ArrayType, BoolType, IntType, RealType,
     UserType, Object, And, Count, Equals, GE, GT, Iff, Int, LE, LT, Not, Or, Plus, Times,
 )
+from unified_planning.model.metrics import MinimizeActionCosts
 from unified_planning.engines import PlanGenerationResultStatus
 
 from rantanplan import _rantanplan
@@ -1946,6 +1947,209 @@ def test_exists_step_runs_the_affected_action_first():
                 f"{case}: {[a.action.name for a in r.plan.actions]}"
 
 
+def _plan_cost(problem, plan):
+    """Total cost of a plan under the problem's MinimizeActionCosts metric
+    (costs may read static fluents, which fold through the initial state)."""
+    metric = problem.quality_metrics[0]
+    total = 0
+    for ai in plan.actions:
+        e = metric.get_action_cost(ai.action)
+        e = e.substitute(dict(zip(ai.action.parameters, ai.actual_parameters)))
+        total += e.substitute(problem.initial_values).simplify().constant_value()
+    return total
+
+
+def _assert_optimal(problem, strategies, expected_cost, why):
+    for strategy in strategies:
+        r = solve(problem, optimal=True, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_OPTIMALLY, \
+            f"{strategy}: expected SOLVED_OPTIMALLY, got {r.status}"
+        assert_valid(problem, r.plan)
+        cost = _plan_cost(problem, r.plan)
+        assert cost == expected_cost, \
+            f"{strategy}: claimed optimal at cost {cost}, but a plan of cost " \
+            f"{expected_cost} exists ({why}); plan: {[str(a) for a in r.plan.actions]}"
+
+
+def _longer_cheaper_plan_problem():
+    """`direct` reaches g in one step at cost 10; step(s1,s2), finish reaches
+    it in two steps at cost 2. B&B finds `direct` at horizon 1 and must not
+    stop there."""
+    Spot = UserType("Spot")
+    s1, s2 = Object("s1", Spot), Object("s2", Spot)
+    done = Fluent("done", BoolType(), x=Spot)
+    g = Fluent("g", BoolType())
+    step = InstantaneousAction("step", x=Spot, y=Spot)
+    x, y = step.parameters
+    step.add_precondition(done(x))
+    step.add_effect(done(y), True)
+    finish = InstantaneousAction("finish")
+    finish.add_precondition(done(s2))
+    finish.add_effect(g, True)
+    direct = InstantaneousAction("direct")
+    direct.add_effect(g, True)
+    p = Problem("bb_longer_cheaper_plan")
+    p.add_fluent(done, default_initial_value=False)
+    p.add_fluent(g, default_initial_value=False)
+    p.add_objects([s1, s2])
+    p.set_initial_value(done(s1), True)
+    for a in (step, finish, direct):
+        p.add_action(a)
+    p.add_goal(g)
+    p.add_quality_metric(MinimizeActionCosts({direct: Int(10), finish: Int(1), step: Int(1)}))
+    return p
+
+
+def test_bb_optimality_proof_covers_longer_plans():
+    """The bounded query that proves optimality assumed goal_at_h, i.e. it only
+    asked for plans that END at horizon h; the abstract suffix could then never
+    stand in for a longer, cheaper continuation, and the first UNSAT was taken
+    as a global optimality proof."""
+    _assert_optimal(_longer_cheaper_plan_problem(), ("seq", "f", "e", "elsc", "r2e"), 2,
+                    "step(s1,s2), finish")
+
+
+def _shared_schema_problem(variant):
+    """prep, a(p), finish (cost 3, three steps) vs direct (cost 10, one step).
+    'pre':  a(q) needs ok(q), which only `restore` (cost 100) provides.
+    'cost': twelve usable groundings of a, cost 1 each.
+    With one abstract variable per SCHEMA, using a(p) in the suffix also
+    imposes a(q)'s relaxed precondition ('pre') or charges every grounding's
+    cost ('cost'), so the suffix overstates the cheapest continuation."""
+    Obj = UserType("Obj")
+    names = ["p", "q"] if variant == "pre" else [f"o{i}" for i in range(12)]
+    objs = [Object(n, Obj) for n in names]
+    prepped, mid, g = (Fluent(n, BoolType()) for n in ("prepped", "mid", "g"))
+    flag = Fluent("flag", BoolType(), x=Obj)  # 'pre': ok(x); 'cost': used(x)
+    prep = InstantaneousAction("prep")
+    prep.add_effect(prepped, True)
+    a = InstantaneousAction("a", x=Obj)
+    x = a.parameter("x")
+    a.add_precondition(prepped)
+    a.add_effect(mid, True)
+    if variant == "pre":
+        a.add_precondition(flag(x))
+    else:
+        a.add_precondition(Not(flag(x)))
+        a.add_effect(flag(x), True)
+    finish = InstantaneousAction("finish")
+    finish.add_precondition(mid)
+    finish.add_effect(g, True)
+    direct = InstantaneousAction("direct")
+    direct.add_effect(g, True)
+    actions = [prep, a, finish, direct]
+    costs = {prep: Int(1), a: Int(1), finish: Int(1), direct: Int(10)}
+    if variant == "pre":
+        restore = InstantaneousAction("restore")
+        restore.add_effect(flag(objs[1]), True)
+        actions.append(restore)
+        costs[restore] = Int(100)
+    p = Problem(f"bb_shared_schema_{variant}")
+    for f in (prepped, mid, g, flag):
+        p.add_fluent(f, default_initial_value=False)
+    p.add_objects(objs)
+    if variant == "pre":
+        p.set_initial_value(flag(objs[0]), True)
+    for act in actions:
+        p.add_action(act)
+    p.add_goal(g)
+    p.add_quality_metric(MinimizeActionCosts(costs))
+    return p
+
+
+def test_bb_abstract_actions_are_per_grounding():
+    """Every grounding of a schema got one abstract Bool `abs_<schema>` (Z3
+    interns constants by name), so the suffix could not use one grounding
+    without the relaxed preconditions and the costs of all of them."""
+    for variant in ("pre", "cost"):
+        _assert_optimal(_shared_schema_problem(variant), ("seq", "f", "e", "elsc"), 3,
+                        "prep, a(...), finish")
+
+
+def _guarded_setter_problem():
+    """set1 needs (not b) and sets b: {mod_b, [not b]} is a strongly connected
+    component that nothing outside points into. Cheap: prep, set1 (cost 2,
+    two steps); direct costs 10 in one step."""
+    prepped, b = Fluent("prepped", BoolType()), Fluent("b", BoolType())
+    prep = InstantaneousAction("prep")
+    prep.add_effect(prepped, True)
+    set1 = InstantaneousAction("set1")
+    set1.add_precondition(prepped)
+    set1.add_precondition(Not(b))
+    set1.add_effect(b, True)
+    direct = InstantaneousAction("direct")
+    direct.add_effect(b, True)
+    p = Problem("bb_guarded_setter")
+    p.add_fluent(prepped, default_initial_value=False)
+    p.add_fluent(b, default_initial_value=False)
+    for a in (prep, set1, direct):
+        p.add_action(a)
+    p.add_goal(b)
+    p.add_quality_metric(MinimizeActionCosts({prep: Int(1), set1: Int(1), direct: Int(10)}))
+    return p
+
+
+def _counter_problem():
+    """inc (needs c < 5) twice costs 2; direct costs 10. Needs the SAME action
+    twice, so not even r2e can fit the cheap plan into horizon 1."""
+    c = Fluent("c", IntType(0, 5))
+    inc = InstantaneousAction("inc")
+    inc.add_precondition(LT(c, 5))
+    inc.add_increase_effect(c, 1)
+    direct = InstantaneousAction("direct")
+    direct.add_effect(c, 2)
+    p = Problem("bb_counter")
+    p.add_fluent(c, default_initial_value=0)
+    p.add_action(inc)
+    p.add_action(direct)
+    p.add_goal(GE(c, 2))
+    p.add_quality_metric(MinimizeActionCosts({direct: Int(10), inc: Int(1)}))
+    return p
+
+
+def test_bb_loop_formulas_keep_external_support():
+    """encode_loop_formulas() took the SCC's PREDECESSORS as its external
+    support; an SCC with none had all its mod_v forced false, so the suffix
+    could not touch those fluents at all, even through an action whose
+    precondition holds at state h."""
+    _assert_optimal(_guarded_setter_problem(), ("seq", "f", "e", "elsc"), 2, "prep, set1")
+    _assert_optimal(_counter_problem(), ("seq", "f", "e", "r2e"), 2, "inc, inc")
+
+
+def _sdac_wait_problem():
+    """cost(a) = price; b (cost 1) drops price from 10 to 1. Cheapest: b ; a
+    (cost 2). Under forall-step, axiom 6 forbids a at step 1 unless an action
+    at step 0 interferes with it, and interference ignores cost fluents."""
+    price = Fluent("price", IntType(1, 10))
+    g = Fluent("g", BoolType())
+    b = InstantaneousAction("b")
+    b.add_effect(price, 1)
+    a = InstantaneousAction("a")
+    a.add_effect(g, True)
+    p = Problem("bb_sdac_wait")
+    p.add_fluent(price, default_initial_value=10)
+    p.add_fluent(g, default_initial_value=False)
+    p.add_action(b)
+    p.add_action(a)
+    p.add_goal(g)
+    p.add_quality_metric(MinimizeActionCosts({b: Int(1), a: price}))
+    return p
+
+
+def test_bb_sdac_actions_may_wait_for_a_cheaper_state():
+    """State-dependent costs: moving an action earlier changes the state its
+    cost is read in, so axiom 6's front-loading normal form is not
+    cost-preserving under forall-step semantics."""
+    p = _sdac_wait_problem()
+    for strategy in ("seq", "f", "r2e"):
+        r = solve(p, optimal=True, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_OPTIMALLY, \
+            f"{strategy}: expected SOLVED_OPTIMALLY, got {r.status}"
+        assert_valid(p, r.plan)
+        assert [str(a) for a in r.plan.actions] == ["b", "a"], \
+            f"{strategy}: claimed optimal {[str(a) for a in r.plan.actions]}, but b ; a costs 2"
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -1994,4 +2198,8 @@ CASES = [
     test_derived_bound_reaches_the_solver_as_its_exact_double,
     test_conservation_constant_is_exact,
     test_exists_step_runs_the_affected_action_first,
+    test_bb_optimality_proof_covers_longer_plans,
+    test_bb_abstract_actions_are_per_grounding,
+    test_bb_loop_formulas_keep_external_support,
+    test_bb_sdac_actions_may_wait_for_a_cheaper_state,
 ]

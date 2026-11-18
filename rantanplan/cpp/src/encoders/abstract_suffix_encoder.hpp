@@ -33,6 +33,9 @@ class InterferenceOracle;
 ///   - Abstract goal (Eq. 3): each goal g relaxed to (g_n OR OR_{v in vars(g)} mod_v)
 ///   - Loop formulas (Eq. 5): SCC-based anti-circular-support constraints preventing
 ///     abstract actions from mutually justifying each other without external support.
+///     The support of a loop L is the FIRST suffix action touching L, whose
+///     preconditions hold at state n up to fluents outside L, so they are
+///     horizon-dependent.
 ///   - Axiom 6: no arbitrary deferral — each concrete action at step i must be justified.
 ///   - Axiom 7: full concrete prefix — if any abstract action fires, every concrete
 ///     step must have at least one action.
@@ -41,9 +44,10 @@ class InterferenceOracle;
 /// each method returns a z3::expr and never touches the solver. The planner
 /// decides which constraints are permanent, incremental, or assumption-gated.
 ///
-///   Permanent (add once):     encode_mod_v_equivalences(), encode_loop_formulas()
+///   Permanent (add once):     encode_mod_v_equivalences()
 ///   Incremental (per step):   encode_axiom_6(i), encode_axiom_7_step(i)
-///   Assumption-gated:         encode_relaxed_preconditions(n), encode_abstract_goal(n)
+///   Horizon-scoped:           encode_relaxed_preconditions(n), encode_abstract_goal(n),
+///                             encode_loop_formulas(n)
 ///
 /// The abstract cost uses each action's actual cost as a lower bound. For constant
 /// costs this is exact; for SDAC, lower bounds are provided externally (computed
@@ -72,10 +76,6 @@ public:
     /// Horizon-independent (only references abstract vars and epc_index).
     z3::expr encode_mod_v_equivalences();
 
-    /// Eq. 5: SCC-based anti-circular-support constraints.
-    /// Horizon-independent (depends only on action structure). Cached internally.
-    z3::expr encode_loop_formulas();
-
     // =========================================================================
     // Per-step incremental constraints — add once per new concrete step
     // =========================================================================
@@ -99,6 +99,12 @@ public:
     /// Eq. 3: abstract goal — each goal relaxed with mod_v disjunction at state n.
     z3::expr encode_abstract_goal(int n);
 
+    /// Eq. 5: for each non-trivial SCC L of the dependency graph,
+    ///   (OR_{v in L} mod_v) => OR_{a affects L} (a^abs AND
+    ///       AND_{phi in pre_a} (phi_n OR OR_{w in vars(phi), w not in L} mod_w))
+    /// The SCCs depend only on action structure and are cached.
+    z3::expr encode_loop_formulas(int n);
+
     // =========================================================================
     // Cost and solution queries
     // =========================================================================
@@ -110,6 +116,9 @@ public:
     /// Return true if the model assigns false to all abstract action variables,
     /// meaning the plan is fully concrete and executable.
     bool is_concrete_solution(const z3::model& model) const;
+
+    /// AND of NOT a^abs: assumed by the planner's concrete queries.
+    z3::expr encode_no_abstract() const;
 
 private:
     const Problem& problem_;
@@ -127,8 +136,9 @@ private:
     std::vector<z3::expr> mod_vars_;        ///< One Bool per grounded fluent: "fluent v may be modified by abstract suffix"
     std::unordered_map<ExprID, size_t> fluent_to_mod_index_; ///< Fluent ExprID -> index in mod_vars_
 
-    z3::expr cached_loop_formulas_;         ///< Cached loop formula constraints (depend only on action structure)
-    bool loop_formulas_built_ = false;
+    std::vector<std::vector<size_t>> loop_sccs_; ///< mod_vars_ indices of each non-trivial SCC
+    bool loop_sccs_built_ = false;
+    void build_loop_sccs();
 
     /// Cost of concrete actions at step i: sum of ITE(a_i, cost_a, 0)
     z3::expr build_concrete_cost_term(int i);
