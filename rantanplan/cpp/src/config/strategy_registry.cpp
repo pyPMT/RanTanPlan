@@ -12,6 +12,12 @@ using K = PlannerKind;
 
 const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
     static const std::map<std::string, StrategyEntry> registry = {
+        // Semantic interference is registered only with the Chained encoder:
+        // StrategyFactory::validate accepts it only with an encoder that
+        // composes the writes of one step to one fluent, which the Grounded
+        // encoder does not (the old els, fls, egs, fgs and their -dt/-fp
+        // variants).
+
         // Sequential
         {"seq",       {{E::Grounded, S::Sequential, I::None,             {},                       K::Sequential},
                        "Sequential encoding (baseline)"}},
@@ -23,8 +29,6 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
                        "Forall-step with forall propagator"}},
         {"fl",        {{E::Grounded, S::Forall,     I::LazySyntactic,   {M::ForallLazy},          K::Sequential},
                        "Forall-step, lazy syntactic interference"}},
-        {"fls",       {{E::Grounded, S::Forall,     I::LazySemantic,    {M::ForallLazy},          K::Sequential},
-                       "Forall-step, lazy semantic interference"}},
         {"flsc",      {{E::Chained,  S::Forall,     I::LazySemantic,    {M::ForallLazy},          K::Sequential},
                        "Forall-step, lazy semantic interference, chained encoder"}},
 
@@ -33,8 +37,6 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
                        "Exists-step, eager syntactic interference"}},
         {"el",        {{E::Grounded, S::Exists,     I::LazySyntactic,   {M::ExistsCycle},         K::Sequential},
                        "Exists-step, lazy syntactic interference"}},
-        {"els",       {{E::Grounded, S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::Sequential},
-                       "Exists-step, lazy semantic interference"}},
         {"elsc",      {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::Sequential},
                        "Exists-step, lazy semantic interference, chained encoder"}},
 
@@ -43,12 +45,8 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
                        "R2E encoding (relaxed-to-exact)"}},
 
         // Experimental eager-semantic
-        {"fgs",       {{E::Grounded, S::Forall,     I::EagerSemantic,   {M::ForallEager},         K::Sequential},
-                       "Forall-step, eager semantic interference"}},
         {"fgsc",      {{E::Chained,  S::Forall,     I::EagerSemantic,   {M::ForallEager},         K::Sequential},
                        "Forall-step, eager semantic interference, chained encoder"}},
-        {"egs",       {{E::Grounded, S::Exists,     I::EagerSemantic,   {M::ExistsCycle},         K::Sequential},
-                       "Exists-step, eager semantic interference"}},
         {"egsc",      {{E::Chained,  S::Exists,     I::EagerSemantic,   {M::ExistsCycle},         K::Sequential},
                        "Exists-step, eager semantic interference, chained encoder"}},
 
@@ -61,8 +59,6 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
                        "Forall-step, eager syntactic interference, double-tail"}},
         {"fl-dt",     {{E::Grounded, S::Forall,     I::LazySyntactic,   {M::ForallLazy},          K::DoubleTail},
                        "Forall-step, lazy syntactic interference, double-tail"}},
-        {"fls-dt",    {{E::Grounded, S::Forall,     I::LazySemantic,    {M::ForallLazy},          K::DoubleTail},
-                       "Forall-step, lazy semantic interference, double-tail"}},
         {"flsc-dt",   {{E::Chained,  S::Forall,     I::LazySemantic,    {M::ForallLazy},          K::DoubleTail},
                        "Forall-step, lazy semantic interference, chained encoder, double-tail"}},
 
@@ -71,8 +67,6 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
                        "Exists-step, eager syntactic interference, double-tail"}},
         {"el-dt",     {{E::Grounded, S::Exists,     I::LazySyntactic,   {M::ExistsCycle},         K::DoubleTail},
                        "Exists-step, lazy syntactic interference, double-tail"}},
-        {"els-dt",    {{E::Grounded, S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::DoubleTail},
-                       "Exists-step, lazy semantic interference, double-tail"}},
         {"elsc-dt",   {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::DoubleTail},
                        "Exists-step, lazy semantic interference, chained encoder, double-tail"}},
 
@@ -80,8 +74,6 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
         // eager frame axioms replaced by the lazy frame propagator module).
         {"e-fp",      {{E::Grounded, S::Exists,     I::EagerSyntactic,  {M::ExistsCycle, M::FrameAxiom}, K::Sequential},
                        "Exists-step, eager syntactic interference, frame propagator"}},
-        {"els-fp",    {{E::Grounded, S::Exists,     I::LazySemantic,    {M::ExistsCycle, M::FrameAxiom}, K::Sequential},
-                       "Exists-step, lazy semantic interference, frame propagator"}},
         {"elsc-fp",   {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle, M::FrameAxiom}, K::Sequential},
                        "Exists-step, lazy semantic, chained encoder, frame propagator"}},
     };

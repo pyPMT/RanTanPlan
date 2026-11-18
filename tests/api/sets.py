@@ -285,7 +285,7 @@ def test_union_onto_self_and_clear():
     p.set_initial_value(pin(t1), _em().Set([_em().ObjectExp(a), _em().ObjectExp(b)]))
     p.add_goal(GE(_em().SetCardinality(pat(l1)), Int(2)))
     _solve_ok(p, strategy="seq")
-    _solve_ok(p, strategy="els")
+    _solve_ok(p, strategy="elsc")
 
 
 def test_assign_constant_set():
@@ -450,7 +450,7 @@ def test_parallel_different_element_adds_exists_step():
     p.add_action(load)
     p.add_goal(And(_em().SetMember(_em().ObjectExp(a), held(t1)),
                    _em().SetMember(_em().ObjectExp(b), held(t1))))
-    plan = _solve_ok(p, strategy="els")
+    plan = _solve_ok(p, strategy="elsc")
     assert len(plan.actions) == 2
 
 

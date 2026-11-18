@@ -37,9 +37,33 @@ static bool is_none(InterferenceKind kind) {
     return kind == InterferenceKind::None;
 }
 
+static bool is_semantic(InterferenceKind kind) {
+    return kind == InterferenceKind::EagerSemantic ||
+           kind == InterferenceKind::LazySemantic;
+}
+
 void StrategyFactory::validate(const StrategySpec& spec,
                                const std::string& strategy_name,
                                const std::string& horizon_schedule) {
+    // Semantic interference lets two actions share a step when their writes
+    // to one fluent commute, and it takes the step to apply those writes one
+    // after another: two increases of x add up, as PDDL 2.1 allows for
+    // concurrent increases. The Grounded encoder does not add them up. It
+    // states each write as its own equation on the next value,
+    // x^{t+1} = x^t + d, so two increases by the same amount are encoded as
+    // one, and the plan it returns is invalid. Semantic interference is
+    // therefore only sound with an encoder that composes the writes of one
+    // step, as the Chained encoder does. Syntactic interference keeps two
+    // writers of one numeric fluent in different steps, so it is sound with
+    // the Grounded encoder.
+    if (is_semantic(spec.interference) && spec.encoder == EncoderFamily::Grounded) {
+        throw std::invalid_argument(
+            "Semantic interference is only sound with an encoder that composes "
+            "the writes of one step to one fluent, which the Grounded encoder "
+            "does not; use the chained encoder (strategies elsc and flsc) or "
+            "syntactic interference (strategies e and f)");
+    }
+
     // Lazy interference requires a propagator that uses has_interference()
     // rather than graph methods (encode_parallelism needs the graph).
     // Lazy + ForallEager needs no check here: ForallMutexModule takes an

@@ -29,8 +29,8 @@ from benchmarks.domains import DOMAINS, require_fork
 
 # Default to a Grounded-encoder strategy: these domains use bounded integer
 # fluent types, which RantanPlan only encodes soundly with the Grounded encoder
-# (chained/relaxed strategies like elsc raise on bounded numeric bounds).
-STRATEGIES = ["els"]
+# (chained/relaxed strategies like elsc refuse declared numeric bounds).
+STRATEGIES = ["e"]
 DEFAULT_TIMEOUT = 120
 
 G = "\033[92m"; R = "\033[91m"; Y = "\033[93m"; B = "\033[1m"; E = "\033[0m"

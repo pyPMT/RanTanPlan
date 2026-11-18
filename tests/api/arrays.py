@@ -1151,9 +1151,9 @@ def test_parallel_different_cells_exists_step():
                    Equals(em.ArrayIndex(a(), Int(1)), 2)))
 
     p_ar = _ar_compile(p)
-    r = solve(p, strategy="els")   # exists-step, grounded encoder
+    r = solve(p, strategy=GROUNDED)   # exists-step, grounded encoder
     assert r.plan is not None, f"parallel: no plan ({r.status})"
-    _assert_valid(p_ar, _map_plan(p_ar, r.plan), "parallel native (els)")
+    _assert_valid(p_ar, _map_plan(p_ar, r.plan), "parallel native (e)")
 
 
 # ═══════════════════ ill-formed models → clean rejection ═════════════════════

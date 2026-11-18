@@ -506,7 +506,8 @@ def test_effect_rhs_read_is_not_hidden_from_interference():
     p.add_goal(GE(x(), 1))
     p.add_goal(GE(v(), 2))
 
-    r = solve(p, strategy="egs")
+    # egsc: semantic interference is registered only with the chained encoder.
+    r = solve(p, strategy="egsc")
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
         f"expected SOLVED, got {r.status}"
     edges = _metric(r, "interference.semantic.edges")
@@ -824,6 +825,86 @@ def test_declared_bounds_on_a_non_grounded_encoder_are_unsupported():
     r = solve(p, strategy="e")
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     assert_valid(p, r.plan)
+
+
+def _two_actions_increase_one_fluent_problem():
+    """Two actions that increase one fluent by the same amount, and a shortest
+    plan that would be valid only if the two increases counted as one:
+
+        inc1   : PRE not done1   effect done1 := true, x += 1
+        inc2   : PRE not done2   effect done2 := true, x += 1
+        reset  : PRE x >= 2      effect x := 0
+        finish : PRE done1 AND done2 AND x <= 1   effect finished := true
+        init  x = 0;  goal  finished      (solvable: inc1, inc2, reset, finish)
+
+    inc1 and inc2 in one step leave x = 2: two increases add up, in Unified
+    Planning and in PDDL 2.1 alike. An encoder that states each write as its
+    own equation, x' = x + 1 twice, records x = 1 instead, and then finish
+    looks applicable without reset."""
+    done1, done2, finished = (Fluent(n, BoolType()) for n in ("done1", "done2", "finished"))
+    x = Fluent("x", IntType())
+    inc1 = InstantaneousAction("inc1")
+    inc1.add_precondition(Not(done1()))
+    inc1.add_effect(done1(), True)
+    inc1.add_increase_effect(x(), 1)
+    inc2 = InstantaneousAction("inc2")
+    inc2.add_precondition(Not(done2()))
+    inc2.add_effect(done2(), True)
+    inc2.add_increase_effect(x(), 1)
+    reset = InstantaneousAction("reset")
+    reset.add_precondition(GE(x(), 2))
+    reset.add_effect(x(), 0)
+    finish = InstantaneousAction("finish")
+    finish.add_precondition(And(done1(), done2(), LE(x(), 1)))
+    finish.add_effect(finished(), True)
+    p = Problem("two_actions_increase_one_fluent")
+    for f in (done1, done2, finished):
+        p.add_fluent(f, default_initial_value=False)
+    p.add_fluent(x, default_initial_value=0)
+    for a in (inc1, inc2, reset, finish):
+        p.add_action(a)
+    p.add_goal(finished())
+    return p
+
+
+# Semantic interference lets inc1 and inc2 share a step, because their
+# increases commute. That is sound only with an encoder that adds them up, as
+# the chained one does. With the Grounded encoder, els, fls, egs and fgs
+# returned [inc1, inc2, finish], which UP rejects, so StrategyFactory::validate
+# refuses that pairing. e and f keep two writers of one numeric fluent in
+# separate steps.
+def test_increases_of_one_fluent_in_one_step_add_up():
+    """Two increases of one fluent in one step must not be counted as one: the
+    plan must be valid, on every registered strategy."""
+    from rantanplan import _rantanplan
+    for strategy in _rantanplan.list_strategies():
+        p = _two_actions_increase_one_fluent_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: expected SOLVED, got {r.status}"
+        try:
+            assert_valid(p, r.plan)
+        except AssertionError as e:
+            raise AssertionError(f"{strategy}: {[a.action.name for a in r.plan.actions]}: {e}")
+
+
+def test_suite_strategies_are_registered():
+    """Every strategy the PDDL suite names (quick, optimal, skip and regression
+    lists) is registered, so no list silently tests less than it says. Every
+    solve runs StrategyFactory::validate, so the quick tests also check that
+    no registered strategy is a pairing it refuses (such as semantic
+    interference with the Grounded encoder)."""
+    from rantanplan import _rantanplan
+    from .. import pddl_suite
+    registered = set(_rantanplan.list_strategies())
+    named = set(pddl_suite.QUICK_STRATEGIES)
+    named |= set(pddl_suite.OPTIMAL_MODE_STRATEGIES)
+    named |= set(pddl_suite.QUICK_OPTIMAL_MODE_STRATEGIES)
+    for strategies in pddl_suite.SKIP_CONFIGS.values():
+        named |= set(strategies)
+    for _, strategies in pddl_suite.REGRESSION_CONFIGS:
+        named |= set(strategies)
+    assert named <= registered, f"not registered: {sorted(named - registered)}"
 
 
 # Strategies the effect-normalization tests below run on (those registered):
@@ -1440,6 +1521,8 @@ CASES = [
     test_interference_sees_every_dependency,
     test_landmark_residual_counts_every_contributor,
     test_declared_bounds_on_a_non_grounded_encoder_are_unsupported,
+    test_increases_of_one_fluent_in_one_step_add_up,
+    test_suite_strategies_are_registered,
     test_boolean_set_and_clear_is_add_after_delete,
     test_unconditional_set_and_clear_keeps_the_action,
     test_complex_set_and_clear_conditions,

@@ -57,8 +57,8 @@ def add_planner_arguments(parser):
     instead of reading PDDL files.
     """
     # Strategy selection
-    parser.add_argument("--strategy", type=str, default="els",
-                       help="Planning strategy to use (default: els)")
+    parser.add_argument("--strategy", type=str, default="elsc",
+                       help="Planning strategy to use (default: elsc)")
     parser.add_argument("--mode",
                        choices=["satisficing", "optimal", "anytime"],
                        default=None,

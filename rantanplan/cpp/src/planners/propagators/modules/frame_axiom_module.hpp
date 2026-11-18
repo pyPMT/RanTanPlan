@@ -255,7 +255,7 @@ namespace rantanplan {
  * >>> fixed() callback for every module.
  *
  * Compare against the eager encoding, not just against another lazy run: the
- * `-fp` strategies each mirror a non-`fp` counterpart (els-fp <-> els, and so
+ * `-fp` strategies each mirror a non-`fp` counterpart (elsc-fp <-> elsc, and so
  * on) that differs only in that encode_frames() actually emits its axioms.
  *
  * Beware wall-clock: this module's reified bits change Z3's term ids and so its

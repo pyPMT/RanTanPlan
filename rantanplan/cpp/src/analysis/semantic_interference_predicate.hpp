@@ -56,6 +56,11 @@ enum class InterferenceSource {
  * symbolic residue (per-action decision variables) needs action-scoped
  * variable naming in this shared context, or two actions' variables unify at
  * timestep -1 and CHECK1/CHECK2 silently miss interference.
+ *
+ * ENCODER: the happening composes two actions' writes to one fluent (two
+ * increases add up), so the relation is sound only for an encoder that
+ * composes them too. The Grounded encoder does not; StrategyFactory::validate
+ * refuses that pairing.
  */
 class SemanticInterferencePredicate {
 public:

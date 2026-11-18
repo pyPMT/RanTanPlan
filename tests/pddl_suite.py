@@ -55,8 +55,8 @@ TIMEOUT = 60  # seconds per test
 ## Strategies to test with --mode optimal (replaces the old -opt registry entries)
 OPTIMAL_MODE_STRATEGIES = [
     "seq", "r2e",
-    "f", "f-p", "fl", "fls", "flsc",
-    "e", "el", "els", "elsc",
+    "f", "f-p", "fl", "flsc",
+    "e", "el", "elsc",
 ]
 
 QUICK_OPTIMAL_MODE_STRATEGIES = [
@@ -91,7 +91,9 @@ REGRESSION_CONFIGS = [
     # Exists-step *semantic* interference must catch numeric read/write hazards;
     # fo-sailing previously produced a plan UP rejects on these encoders.
     # docs/specs/exists-step-semantic-interference-soundness.md
-    ("fo-sailing", ["els", "elsc", "egs", "egsc"]),
+    # Only the chained strategies: StrategyFactory::validate refuses semantic
+    # interference with the Grounded encoder (the old els and egs).
+    ("fo-sailing", ["elsc", "egsc"]),
     # Goal-relevance pruning must keep actions that establish a conditional
     # effect's guard; logistics-round-1-adl was UNSAT at every horizon before.
     # docs/specs/conditional-effect-condition-pruning.md
