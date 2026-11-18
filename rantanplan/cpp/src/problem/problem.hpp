@@ -88,6 +88,9 @@ public:
     const Fluent& fluent_by_id(int id) const { return fluents_[id]; }
     bool has_fluent(const std::string& name) const;
     const Fluent* find_fluent(const std::string& name) const;
+    /// The fluent a ground state variable such as at(truck1, depot)
+    /// instantiates; nullptr for any other expression.
+    const Fluent* declaration_of(ExprID state_variable) const;
 
     /// True if any fluent carries a declared numeric bound (bounded int/real
     /// value type, e.g. integer[0, 15]).

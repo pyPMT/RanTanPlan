@@ -391,8 +391,17 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
         }
         problem.fluents_.emplace_back(ir_fluent.name, value_type, params);
         if (ir_fluent.lower_bound || ir_fluent.upper_bound) {
-            problem.fluents_.back().set_declared_bounds(ir_fluent.lower_bound,
-                                                        ir_fluent.upper_bound);
+            auto bound = [&](const auto& b) -> std::optional<Rational> {
+                if (!b) return std::nullopt;
+                auto value = Rational::make(b->first, b->second);
+                if (!value) {
+                    throw std::runtime_error("A bound of fluent '" + ir_fluent.name +
+                                             "' in IR input is not a number");
+                }
+                return value;
+            };
+            problem.fluents_.back().set_declared_bounds(bound(ir_fluent.lower_bound),
+                                                        bound(ir_fluent.upper_bound));
         }
         // Undefined positions are per-fluent data, not part of the array type
         // (two fluents of one array type may exclude different cells).

@@ -1834,6 +1834,65 @@ def test_declared_bounds_hold_inside_a_step():
                                      f"{[a.action.name for a in r.plan.actions]}: {e}")
 
 
+def test_bounds_admit_values_no_double_holds():
+    """The only plan moves x from 0 to exactly q (or -q), and the nearest
+    double to 1/3, 2/3 or 1/7 lies inside it. A bound the preprocessor derives
+    (x <= 0 + q under the guard x <= 0) or the type declares (x in [-q, q])
+    must still admit q. Derived bounds were computed in doubles rounded to
+    nearest, and declared ones read as doubles, so both cut q off."""
+    for strategy in ("e", "r2e"):
+        for declared in (False, True):
+            for up in (True, False):
+                for q in (Fraction(1, 3), Fraction(2, 3), Fraction(1, 7)):
+                    x = Fluent("x", RealType(-q, q) if declared else RealType())
+                    move = InstantaneousAction("move")
+                    if not declared:
+                        move.add_precondition(LE(x(), 0) if up else GE(x(), 0))
+                    if up:
+                        move.add_increase_effect(x(), q)
+                    else:
+                        move.add_decrease_effect(x(), q)
+                    p = _real_problem("no_double", [(x, 0)], [move],
+                                      Equals(x(), q if up else -q))
+                    r = solve(p, strategy=strategy)
+                    case = f"{strategy}, declared={declared}, up={up}, q={q}"
+                    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                        f"{case}: {r.status}"
+                    assert_valid(p, r.plan)
+
+
+def test_derived_bound_reaches_the_solver_as_its_exact_double():
+    """x <= 0 before inc adds 14/15, so x stays at most 14/15: rounded up, the
+    double nearest 14/15. Its shortest decimal, 0.9333333333333333, is below
+    14/15, and asserting that cut off the only plan; the double's exact value
+    does not."""
+    q = Fraction(14, 15)
+    x = Fluent("x", RealType())
+    inc = InstantaneousAction("inc")
+    inc.add_precondition(LE(x(), 0))
+    inc.add_increase_effect(x(), q)
+    p = _real_problem("fourteen_fifteenths", [(x, 0)], [inc], Equals(x(), q))
+    r = solve(p, strategy="e")
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert_valid(p, r.plan)
+
+
+def test_conservation_constant_is_exact():
+    """move takes a third from f and gives it to g, both starting at 1/3, so
+    f + g = 2/3 in every state. The law's constant was a double, asserted as
+    0.6666666666666666, which the initial state already broke."""
+    third = Fraction(1, 3)
+    f, g = Fluent("f", RealType()), Fluent("g", RealType())
+    move = InstantaneousAction("move")
+    move.add_precondition(GE(f(), third))
+    move.add_decrease_effect(f(), third)
+    move.add_increase_effect(g(), third)
+    p = _real_problem("thirds", [(f, third), (g, third)], [move], Equals(g(), 2 * third))
+    r = solve(p, strategy="e")
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert_valid(p, r.plan)
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -1878,4 +1937,7 @@ CASES = [
     test_declared_real_bounds_keep_their_decimals,
     test_real_folding_is_exact,
     test_declared_bounds_hold_inside_a_step,
+    test_bounds_admit_values_no_double_holds,
+    test_derived_bound_reaches_the_solver_as_its_exact_double,
+    test_conservation_constant_is_exact,
 ]

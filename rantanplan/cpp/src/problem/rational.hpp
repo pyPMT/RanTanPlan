@@ -13,7 +13,8 @@ __extension__ using int128 = __int128;  // products of two int64 parts fit
 /// An exact rational number, num/den in lowest terms with den > 0: the value
 /// of a real constant. UP's reals are exact fractions and so is the SMT
 /// encoding (mkReal(num, den)), so 1/3 + 1/3 + 1/3 is 1. Analyses that only
-/// estimate a value (intervals, bounds) read to_double().
+/// estimate a value read to_double(); those that bound one read the interval
+/// of doubles holding it (Interval::of).
 struct Rational {
     int64_t num = 0;
     int64_t den = 1;
@@ -64,30 +65,17 @@ inline int compare(const Rational& a, const Rational& b) {
     return l < r ? -1 : (l > r ? 1 : 0);
 }
 
-/// The shortest decimal that reads back as `v` ("0.1", "0.0000001", "-2.5"):
-/// the value written in the problem when `v` came from a decimal, or from a
-/// fraction with one, as declared bounds do. `v` must be finite.
-inline std::string shortest_decimal(double v) {
-    char buf[400];  // the longest fixed form of a double has 309 integer digits
-    auto [end, ec] = std::to_chars(buf, buf + sizeof buf, v, std::chars_format::fixed);
-    return std::string(buf, end);
-}
-
-/// shortest_decimal(v) as a Rational; nothing if `v` is not finite or the
-/// decimal does not fit in 64 bits.
-inline std::optional<Rational> rational_from_double(double v) {
-    if (!std::isfinite(v)) return std::nullopt;
-    const std::string s = shortest_decimal(v);
-    int128 num = 0, den = 1;
-    bool fraction = false;
-    for (char c : s) {
-        if (c == '-') continue;
-        if (c == '.') { fraction = true; continue; }
-        num = num * 10 + (c - '0');
-        if (fraction) den *= 10;
-        if (num > INT64_MAX || den > INT64_MAX) return std::nullopt;
-    }
-    return Rational::make(s[0] == '-' ? -num : num, den);
+/// The exact value of a finite double as a decimal: "0.5", "3", or
+/// "0.1000000000000000055511151231257827021181583404541015625" for the double
+/// nearest 0.1. A double is a binary fraction, so 1074 fractional digits hold
+/// it exactly; the trailing zeros are dropped.
+inline std::string exact_decimal(double v) {
+    char buf[1400];  // a sign, 309 integer digits, a point and 1074 fractional digits
+    auto [end, ec] = std::to_chars(buf, buf + sizeof buf, v, std::chars_format::fixed, 1074);
+    std::string s(buf, end);
+    s.erase(s.find_last_not_of('0') + 1);
+    if (s.back() == '.') s.pop_back();
+    return s == "-0" ? "0" : s;
 }
 
 } // namespace rantanplan

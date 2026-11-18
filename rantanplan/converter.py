@@ -87,6 +87,12 @@ def _array_shape(tpe):
     return _up_type_str(leaf), sizes, leaf
 
 
+def _fraction(value) -> tuple:
+    """A declared bound (an int, or a Fraction for a real) as an exact (numerator, denominator)."""
+    value = Fraction(value)
+    return (value.numerator, value.denominator)
+
+
 class _FNodeToIR:
     """Flattens FNode DAGs into the shared node pool.
 
@@ -381,9 +387,9 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
             # bounded fluents); the grounder mints cells of the element type.
             if leaf.is_int_type() or leaf.is_real_type():
                 if leaf.lower_bound is not None:
-                    ir_fluent.lower_bound = float(leaf.lower_bound)
+                    ir_fluent.lower_bound = _fraction(leaf.lower_bound)
                 if leaf.upper_bound is not None:
-                    ir_fluent.upper_bound = float(leaf.upper_bound)
+                    ir_fluent.upper_bound = _fraction(leaf.upper_bound)
             if fluent.undefined_positions:
                 ir_fluent.undefined_positions = [
                     [int(c) for c in pos] for pos in fluent.undefined_positions]
@@ -404,9 +410,9 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
             ir_fluent.value_type = _up_type_str(ftype)
             if ftype.is_int_type() or ftype.is_real_type():
                 if ftype.lower_bound is not None:
-                    ir_fluent.lower_bound = float(ftype.lower_bound)
+                    ir_fluent.lower_bound = _fraction(ftype.lower_bound)
                 if ftype.upper_bound is not None:
-                    ir_fluent.upper_bound = float(ftype.upper_bound)
+                    ir_fluent.upper_bound = _fraction(ftype.upper_bound)
         fluents.append(ir_fluent)
     # out.fluents assigned last (with out.actions/out.nodes): nanobind copies
     # vector fields on assignment, and the declared-defaults loop below still

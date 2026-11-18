@@ -449,10 +449,7 @@ z3::expr GroundedEncoder::encode_state_constraints(int t) {
     for (const auto& cons : state_constraints_.conservations) {
         z3::expr f = convert_expr_id_to_z3(cons.fluent1_id, t);
         z3::expr g = convert_expr_id_to_z3(cons.fluent2_id, t);
-        z3::expr c = f.is_int()
-            ? ctx_.int_val(static_cast<int64_t>(cons.constant))
-            : variable_factory_.real_val(cons.constant);
-        conjuncts.push_back((f + g) == c);
+        conjuncts.push_back((f + g) == variable_factory_.make_numeric_val(cons.constant));
     }
 
     if (conjuncts.empty()) {

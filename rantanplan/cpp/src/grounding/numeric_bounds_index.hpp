@@ -65,13 +65,14 @@ private:
     /// explicit initial state: its schema's declared default_initial_value if
     /// one exists, else 0. This mirrors the CWA pass (which materialises the
     /// same value), so the grounder never prunes an action on a stale [0,0].
-    double schema_default(int fluent_schema_id) const {
+    Interval schema_default(int fluent_schema_id) const {
         auto it = declared_default_by_schema_.find(fluent_schema_id);
-        return it != declared_default_by_schema_.end() ? it->second : 0.0;
+        return it != declared_default_by_schema_.end() ? it->second : Interval(0.0);
     }
 
-    /// Numeric fluent schemas that declare a non-implicit default_initial_value.
-    std::unordered_map<int, double> declared_default_by_schema_;
+    /// Numeric fluent schemas that declare a non-implicit default_initial_value
+    /// (the tightest doubles holding it).
+    std::unordered_map<int, Interval> declared_default_by_schema_;
 
     /// Compact key for a ground numeric fluent.
     struct GroundKey {

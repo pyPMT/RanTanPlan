@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../problem/expr_pool.hpp"
+#include "../problem/rational.hpp"
 #include <string>
 #include <vector>
 
@@ -13,7 +14,8 @@ struct MutexConstraint {
     std::string label;             // human-readable label for logging
 };
 
-/// A verified numeric bound on a single fluent.
+/// A verified numeric bound on a single fluent. Derived in floating point but
+/// rounded outward, so it holds for the exact value of `bound`.
 struct BoundConstraint {
     ExprID fluent_id;
     double bound;
@@ -30,7 +32,7 @@ struct DomainConstraint {
 struct ConservationConstraint {
     ExprID fluent1_id;
     ExprID fluent2_id;
-    double constant;               // initial(f) + initial(g)
+    Rational constant;             // initial(f) + initial(g), exactly
     std::string label;             // human-readable label for logging
 };
 

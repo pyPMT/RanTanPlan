@@ -330,21 +330,13 @@ z3::expr R2EGroundedEncoder::encode_declared_bounds(int t) {
     // first state of the step, x^t, is the last one of the step before (or the
     // initial state), and a fluent no action writes keeps its initial value.
     z3::expr_vector constraints(ctx_);
-    const auto& pool = problem_.pool();
     for (const auto& [var_eid, writers] : variable_modifiers_) {
-        if (!pool.is_state_variable(var_eid)) continue;
-        ExprID head = pool.head_symbol_id(var_eid);
-        const Fluent* fluent = pool.is_fluent_symbol(head)
-            ? problem_.find_fluent(pool.payload_string(head)) : nullptr;
+        const Fluent* fluent = problem_.declaration_of(var_eid);
         if (!fluent || !fluent->has_declared_bounds()) continue;
         for (const Action* writer : writers) {
             z3::expr x = get_chain_variable(var_eid, t, get_global_action_index(writer));
-            auto value = [&](double v) {
-                return x.is_int() ? ctx_.int_val(static_cast<int64_t>(v))
-                                  : variable_factory_.real_val(v);
-            };
-            if (auto lo = fluent->declared_lower_bound()) constraints.push_back(x >= value(*lo));
-            if (auto hi = fluent->declared_upper_bound()) constraints.push_back(x <= value(*hi));
+            if (auto lo = fluent->declared_lower_bound()) constraints.push_back(x >= variable_factory_.make_numeric_val(*lo));
+            if (auto hi = fluent->declared_upper_bound()) constraints.push_back(x <= variable_factory_.make_numeric_val(*hi));
         }
     }
     return constraints.empty() ? ctx_.bool_val(true) : z3::mk_and(constraints);

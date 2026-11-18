@@ -74,20 +74,14 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
         } else {
             // int/real: 0 clamped into the declared bounds — UP rejects an
             // out-of-range initial value for a bounded type.
-            double v = 0.0;
+            Rational v = Rational::of(0);
             if (fluent) {
-                if (auto lo = fluent->declared_lower_bound(); lo && v < *lo) v = *lo;
-                if (auto hi = fluent->declared_upper_bound(); hi && v > *hi) v = *hi;
+                if (auto lo = fluent->declared_lower_bound(); lo && compare(v, *lo) < 0) v = *lo;
+                if (auto hi = fluent->declared_upper_bound(); hi && compare(v, *hi) > 0) v = *hi;
             }
-            if (type->is_int()) {
-                value_id = pool->intern_int_constant(static_cast<int64_t>(v));
-            } else if (auto r = rational_from_double(v)) {
-                value_id = pool->intern_real_constant(*r);
-            } else {
-                throw std::runtime_error("The default of '" + pool->to_string(eid) +
-                                         "', its bound " + std::to_string(v) +
-                                         ", has no exact 64-bit fraction.");
-            }
+            // An int type's bounds are integers.
+            value_id = type->is_int() ? pool->intern_int_constant(v.num)
+                                      : pool->intern_real_constant(v);
         }
         defaults.emplace_back(eid, value_id, &problem.pool());
     }

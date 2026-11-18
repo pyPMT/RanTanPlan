@@ -36,9 +36,9 @@ static Interval evaluate_constant_expr_range(
 
     if (pool.is_constant(eid)) {
         if (pool.payload_is_real(eid))
-            return Interval(pool.payload_real(eid).to_double());
+            return Interval::of(pool.payload_real(eid));
         if (pool.payload_is_int(eid))
-            return Interval(static_cast<double>(pool.payload_int(eid)));
+            return Interval::of(pool.payload_int(eid));
         return Interval::unbounded();
     }
 
@@ -94,10 +94,10 @@ NumericBoundsIndex::NumericBoundsIndex(const Problem& problem)
         auto dv = fluent.declared_default();
         if (!dv) continue;
         if (pool.payload_is_real(*dv)) {
-            declared_default_by_schema_[fluent.id()] = pool.payload_real(*dv).to_double();
+            declared_default_by_schema_.insert_or_assign(fluent.id(), Interval::of(pool.payload_real(*dv)));
         } else if (pool.payload_is_int(*dv)) {
-            declared_default_by_schema_[fluent.id()] =
-                static_cast<double>(pool.payload_int(*dv));
+            declared_default_by_schema_.insert_or_assign(
+                fluent.id(), Interval::of(pool.payload_int(*dv)));
         }
     }
 }
@@ -110,11 +110,11 @@ void NumericBoundsIndex::initialize_from_initial_state() {
         ExprID value_eid  = assignment.value_id();
 
         // Extract numeric value from the CONSTANT payload.
-        double val = 0.0;
+        Interval val(0.0);
         if (pool.payload_is_real(value_eid)) {
-            val = pool.payload_real(value_eid).to_double();
+            val = Interval::of(pool.payload_real(value_eid));
         } else if (pool.payload_is_int(value_eid)) {
-            val = static_cast<double>(pool.payload_int(value_eid));
+            val = Interval::of(pool.payload_int(value_eid));
         } else {
             // Not a numeric assignment (boolean or string) — skip.
             continue;
@@ -124,7 +124,7 @@ void NumericBoundsIndex::initialize_from_initial_state() {
         std::vector<int> obj_indices;
         if (decompose_numeric_state_variable(fluent_eid, schema_id, obj_indices)) {
             GroundKey key{schema_id, std::move(obj_indices)};
-            bounds_.insert_or_assign(key, Interval(val));
+            bounds_.insert_or_assign(key, val);
             // No expansion count increment — this is the initial state.
         }
     }
@@ -138,7 +138,7 @@ Interval NumericBoundsIndex::get_bounds(int fluent_schema_id,
         return it->second;
     }
     // Uninitialized numeric fluent defaults to [d, d] (declared default, else 0).
-    return Interval(schema_default(fluent_schema_id));
+    return schema_default(fluent_schema_id);
 }
 
 bool NumericBoundsIndex::update_bounds(int fluent_schema_id,
@@ -292,13 +292,13 @@ void NumericBoundsIndex::precompute_freezes() {
                                               schema_id, obj_indices)) {
             auto it = constant_ranges.find(schema_id);
             if (it != constant_ranges.end()) {
-                double val = 0.0;
+                Interval val(0.0);
                 ExprID vid = assignment.value_id();
                 if (pool.payload_is_real(vid))
-                    val = pool.payload_real(vid).to_double();
+                    val = Interval::of(pool.payload_real(vid));
                 else if (pool.payload_is_int(vid))
-                    val = static_cast<double>(pool.payload_int(vid));
-                it->second = it->second.convex_union(Interval(val));
+                    val = Interval::of(pool.payload_int(vid));
+                it->second = it->second.convex_union(val);
             }
         }
     }

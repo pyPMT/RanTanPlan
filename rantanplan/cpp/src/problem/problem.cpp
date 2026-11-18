@@ -99,6 +99,13 @@ const Fluent* Problem::find_fluent(const std::string& name) const {
     return nullptr;
 }
 
+const Fluent* Problem::declaration_of(ExprID state_variable) const {
+    const ExprPool& p = pool();
+    if (!p.is_state_variable(state_variable)) return nullptr;
+    ExprID head = p.head_symbol_id(state_variable);
+    return p.is_fluent_symbol(head) ? find_fluent(p.payload_string(head)) : nullptr;
+}
+
 bool Problem::has_action(const std::string& name) const {
     return action_name_to_index_.find(name) != action_name_to_index_.end();
 }

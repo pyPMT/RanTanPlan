@@ -303,7 +303,10 @@ z3::expr Z3VariableFactory::real_val(double v) const {
     if (!std::isfinite(v)) {
         throw std::invalid_argument("Real value " + std::to_string(v) + " is not finite");
     }
-    return ctx_.real_val(shortest_decimal(v).c_str());
+    if (v == std::trunc(v) && std::fabs(v) <= 0x1p53) {  // an integer, as int64
+        return ctx_.real_val(static_cast<int64_t>(v));
+    }
+    return ctx_.real_val(exact_decimal(v).c_str());
 }
 
 z3::expr Z3VariableFactory::make_zero() const {

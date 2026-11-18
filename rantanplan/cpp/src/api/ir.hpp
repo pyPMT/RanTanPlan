@@ -97,8 +97,9 @@ struct FluentIR {
     /// `integer[0, 15]`); unset for unbounded numeric or non-numeric fluents.
     /// For array fluents these carry the *element* type's bounds (the grounder
     /// mints cells of that element type), same as scalar bounded fluents.
-    std::optional<double> lower_bound;
-    std::optional<double> upper_bound;
+    /// Exact, as numerator/denominator (like ExprNodeIR::real_value).
+    std::optional<std::pair<int64_t, int64_t>> lower_bound;
+    std::optional<std::pair<int64_t, int64_t>> upper_bound;
     /// Structured-value data, interpreted per `shape`. For an ARRAY fluent (from
     /// an ArrayType value, e.g. `array[3, integer[0, 15]]`): `element_type` is
     /// the leaf scalar type string ("up:integer", …), `array_sizes` the

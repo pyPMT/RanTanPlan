@@ -27,9 +27,9 @@ static Interval evaluate_constant_expr_range(
 
     if (pool.is_constant(eid)) {
         if (pool.payload_is_real(eid))
-            return Interval(pool.payload_real(eid).to_double());
+            return Interval::of(pool.payload_real(eid));
         if (pool.payload_is_int(eid))
-            return Interval(static_cast<double>(pool.payload_int(eid)));
+            return Interval::of(pool.payload_int(eid));
         return Interval::unbounded();
     }
 
@@ -299,16 +299,16 @@ void NumericRelaxedPlanningGraph::initialize_layer_0() {
         } else if (numeric_fluent_ids_.contains(fluent_id)) {
             // Numeric fluent: extract value and create point bounds
             if (pool.is_constant(val_eid)) {
-                double numeric_value = 0.0;
+                Interval value(0.0);
                 if (pool.payload_is_int(val_eid)) {
-                    numeric_value = static_cast<double>(pool.payload_int(val_eid));
+                    value = Interval::of(pool.payload_int(val_eid));
                 } else if (pool.payload_is_real(val_eid)) {
-                    numeric_value = pool.payload_real(val_eid).to_double();
+                    value = Interval::of(pool.payload_real(val_eid));
                 } else {
                     std::cerr << "Warning: Numeric fluent has non-numeric value in initial state: "
                               << pool.to_string(fluent_eid) << std::endl;
                 }
-                initial_layer.numeric_bounds[fluent_id] = NumericBounds(numeric_value);
+                initial_layer.numeric_bounds[fluent_id] = NumericBounds(value.lower, value.upper);
             } else {
                 std::cerr << "Warning: Numeric fluent has non-constant value in initial state: "
                           << pool.to_string(fluent_eid) << std::endl;
@@ -768,9 +768,9 @@ Interval NumericRelaxedPlanningGraph::evaluate_interval(ExprID eid, int layer) c
     // Constants -> point interval
     if (pool.is_constant(eid)) {
         if (pool.payload_is_real(eid))
-            return Interval(pool.payload_real(eid).to_double());
+            return Interval::of(pool.payload_real(eid));
         if (pool.payload_is_int(eid))
-            return Interval(static_cast<double>(pool.payload_int(eid)));
+            return Interval::of(pool.payload_int(eid));
         {
             // Object constant: map to its global index for numeric encoding.
             // Needed for evaluating EQUALS comparisons on object fluents
@@ -889,11 +889,13 @@ void NumericRelaxedPlanningGraph::apply_widening(
 void NumericRelaxedPlanningGraph::precompute_declared_bounds() {
     for (const auto& fluent : problem_.fluents()) {
         if (!fluent.is_function()) continue;
-        if (fluent.declared_lower_bound()) {
-            declared_lower_by_schema_[fluent.id()] = *fluent.declared_lower_bound();
+        // The nearest doubles outside the exact bounds, so that a clamp keeps
+        // every value the declaration allows.
+        if (auto lo = fluent.declared_lower_bound()) {
+            declared_lower_by_schema_[fluent.id()] = Interval::of(*lo).lower;
         }
-        if (fluent.declared_upper_bound()) {
-            declared_upper_by_schema_[fluent.id()] = *fluent.declared_upper_bound();
+        if (auto hi = fluent.declared_upper_bound()) {
+            declared_upper_by_schema_[fluent.id()] = Interval::of(*hi).upper;
         }
     }
 }
@@ -986,13 +988,13 @@ void NumericRelaxedPlanningGraph::precompute_freezes() {
 
         auto it = constant_ranges.find(fluent->id());
         if (it != constant_ranges.end()) {
-            double val = 0.0;
+            Interval val(0.0);
             ExprID vid = assignment.value_id();
             if (pool.payload_is_real(vid))
-                val = pool.payload_real(vid).to_double();
+                val = Interval::of(pool.payload_real(vid));
             else if (pool.payload_is_int(vid))
-                val = static_cast<double>(pool.payload_int(vid));
-            it->second = it->second.convex_union(Interval(val));
+                val = Interval::of(pool.payload_int(vid));
+            it->second = it->second.convex_union(val);
         }
     }
 
