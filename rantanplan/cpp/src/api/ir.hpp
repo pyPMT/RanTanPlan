@@ -159,6 +159,7 @@ enum class SolveStatusIR : int {
     UNSOLVABLE_PROVEN = 2,
     UNSOLVABLE_INCOMPLETELY = 3,
     TIMEOUT = 4,
+    UNSUPPORTED_PROBLEM = 5,
 };
 
 struct ActionInstanceIR {

@@ -797,6 +797,31 @@ def test_interference_sees_every_dependency():
                     raise AssertionError(f"{strategy}/{case}: {names}: {e}")
 
 
+def test_declared_bounds_on_a_non_grounded_encoder_are_unsupported():
+    """Declared numeric bounds are only sound with the Grounded encoder. A
+    strategy on another encoder must refuse the problem as unsupported and
+    say which strategies take it, not fail with an internal error.
+
+        x : Int[0, 10], initially 0;  inc : x += 1;  goal  x >= 1"""
+    x = Fluent("x", IntType(0, 10))
+    inc = InstantaneousAction("inc")
+    inc.add_increase_effect(x(), 1)
+    p = Problem("declared_bounds")
+    p.add_fluent(x, default_initial_value=0)
+    p.add_action(inc)
+    p.add_goal(GE(x(), 1))
+
+    r = solve(p, strategy="elsc")
+    assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, r.status
+    assert r.plan is None
+    messages = [m.message for m in r.log_messages or []]
+    assert any("Declared numeric bounds" in m and "Grounded" in m for m in messages), messages
+
+    r = solve(p, strategy="e")
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert_valid(p, r.plan)
+
+
 # Strategies the effect-normalization tests below run on (those registered):
 # every encoder and parallelism path, without the semantic-interference
 # strategies on the Grounded encoder.
@@ -1410,6 +1435,7 @@ CASES = [
     test_step_limit_is_not_a_proof_of_unsolvability,
     test_interference_sees_every_dependency,
     test_landmark_residual_counts_every_contributor,
+    test_declared_bounds_on_a_non_grounded_encoder_are_unsupported,
     test_boolean_set_and_clear_is_add_after_delete,
     test_unconditional_set_and_clear_keeps_the_action,
     test_complex_set_and_clear_conditions,

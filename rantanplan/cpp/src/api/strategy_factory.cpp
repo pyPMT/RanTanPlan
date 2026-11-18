@@ -83,11 +83,11 @@ void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
     // out rather than silently drop the bound (per-variable soundness analysis
     // and encoder demotion are left for a follow-up).
     if (problem.has_declared_bounds() && spec.encoder != EncoderFamily::Grounded) {
-        throw std::invalid_argument(
+        throw UnsupportedProblemError(
             "Declared numeric bounds (bounded int/real fluent types) are only "
             "sound with the Grounded encoder; this strategy's chained/relaxed "
             "encoder uses intermediate variables that can violate the bounds. "
-            "Use a Grounded-encoder strategy such as els, seq, or f.");
+            "Use a Grounded-encoder strategy such as e, f or seq.");
     }
 
     if (uses_branch_and_bound(spec) &&

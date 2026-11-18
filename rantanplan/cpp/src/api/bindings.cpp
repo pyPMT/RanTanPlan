@@ -290,7 +290,8 @@ NB_MODULE(_rantanplan, m) {
         .value("SOLVED_OPTIMALLY", ir::SolveStatusIR::SOLVED_OPTIMALLY)
         .value("UNSOLVABLE_PROVEN", ir::SolveStatusIR::UNSOLVABLE_PROVEN)
         .value("UNSOLVABLE_INCOMPLETELY", ir::SolveStatusIR::UNSOLVABLE_INCOMPLETELY)
-        .value("TIMEOUT", ir::SolveStatusIR::TIMEOUT);
+        .value("TIMEOUT", ir::SolveStatusIR::TIMEOUT)
+        .value("UNSUPPORTED_PROBLEM", ir::SolveStatusIR::UNSUPPORTED_PROBLEM);
 
     nb::class_<ir::ActionInstanceIR>(m, "ActionInstanceIR")
         .def_ro("action_name", &ir::ActionInstanceIR::action_name)

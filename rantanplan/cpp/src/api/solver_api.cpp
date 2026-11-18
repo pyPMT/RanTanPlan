@@ -300,7 +300,14 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
     rantanplan::StrategySpec spec = rantanplan::StrategyRegistry::get(config.planner.strategy);
     rantanplan::SearchMode mode = rantanplan::parse_search_mode(config.planner.mode);
     spec.planner = rantanplan::resolve_planner_kind(mode, spec);
-    rantanplan::StrategyFactory::adjust_spec(spec, problem);
+    try {
+        rantanplan::StrategyFactory::adjust_spec(spec, problem);
+    } catch (const rantanplan::UnsupportedProblemError& e) {
+        ir::ResultIR unsupported;
+        unsupported.status = static_cast<int>(ir::SolveStatusIR::UNSUPPORTED_PROBLEM);
+        unsupported.log_messages.push_back(ir::LogMessageIR{3 /* ERROR */, e.what()});
+        return unsupported;
+    }
     rantanplan::StrategyFactory::validate(spec, config.planner.strategy,
                                           config.planner.horizon_schedule);
 
