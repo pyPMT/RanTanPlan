@@ -160,9 +160,11 @@ Plan IncrementalHorizonPlanner::search() {
                     ", actions=" + std::to_string(plan.length()) +
                     " (total time: " + std::to_string(total_time) + "s) ***");
 
-                plan.write_ipc(config.planner.output_plan, 1,
-                               -1.0, true,
-                               config.planner.strategy, config.planner.mode, total_time);
+                if (!config.planner.output_plan.empty()) {
+                    plan.write_ipc(config.planner.output_plan, 1,
+                                   -1.0, true,
+                                   config.planner.strategy, config.planner.mode, total_time);
+                }
                 notify_intermediate_plan(plan);
 
                 stats.set("planner.plan_length",      static_cast<double>(plan.length()));

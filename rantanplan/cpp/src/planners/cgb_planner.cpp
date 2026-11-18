@@ -442,9 +442,11 @@ Plan CGBPlanner::search() {
             stats.set("planner.activated_actions", static_cast<double>(activated_.size()));
             stats.set("planner.total_actions", static_cast<double>(problem_.actions().size()));
 
-            plan.write_ipc(config.planner.output_plan, 1,
-                           -1.0, true,
-                           config.planner.strategy, config.planner.mode, total_time);
+            if (!config.planner.output_plan.empty()) {
+                plan.write_ipc(config.planner.output_plan, 1,
+                               -1.0, true,
+                               config.planner.strategy, config.planner.mode, total_time);
+            }
             notify_intermediate_plan(plan);
 
             collect_statistics();

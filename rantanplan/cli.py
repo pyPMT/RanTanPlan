@@ -54,8 +54,10 @@ Use --list-strategies to see available strategies and their descriptions.
                        help="Timeout in seconds (default: None)")
     parser.add_argument("--max-steps", type=int,
                        help="Maximum planning steps")
-    parser.add_argument("--output-plan", type=str,
-                       help="Base path for plan output in IPC format (files written as <path>.1, .2, etc.)")
+    parser.add_argument("--output-plan", type=str, default="plan.txt",
+                       help="Base path for plan output in IPC format (files written as <path>.1, .2, etc.; "
+                            "default: plan.txt). Used from Unified Planning, the planner writes no files "
+                            "unless the output_plan parameter is set.")
     parser.add_argument("--stats-file", type=str,
                        help="Save statistics to file")
     
