@@ -9,7 +9,7 @@ from fractions import Fraction
 from unified_planning.shortcuts import (
     Fluent, InstantaneousAction, Problem, ArrayType, BoolType, IntType, RealType,
     UserType, Object, Always, And, Count, Equals, GE, GT, Iff, Int, LE, LT, Not, Or, Plus,
-    Times,
+    Real, Times,
 )
 from unified_planning.model.metrics import MinimizeActionCosts
 from unified_planning.engines import PlanGenerationResultStatus
@@ -2384,6 +2384,31 @@ def test_a_converter_refusal_is_unsupported_problem():
     assert "default_initial_value=True" in _refusal_reason(r), r.log_messages
 
 
+def test_a_number_beyond_64_bits_is_unsupported():
+    """The IR holds integers, and the numerator and denominator of reals, in
+    64 bits; a larger one made the binding raise a TypeError out of solve()."""
+    big = 10 ** 30
+    for what in ("int", "numerator", "denominator", "bound"):
+        value = {"int": Int(big), "numerator": Real(Fraction(big, 7)),
+                 "denominator": Real(Fraction(1, big)), "bound": Int(1)}[what]
+        x = Fluent("x", IntType(0, big) if what == "bound"
+                   else IntType() if what == "int" else RealType())
+        p = Problem(f"beyond_64_bits_{what}")
+        p.add_fluent(x, default_initial_value=0)
+        set_x = InstantaneousAction("set_x")
+        set_x.add_effect(x(), value)
+        p.add_action(set_x)
+        p.add_goal(Equals(x(), value))
+        try:
+            r = solve(p)
+        except Exception as e:
+            raise AssertionError(f"{what}: {type(e).__name__}: {e}")
+        assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, \
+            f"{what}: {r.status}"
+        assert "does not fit in 64 bits" in _refusal_reason(r), \
+            f"{what}: {r.log_messages}"
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -2442,4 +2467,5 @@ CASES = [
     test_a_derived_bound_near_int64_max_is_not_cast,
     test_r2e_refuses_declared_invariants,
     test_a_converter_refusal_is_unsupported_problem,
+    test_a_number_beyond_64_bits_is_unsupported,
 ]

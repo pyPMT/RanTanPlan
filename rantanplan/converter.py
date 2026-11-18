@@ -81,10 +81,25 @@ def _array_shape(tpe):
     return _up_type_str(leaf), sizes, leaf
 
 
-def _fraction(value) -> tuple:
+_INT64_MIN, _INT64_MAX = -(1 << 63), (1 << 63) - 1
+
+
+def _int64(value: int, what: str) -> int:
+    """@p value, which the IR holds as a 64-bit integer; a UPException (the
+    wrapper reports it as UNSUPPORTED_PROBLEM) if it does not fit. Without
+    the check, the binding's TypeError escaped solve()."""
+    if not _INT64_MIN <= value <= _INT64_MAX:
+        raise UPException(
+            f"{what} {value} does not fit in 64 bits; the planner's numbers "
+            f"(integers, and the numerators and denominators of reals) are "
+            f"limited to that.")
+    return value
+
+
+def _fraction(value, what: str = "Declared bound") -> tuple:
     """A declared bound (an int, or a Fraction for a real) as an exact (numerator, denominator)."""
     value = Fraction(value)
-    return (value.numerator, value.denominator)
+    return (_int64(value.numerator, what), _int64(value.denominator, what))
 
 
 class _FNodeToIR:
@@ -124,9 +139,10 @@ class _FNodeToIR:
         if symbol is not None:
             node.symbol = symbol
         if int_value is not None:
-            node.int_value = int_value
+            node.int_value = _int64(int_value, "Integer constant")
         if real_value is not None:
-            node.real_value = real_value
+            node.real_value = (_int64(real_value[0], "Real constant numerator"),
+                               _int64(real_value[1], "Real constant denominator"))
         if bool_value is not None:
             node.bool_value = bool_value
         if children:
@@ -287,9 +303,9 @@ def _convert_parameters(parameters):
         ptype = param.type
         if ptype.is_int_type():
             if ptype.lower_bound is not None:
-                ir_param.lower_bound = int(ptype.lower_bound)
+                ir_param.lower_bound = _int64(int(ptype.lower_bound), "Parameter bound")
             if ptype.upper_bound is not None:
-                ir_param.upper_bound = int(ptype.upper_bound)
+                ir_param.upper_bound = _int64(int(ptype.upper_bound), "Parameter bound")
         result.append(ir_param)
     return result
 
