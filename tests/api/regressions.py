@@ -807,10 +807,11 @@ def test_interference_sees_every_dependency():
                     raise AssertionError(f"{strategy}/{case}: {names}: {e}")
 
 
-def test_declared_bounds_on_a_non_grounded_encoder_are_unsupported():
-    """Declared numeric bounds are only sound with the Grounded encoder. A
-    strategy on another encoder must refuse the problem as unsupported and
-    say which strategies take it, not fail with an internal error.
+def test_declared_bounds_on_the_chained_encoder_are_unsupported():
+    """The Chained encoder does not assert declared numeric bounds on its
+    intermediate values. A strategy on it must refuse the problem as
+    unsupported and say which strategies take it, not fail with an internal
+    error. The Grounded and R2E encoders take it.
 
         x : Int[0, 10], initially 0;  inc : x += 1;  goal  x >= 1"""
     x = Fluent("x", IntType(0, 10))
@@ -825,11 +826,12 @@ def test_declared_bounds_on_a_non_grounded_encoder_are_unsupported():
     assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, r.status
     assert r.plan is None
     messages = [m.message for m in r.log_messages or []]
-    assert any("Declared numeric bounds" in m and "Grounded" in m for m in messages), messages
+    assert any("Declared numeric bounds" in m and "Chained" in m for m in messages), messages
 
-    r = solve(p, strategy="e")
-    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
-    assert_valid(p, r.plan)
+    for strategy in ("e", "r2e"):
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, (strategy, r.status)
+        assert_valid(p, r.plan)
 
 
 def _two_actions_increase_one_fluent_problem():
@@ -1010,8 +1012,8 @@ def _complex_set_and_clear_problem(case):
                WHEN (NOT q AND n < 4)     f := false
                WHEN (q AND NOT r)         f := false
                n += 1
-        p, q, r false throughout; n an unbounded Int (r2e refuses
-        declared bounds), kept below 5 by bump's precondition n < 5
+        p, q, r false throughout; n an unbounded Int, kept below 5 by bump's
+        precondition n < 5
 
     Case "both": init n = 3, f false; at n = 3 the first set and the first
     clear both hold, so add after delete makes f TRUE. Goal f AND n = 4:
@@ -1806,6 +1808,32 @@ def test_real_folding_is_exact():
     assert_valid(p, r.plan)
 
 
+def test_declared_bounds_hold_inside_a_step():
+    """x is declared in [0, 10] and starts at 5; up adds 8, down takes 5, and
+    the goal is x = 8. Down then up stays inside the bounds (5, 0, 8); up then
+    down passes through 13, which UP's validator rejects. R2E chains the writers
+    of one step through intermediate values, so the declared bounds must hold
+    on those too, whichever action its fixed ordering puts first (declaring the
+    actions in both orders covers both). R2E used to refuse declared bounds."""
+    for strategy in ("e", "r2e"):
+        for up_first in (True, False):
+            x = Fluent("x", IntType(0, 10))
+            up = InstantaneousAction("up")
+            up.add_increase_effect(x(), 8)
+            down = InstantaneousAction("down")
+            down.add_decrease_effect(x(), 5)
+            p = _real_problem("trap", [(x, 5)], [up, down] if up_first else [down, up],
+                              Equals(x(), 8))
+            r = solve(p, strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"{strategy}, up_first={up_first}: {r.status}"
+            try:
+                assert_valid(p, r.plan)
+            except AssertionError as e:
+                raise AssertionError(f"{strategy}, up_first={up_first}: "
+                                     f"{[a.action.name for a in r.plan.actions]}: {e}")
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -1822,7 +1850,7 @@ CASES = [
     test_step_limit_is_not_a_proof_of_unsolvability,
     test_interference_sees_every_dependency,
     test_landmark_residual_counts_every_contributor,
-    test_declared_bounds_on_a_non_grounded_encoder_are_unsupported,
+    test_declared_bounds_on_the_chained_encoder_are_unsupported,
     test_increases_of_one_fluent_in_one_step_add_up,
     test_suite_strategies_are_registered,
     test_boolean_set_and_clear_is_add_after_delete,
@@ -1849,4 +1877,5 @@ CASES = [
     test_reals_equal_to_six_decimals_are_two_nodes,
     test_declared_real_bounds_keep_their_decimals,
     test_real_folding_is_exact,
+    test_declared_bounds_hold_inside_a_step,
 ]

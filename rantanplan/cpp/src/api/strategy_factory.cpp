@@ -98,19 +98,19 @@ void StrategyFactory::validate(const StrategySpec& spec,
 }
 
 void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
-    // Declared numeric bounds (bounded int/real fluents) are only sound with the
-    // Grounded encoder, which asserts them at every concrete timestep via
-    // encode_state_constraints. The Chained and R2E encoders reason over
+    // Declared numeric bounds (bounded int/real fluents) hold in every state a
+    // plan passes through. The Grounded encoder asserts them at every concrete
+    // timestep (encode_state_constraints), and the R2E encoder on every chain
+    // variable (encode_declared_bounds). The Chained encoder reasons over
     // chain-substituted intermediate variables (ζ) that bypass those boundary
     // constraints, so a plan could transiently violate a declared bound. Bail
-    // out rather than silently drop the bound (per-variable soundness analysis
-    // and encoder demotion are left for a follow-up).
-    if (problem.has_declared_bounds() && spec.encoder != EncoderFamily::Grounded) {
+    // out rather than silently drop the bound.
+    if (problem.has_declared_bounds() && spec.encoder == EncoderFamily::Chained) {
         throw UnsupportedProblemError(
-            "Declared numeric bounds (bounded int/real fluent types) are only "
-            "sound with the Grounded encoder; this strategy's chained/relaxed "
-            "encoder uses intermediate variables that can violate the bounds. "
-            "Use a Grounded-encoder strategy such as e, f or seq.");
+            "Declared numeric bounds (bounded int/real fluent types) are not "
+            "supported by the Chained encoder: its intermediate variables can "
+            "violate the bounds. Use a strategy on another encoder, such as e, "
+            "f, seq or r2e.");
     }
 
     if (uses_branch_and_bound(spec) &&
