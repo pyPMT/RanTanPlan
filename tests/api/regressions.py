@@ -2298,6 +2298,33 @@ def test_a_product_with_an_unbounded_factor_is_not_pruned():
         assert_valid(p, r.plan)
 
 
+def test_a_derived_bound_near_int64_max_is_not_cast():
+    """x := 2^63 - 1 fits in 64 bits, but the derived bound x <= 2^63 - 1,
+    rounded outward to the double 2^63, overflowed the cast to int64 and was
+    asserted as x <= INT64_MIN: no plan within the step limit, though
+    [set_x, check] is one. A bound beyond int64 on an integer fluent is now
+    skipped (its values are int64 anyway). r2e, which asserts no derived
+    bounds, solved it all along."""
+    top = 2 ** 63 - 1
+    for strategy in _registered("seq", "e", "f", "e-lin"):
+        x, g = Fluent("x", IntType()), Fluent("g", BoolType())
+        p = Problem("derived_bound_near_int64_max")
+        p.add_fluent(x, default_initial_value=0)
+        p.add_fluent(g, default_initial_value=False)
+        set_x = InstantaneousAction("set_x")
+        set_x.add_effect(x(), top)
+        check = InstantaneousAction("check")
+        check.add_precondition(GE(x(), top))
+        check.add_effect(g(), True)
+        p.add_action(set_x)
+        p.add_action(check)
+        p.add_goal(g())
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: {r.status}"
+        assert_valid(p, r.plan)
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -2353,4 +2380,5 @@ CASES = [
     test_bb_sdac_actions_may_wait_for_a_cheaper_state,
     test_split_instances_are_distinct_actions,
     test_a_product_with_an_unbounded_factor_is_not_pruned,
+    test_a_derived_bound_near_int64_max_is_not_cast,
 ]
