@@ -314,6 +314,16 @@ z3::expr AbstractSuffixEncoder::encode_loop_formulas() {
 z3::expr AbstractSuffixEncoder::encode_axiom_6(int i) {
     // For each action a, at step i > 0:
     // a_i => (a_{i-1} OR (OR_{phi in pre_a} NOT phi_{i-1}) OR (OR_{a' in M_a} a'_{i-1}))
+    // With state-dependent costs, moving an action to an earlier step changes
+    // the state its cost is read in, so the front-loading normal form behind
+    // this axiom is not cost-preserving; M_a below is built from precondition/
+    // effect interference, which ignores cost fluents. Under sequential
+    // semantics (also r2e) M_a is every other action, which any plan without
+    // empty steps satisfies.
+    if (!cost_lower_bounds_.empty() && semantics_ != SemanticsKind::Sequential) {
+        return ctx_.bool_val(true);
+    }
+
     z3::expr_vector all_constraints(ctx_);
     const auto& actions = problem_.actions();
     auto& vf = encoder_.get_variable_factory();
