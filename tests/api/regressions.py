@@ -550,6 +550,41 @@ def test_ground_atoms_have_exactly_one_expr_id():
         f"{aliased} ground state variable(s) have more than one ExprID"
 
 
+def test_an_aliased_atom_stops_preprocessing():
+    """Two ExprIDs for one ground atom stop preprocessing with an error, where
+    before they were counted (pool.aliased_state_variables) and passed on to
+    mis-group silently. The converter makes no alias (the test above), so the
+    IR is edited: the goal's object constant o, declared of type Sub, is
+    re-typed as its supertype Base. The goal's f(o) then differs only in a
+    type_id from the f(o) that grounding mark(o) makes."""
+    Base = UserType("Base")
+    Sub = UserType("Sub", Base)
+    o = Object("o", Sub)
+    f = Fluent("f", BoolType(), x=Base)
+    mark = InstantaneousAction("mark", y=Sub)
+    mark.add_effect(f(mark.parameter("y")), True)
+    p = Problem("aliased_atom")
+    p.add_fluent(f, default_initial_value=False)
+    p.add_object(o)
+    p.add_action(mark)
+    p.add_goal(f(o))
+    args = ["--strategy", "seq", "--verbosity", "silent"]
+    _rantanplan.preprocess(convert_problem(p), args)  # unedited: no alias
+    ir = convert_problem(p)
+    nodes = ir.nodes
+    const = next(n for n in nodes
+                 if n.kind == _rantanplan.ExprKind.CONSTANT and n.symbol == "o")
+    assert const.type_name == "Sub", const.type_name
+    const.type_name = "Base"
+    ir.nodes = nodes
+    try:
+        _rantanplan.preprocess(ir, args)
+    except RuntimeError as e:
+        assert "more than one ExprID" in str(e), str(e)
+    else:
+        raise AssertionError("preprocessing accepted a ground atom with two ExprIDs")
+
+
 def test_a_non_constant_amount_does_not_bound_its_fluent():
     """tighten_bounds_syntactically (bound_tightening.cpp) took an increase by
     an amount that is not a constant as never lowering its fluent, so a fluent
@@ -767,7 +802,12 @@ def _breaker_and_needer_problem(case):
         problem.set_initial_value(f(), True)
     problem.add_action(breaker)
     problem.add_action(needer)
+    written = {e.fluent.fluent() for e in breaker.effects}
     for f in (q, r, s):
+        if f in written:
+            # In value_read, write_q would be a copy of breaker, and the plan
+            # [needer, write_q] would never exercise the dependency.
+            continue
         writer = InstantaneousAction(f"write_{f.name}")
         writer.add_effect(f(), f not in initially_true)
         problem.add_action(writer)
@@ -791,25 +831,34 @@ def test_interference_sees_every_dependency():
             assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
                 f"{strategy}/{case}: {r.status}"
             names = [a.action.name for a in r.plan.actions]
+            # The goal needs both: needer is the only writer of g, and breaker
+            # the only writer of the fluent the goal asks to change.
+            assert "breaker" in names and "needer" in names, \
+                f"{strategy}/{case}: {names}"
             if case == "count":
-                # UP's validator does not support count. The plan is valid if
-                # and only if needer runs while count(p, q) <= 1: before
-                # breaker (p still false), or after write_q (q made false).
-                p_true, q_true = False, True
-                for name in names:
-                    if name == "breaker":
-                        p_true = True
-                    elif name == "write_q":
-                        q_true = False
-                    elif name == "needer":
-                        assert p_true + q_true <= 1, f"{strategy}/{case}: {names}"
-                assert "needer" in names and "breaker" in names, \
+                # UP's validator does not support count, so the plan is simulated.
+                assert _count_case_plan_is_valid(problem, r.plan), \
                     f"{strategy}/{case}: {names}"
             else:
                 try:
                     assert_valid(problem, r.plan)
                 except AssertionError as e:
                     raise AssertionError(f"{strategy}/{case}: {names}: {e}")
+
+
+def _count_case_plan_is_valid(problem, plan):
+    """Run `plan` on _breaker_and_needer_problem("count"): every effect there
+    assigns a constant, needer's only precondition is count(p, q) <= 1, and the
+    goal is g and p."""
+    state = {f.name: False for f in problem.fluents}
+    state.update({k.fluent().name: v.bool_constant_value()
+                  for k, v in problem.explicit_initial_values.items()})
+    for ai in plan.actions:
+        if ai.action.name == "needer" and state["p"] + state["q"] > 1:
+            return False
+        for e in ai.action.effects:
+            state[e.fluent.fluent().name] = e.value.bool_constant_value()
+    return state["g"] and state["p"]
 
 
 def test_declared_bounds_on_the_chained_encoder_are_unsupported():
@@ -2463,6 +2512,7 @@ CASES = [
     test_duplicate_writes_do_not_fabricate_interference,
     test_effect_rhs_read_is_not_hidden_from_interference,
     test_ground_atoms_have_exactly_one_expr_id,
+    test_an_aliased_atom_stops_preprocessing,
     test_goal_relevance_numeric_value_chaining,
     test_goal_relevance_numeric_rhs_chaining,
     test_boolean_assign_from_fluent,

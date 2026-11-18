@@ -862,6 +862,66 @@ def test_guarded_undefined_effect_never_applicable_when_condition_static():
                             PlanGenerationResultStatus.UNSOLVABLE_INCOMPLETELY), (side, r.status)
 
 
+def _guarded_nested_index(ptr0, with_lower):
+    """copy's conditional effect reads a[ptr], with ptr a fluent, so term
+    resolution splits copy by ptr's value: one instance per position, each
+    needing ptr there, and one for ptr out of bounds, whose effect is undefined.
+
+        a : array[2] of int[0,9] = [5, 6];  ptr : int[0,3] = ptr0
+        flag (init true), done (init false)
+        copy       : x := a[ptr]  WHEN flag;  done := true
+        lower      : flag := false                        (with_lower)
+        goal : done
+    """
+    em = _em()
+    a = Fluent("gni_a", ArrayType(2, IntType(0, 9)))
+    x = Fluent("gni_x", IntType(0, 9))
+    ptr = Fluent("gni_ptr", IntType(0, 3))
+    flag = Fluent("gni_flag", BoolType())
+    done = Fluent("gni_done", BoolType())
+    p = Problem("gni")
+    p.add_fluent(a, default_initial_value=0)
+    p.add_fluent(x, default_initial_value=0)
+    p.add_fluent(ptr, default_initial_value=ptr0)
+    p.add_fluent(flag, default_initial_value=False)
+    p.add_fluent(done, default_initial_value=False)
+    p.set_initial_value(a, [5, 6])
+    p.set_initial_value(flag(), True)
+    copy = InstantaneousAction("copy")
+    copy.add_effect(x(), em.ArrayIndex(a(), ptr()), condition=flag())
+    copy.add_effect(done(), True)
+    p.add_action(copy)
+    if with_lower:
+        lower = InstantaneousAction("lower")
+        lower.add_effect(flag(), False)
+        p.add_action(lower)
+    p.add_goal(done())
+    return p
+
+
+def test_guarded_nested_index():
+    """The guarded-undefined rule (an undefined target or value drops the
+    effect and puts not C into the precondition) on a nested index, where it
+    reaches the split's out-of-bounds instance (term resolution): with
+    ptr = 2, copy needs flag false, so `lower` comes first, and without `lower`
+    nothing reaches the goal; with ptr = 1 the effect is defined and [copy] is
+    the plan."""
+    for case in ("out_of_bounds", "no_lower", "in_bounds"):
+        ptr0 = 1 if case == "in_bounds" else 2
+        r = solve(_guarded_nested_index(ptr0, with_lower=case != "no_lower"),
+                  strategy=GROUNDED)
+        if case == "no_lower":
+            assert r.status == PlanGenerationResultStatus.UNSOLVABLE_PROVEN, (case, r.status)
+            continue
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, (case, r.status)
+        names = [ai.action.name for ai in r.plan.actions]
+        if case == "in_bounds":
+            assert names == ["copy"], (case, names)
+        else:
+            assert "lower" in names and "copy" in names, (case, names)
+            assert names.index("lower") < names.index("copy"), (case, names)
+
+
 def test_state_invariant_with_cell_read():
     """A declared state invariant containing a cell read is lowered and
     enforced: the action violating it cannot be used."""
@@ -1434,6 +1494,7 @@ CASES = [
     test_guarded_oob_permissive_survives,
     test_guarded_undefined_effect_blocks_where_condition_holds,
     test_guarded_undefined_effect_never_applicable_when_condition_static,
+    test_guarded_nested_index,
     test_state_invariant_with_cell_read,
     test_action_cost_with_cell_read,
     test_same_cell_collision_instance_dependent,
