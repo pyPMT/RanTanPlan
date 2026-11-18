@@ -1,24 +1,8 @@
 #include "action_instantiator.hpp"
+#include "../problem/expr_builder.hpp"
 #include "../problem/substitution.hpp"
 
 namespace rantanplan {
-
-// ---------------------------------------------------------------------------
-// Helper: build an object-constant ExprID from an object index.
-// ---------------------------------------------------------------------------
-
-static ExprID make_object_constant(ExprPool& pool,
-                                    const Problem& problem,
-                                    int obj_idx) {
-    const Object& obj = problem.object(obj_idx);
-
-    ExprNode node;
-    node.kind = ExprKind::CONSTANT;
-
-    node.type_id = problem.type_id_of(obj.type());
-    node.payload = obj.name();
-    return pool.intern(node);
-}
 
 // ---------------------------------------------------------------------------
 // Helper: build a Substitution (param_name → object-constant ExprID).
@@ -32,10 +16,12 @@ static Substitution build_substitution(ExprPool& pool,
                                         const Problem& problem,
                                         const Action& lifted_action,
                                         const PartialBinding& binding) {
+    ExprBuilder builder(pool);
     Substitution subst;
     for (const auto& [param_idx, obj_idx] : binding) {
+        const Object& obj = problem.object(obj_idx);
         subst[lifted_action.parameter(param_idx).name()] =
-            make_object_constant(pool, problem, obj_idx);
+            builder.object_constant(obj.name(), problem.type_id_of(obj.type()));
     }
     return subst;
 }

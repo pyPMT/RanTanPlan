@@ -213,24 +213,20 @@ public:
 
     /// Check if an interned expression has boolean type (O(1) via ExprPool).
     bool is_bool_type(ExprID eid) const {
-        const ExprNode& node = pool_->get(eid);
-        return node.type_id >= 0 &&
-               static_cast<size_t>(node.type_id) < types_->size() &&
-               (*types_)[node.type_id].is_bool();
+        const Type* type = type_for_id(eid);
+        return type && type->is_bool();
     }
 
     /// Check if an interned expression has numeric type (int or real).
     bool is_numeric_type(ExprID eid) const {
-        const ExprNode& node = pool_->get(eid);
-        if (node.type_id < 0 || static_cast<size_t>(node.type_id) >= types_->size()) return false;
-        return (*types_)[node.type_id].is_int() || (*types_)[node.type_id].is_real();
+        const Type* type = type_for_id(eid);
+        return type && (type->is_int() || type->is_real());
     }
 
     /// Check if an interned expression has object type (user-defined, not bool/int/real).
     bool is_object_type(ExprID eid) const {
-        const ExprNode& node = pool_->get(eid);
-        if (node.type_id < 0 || static_cast<size_t>(node.type_id) >= types_->size()) return false;
-        return (*types_)[node.type_id].is_object();
+        const Type* type = type_for_id(eid);
+        return type && type->is_object();
     }
 
     /// Get the Type pointer for an interned expression (O(1) via ExprPool).

@@ -27,14 +27,14 @@ from unified_planning.model.operators import OperatorKind
 
 from . import _rantanplan as _ir
 
-# unified_planning ExpressionKind values (must match ir.hpp's ExprKindIR)
-_CONSTANT = 1
-_PARAMETER = 2
-_FLUENT_SYMBOL = 3
-_FUNCTION_SYMBOL = 4
-_STATE_VARIABLE = 5
-_FUNCTION_APPLICATION = 6
-_VARIABLE = 7
+# Node kinds (ir.hpp's ExprKindIR, UP's ExpressionKind numbers)
+_CONSTANT = _ir.ExprKind.CONSTANT
+_PARAMETER = _ir.ExprKind.PARAMETER
+_FLUENT_SYMBOL = _ir.ExprKind.FLUENT_SYMBOL
+_FUNCTION_SYMBOL = _ir.ExprKind.FUNCTION_SYMBOL
+_STATE_VARIABLE = _ir.ExprKind.STATE_VARIABLE
+_FUNCTION_APPLICATION = _ir.ExprKind.FUNCTION_APPLICATION
+_VARIABLE = _ir.ExprKind.VARIABLE
 
 _OPERATOR_NAMES = {
     OperatorKind.PLUS: "up:plus",
@@ -128,7 +128,6 @@ class _FNodeToIR:
         self.nodes = []
         self._memo = {}
         self._head_memo = {}
-        self._true_idx = None
 
     def walk(self, expression):
         idx = self._memo.get(expression)
@@ -164,26 +163,6 @@ class _FNodeToIR:
             idx = self._add(kind, type_name=type_name, symbol=symbol)
             self._head_memo[key] = idx
         return idx
-
-    def true_constant(self):
-        """The synthesized `true` used for empty preconditions (same shape
-        the protobuf loader synthesized)."""
-        if self._true_idx is None:
-            self._true_idx = self._add(_CONSTANT, "up:bool", bool_value=True)
-        return self._true_idx
-
-    def precondition(self, conditions):
-        """Synthesize the precondition conjunction exactly like the protobuf
-        loader's intern_precondition did (note: plain "and", type up:bool).
-        Takes unwalked FNodes: the "and" head node must be created *before*
-        the condition subtrees to preserve the pool's insertion order."""
-        if not conditions:
-            return self.true_constant()
-        if len(conditions) == 1:
-            return self.walk(conditions[0])
-        head = self._head(_FUNCTION_SYMBOL, "and", "up:bool")
-        children = [head] + [self.walk(cond) for cond in conditions]
-        return self._add(_FUNCTION_APPLICATION, "up:bool", children=children)
 
     # ── FNode conversion (shapes mirror UP's FNode2Protobuf) ─────────────
 
@@ -466,16 +445,18 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
         ir_action = _ir.ActionIR()
         ir_action.name = action.name
         ir_action.parameters = _convert_parameters(action.parameters)
-        ir_action.precondition = walker.precondition(action.preconditions)
+        # UP's own conjunction (true for none, the condition itself for one),
+        # so it is the same node as any other And of these conditions.
+        ir_action.precondition = walker.walk(expr_manager.And(action.preconditions))
 
         effects = []
         for effect in action.effects:
             if effect.is_assignment():
-                kind = 0
+                kind = _ir.EffectKind.ASSIGN
             elif effect.is_increase():
-                kind = 1
+                kind = _ir.EffectKind.INCREASE
             elif effect.is_decrease():
-                kind = 2
+                kind = _ir.EffectKind.DECREASE
             else:
                 raise UPException(f"Unsupported effect: {effect}")
 
@@ -552,10 +533,10 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
     out.state_invariants = state_invariants
 
     # --- Metric (first supported one wins, like the protobuf loader) ---
-    metric_kind = 0
+    metric_kind = _ir.MetricKind.NONE
     for metric in problem.quality_metrics:
         if isinstance(metric, MinimizeActionCosts):
-            metric_kind = 1
+            metric_kind = _ir.MetricKind.MINIMIZE_ACTION_COSTS
             costs_by_name = {a.name: cost for a, cost in metric.costs.items()}
             for action, ir_action in zip(problem.actions, actions):
                 cost = costs_by_name.get(action.name, metric.default)
@@ -563,7 +544,7 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
                     ir_action.cost = walker.walk(cost)
             break
         if isinstance(metric, MinimizeSequentialPlanLength):
-            metric_kind = 2
+            metric_kind = _ir.MetricKind.MINIMIZE_PLAN_LENGTH
             break
     out.metric_kind = metric_kind
 

@@ -18,7 +18,6 @@
 #include <nanobind/stl/vector.h>
 
 #include <functional>
-#include <iterator>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -110,15 +109,15 @@ ir::ResultIR run_solve(PreprocessedProblem& pre, const api::PlanCallback& on_pla
 
     ir::ResultIR result;
     if (pre.proven_unsolvable) {
-        result.status = static_cast<int>(ir::SolveStatusIR::UNSOLVABLE_PROVEN);
+        result.status = ir::SolveStatusIR::UNSOLVABLE_PROVEN;
         result.log_messages.push_back(ir::LogMessageIR{
-            1 /* INFO */,
+            ir::LogLevelIR::INFO,
             "Problem proven unsolvable: goals not reachable in " + pre.unsolvable_reason});
     } else if (pre.no_plan_within_step_limit) {
         // The same status as a search that runs out of steps (solver_api.cpp).
-        result.status = static_cast<int>(ir::SolveStatusIR::UNSOLVABLE_INCOMPLETELY);
+        result.status = ir::SolveStatusIR::UNSOLVABLE_INCOMPLETELY;
         result.log_messages.push_back(ir::LogMessageIR{
-            1 /* INFO */,
+            ir::LogLevelIR::INFO,
             "No plan within the step limit (max_steps = " +
                 std::to_string(config.planner.max_steps) + "): goals not reachable in " +
                 pre.unsolvable_reason + " within that many layers; a longer plan may exist"});
@@ -197,22 +196,18 @@ std::string export_formula_ir(const ir::ProblemIR& problem_ir,
 }
 
 /// One pool node as (kind, type name, text): see Preprocessed.pool_nodes.
-using PoolNodeIR = std::tuple<std::string, std::string, std::string>;
+using PoolNodeIR = std::tuple<ir::ExprKindIR, std::string, std::string>;
 
 std::vector<PoolNodeIR> pool_nodes(const Preprocessed& handle) {
-    static const char* const kind_names[] = {
-        "unknown", "constant", "parameter", "fluent_symbol", "function_symbol",
-        "state_variable", "function_application", "variable"};
     const Problem& problem = handle.pre.problem;
     const ExprPool& pool = problem.pool();
     std::vector<PoolNodeIR> nodes;
     nodes.reserve(pool.size());
     for (size_t i = 0; i < pool.size(); ++i) {
         ExprID id{static_cast<int32_t>(i)};
-        const auto kind = static_cast<size_t>(pool.kind(id));
         const Type* type = problem.type_for_id(id);
-        nodes.emplace_back(kind < std::size(kind_names) ? kind_names[kind] : "unknown",
-                           type ? type->name() : "", pool.to_string(id));
+        nodes.emplace_back(to_ir_kind(pool.kind(id)), type ? type->name() : "",
+                           pool.to_string(id));
     }
     return nodes;
 }
@@ -230,6 +225,16 @@ NB_MODULE(_rantanplan, m) {
     m.doc() = "In-process RantanPlan solver (C++ core via nanobind)";
 
     // ── Problem IR ──────────────────────────────────────────────────────
+    nb::enum_<ir::ExprKindIR>(m, "ExprKind")
+        .value("UNKNOWN", ir::ExprKindIR::UNKNOWN)
+        .value("CONSTANT", ir::ExprKindIR::CONSTANT)
+        .value("PARAMETER", ir::ExprKindIR::PARAMETER)
+        .value("FLUENT_SYMBOL", ir::ExprKindIR::FLUENT_SYMBOL)
+        .value("FUNCTION_SYMBOL", ir::ExprKindIR::FUNCTION_SYMBOL)
+        .value("STATE_VARIABLE", ir::ExprKindIR::STATE_VARIABLE)
+        .value("FUNCTION_APPLICATION", ir::ExprKindIR::FUNCTION_APPLICATION)
+        .value("VARIABLE", ir::ExprKindIR::VARIABLE);
+
     nb::class_<ir::ExprNodeIR>(m, "ExprNodeIR")
         .def(nb::init<>())
         .def_rw("kind", &ir::ExprNodeIR::kind)
@@ -275,6 +280,11 @@ NB_MODULE(_rantanplan, m) {
         .def_rw("shape", &ir::FluentIR::shape)
         .def_rw("default_value", &ir::FluentIR::default_value);
 
+    nb::enum_<ir::EffectKindIR>(m, "EffectKind")
+        .value("ASSIGN", ir::EffectKindIR::ASSIGN)
+        .value("INCREASE", ir::EffectKindIR::INCREASE)
+        .value("DECREASE", ir::EffectKindIR::DECREASE);
+
     nb::class_<ir::EffectIR>(m, "EffectIR")
         .def(nb::init<>())
         .def_rw("kind", &ir::EffectIR::kind)
@@ -295,6 +305,11 @@ NB_MODULE(_rantanplan, m) {
         .def(nb::init<>())
         .def_rw("fluent", &ir::AssignmentIR::fluent)
         .def_rw("value", &ir::AssignmentIR::value);
+
+    nb::enum_<ir::MetricKindIR>(m, "MetricKind")
+        .value("NONE", ir::MetricKindIR::NONE)
+        .value("MINIMIZE_ACTION_COSTS", ir::MetricKindIR::MINIMIZE_ACTION_COSTS)
+        .value("MINIMIZE_PLAN_LENGTH", ir::MetricKindIR::MINIMIZE_PLAN_LENGTH);
 
     nb::class_<ir::ProblemIR>(m, "ProblemIR")
         .def(nb::init<>())
@@ -321,6 +336,12 @@ NB_MODULE(_rantanplan, m) {
         .def_ro("action_name", &ir::ActionInstanceIR::action_name)
         .def_ro("parameters", &ir::ActionInstanceIR::parameters);
 
+    nb::enum_<ir::LogLevelIR>(m, "LogLevel")
+        .value("DEBUG", ir::LogLevelIR::DEBUG)
+        .value("INFO", ir::LogLevelIR::INFO)
+        .value("WARNING", ir::LogLevelIR::WARNING)
+        .value("ERROR", ir::LogLevelIR::ERROR);
+
     nb::class_<ir::LogMessageIR>(m, "LogMessageIR")
         .def_ro("level", &ir::LogMessageIR::level)
         .def_ro("message", &ir::LogMessageIR::message);
@@ -346,7 +367,7 @@ NB_MODULE(_rantanplan, m) {
                      [](const Preprocessed& p) { return p.consumed; })
         .def("pool_nodes", &pool_nodes,
              "Every node interned while loading and preprocessing, in id "
-             "order, as (kind, type name, text); the type name is '' for an "
+             "order, as (ExprKind, type name, text); the type name is '' for an "
              "untyped node. For tests of node identity: one value, one node.")
         .def("interrupt",
              [](Preprocessed& p) { p.interrupt_slot.interrupt(); },

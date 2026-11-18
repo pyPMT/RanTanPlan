@@ -220,11 +220,7 @@ z3::expr LiftedEncodingVisitor::convert_node_pool(ExprID id) {
     if (node.children.empty()) {
         if (std::holds_alternative<std::string>(node.payload)) {
             const std::string& symbol = std::get<std::string>(node.payload);
-            // Resolve type from type_id
-            const Type* type = nullptr;
-            if (node.type_id >= 0 && node.type_id < static_cast<int>(problem_->types().size())) {
-                type = &problem_->types()[node.type_id];
-            }
+            const Type* type = problem_->type_for_id(id);
             // Use type-based variable creation (same as visit_symbol)
             if (!type) {
                 return create_int_variable(symbol);

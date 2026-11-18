@@ -412,13 +412,12 @@ class _RantanPlanBase(Engine):
     # ── Result conversion ────────────────────────────────────────────────
 
     @staticmethod
-    def _up_status(status: int) -> PlanGenerationResultStatus:
-        name = _rantanplan.SolveStatus(status).name
-        return PlanGenerationResultStatus[name]
+    def _up_status(status: _rantanplan.SolveStatus) -> PlanGenerationResultStatus:
+        return PlanGenerationResultStatus[status.name]
 
     @staticmethod
-    def _up_log_level(level: int) -> LogLevel:
-        return (LogLevel.DEBUG, LogLevel.INFO, LogLevel.WARNING, LogLevel.ERROR)[level]
+    def _up_log_level(level: _rantanplan.LogLevel) -> LogLevel:
+        return LogLevel[level.name]
 
     @staticmethod
     def _build_plan(instances, compiled_problem: Problem,

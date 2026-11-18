@@ -29,11 +29,8 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
     for (ExprID eid : problem.grounded_fluents()) {
         if (assigned.count(eid)) continue;
 
-        int fluent_type_id = pool->get(eid).type_id;
-        if (fluent_type_id < 0) continue;  // unknown type — skip
-
         const Type* type = problem.type_for_id(eid);
-        if (!type) continue;
+        if (!type) continue;  // unknown type — skip
 
         // Resolve the fluent schema (via its head symbol) for the declared
         // default and bounds; array cells resolve to their cell fluent.

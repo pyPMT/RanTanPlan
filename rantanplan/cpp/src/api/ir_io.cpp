@@ -14,6 +14,47 @@ namespace rantanplan {
 // File-local helpers (ports of the former protobuf loader's logic)
 // ============================================================================
 
+/// The planner's kind for an IR node kind. UNKNOWN is a node the converter left
+/// unset.
+static ExprKind to_expr_kind(ir::ExprKindIR kind) {
+    switch (kind) {
+        case ir::ExprKindIR::CONSTANT: return ExprKind::CONSTANT;
+        case ir::ExprKindIR::PARAMETER: return ExprKind::PARAMETER;
+        case ir::ExprKindIR::FLUENT_SYMBOL: return ExprKind::FLUENT_SYMBOL;
+        case ir::ExprKindIR::FUNCTION_SYMBOL: return ExprKind::FUNCTION_SYMBOL;
+        case ir::ExprKindIR::STATE_VARIABLE: return ExprKind::STATE_VARIABLE;
+        case ir::ExprKindIR::FUNCTION_APPLICATION: return ExprKind::FUNCTION_APPLICATION;
+        case ir::ExprKindIR::VARIABLE: return ExprKind::VARIABLE;
+        case ir::ExprKindIR::UNKNOWN: break;
+    }
+    throw std::runtime_error("Unsupported expression kind " +
+                             std::to_string(static_cast<int>(kind)) + " in IR input");
+}
+
+ir::ExprKindIR to_ir_kind(ExprKind kind) {
+    switch (kind) {
+        case ExprKind::CONSTANT: return ir::ExprKindIR::CONSTANT;
+        case ExprKind::PARAMETER: return ir::ExprKindIR::PARAMETER;
+        case ExprKind::FLUENT_SYMBOL: return ir::ExprKindIR::FLUENT_SYMBOL;
+        case ExprKind::FUNCTION_SYMBOL: return ir::ExprKindIR::FUNCTION_SYMBOL;
+        case ExprKind::STATE_VARIABLE: return ir::ExprKindIR::STATE_VARIABLE;
+        case ExprKind::FUNCTION_APPLICATION: return ir::ExprKindIR::FUNCTION_APPLICATION;
+        case ExprKind::VARIABLE: return ir::ExprKindIR::VARIABLE;
+        case ExprKind::UNKNOWN: break;
+    }
+    return ir::ExprKindIR::UNKNOWN;
+}
+
+static EffectExpression::Kind to_effect_kind(ir::EffectKindIR kind) {
+    switch (kind) {
+        case ir::EffectKindIR::ASSIGN: return EffectExpression::Kind::ASSIGN;
+        case ir::EffectKindIR::INCREASE: return EffectExpression::Kind::INCREASE;
+        case ir::EffectKindIR::DECREASE: return EffectExpression::Kind::DECREASE;
+    }
+    throw std::runtime_error("Unsupported effect kind " +
+                             std::to_string(static_cast<int>(kind)) + " in IR input");
+}
+
 /// Resolve a UP type string to an index into the problem's type table, or -1
 /// for "" or an unknown name.
 static int resolve_type_id(const std::string& type_str,
@@ -47,13 +88,7 @@ static void intern_nodes(IRLoadContext& ctx) {
 
     for (size_t index = 0; index < ctx.in.nodes.size(); ++index) {
         const ir::ExprNodeIR& ir_node = ctx.in.nodes[index];
-        // The one place a kind arrives as a number (see ExprKind).
-        if (ir_node.kind < static_cast<int>(ExprKind::CONSTANT) ||
-            ir_node.kind > static_cast<int>(ExprKind::VARIABLE)) {
-            throw std::runtime_error("Unsupported expression kind " +
-                                     std::to_string(ir_node.kind) + " in IR input");
-        }
-        const auto kind = static_cast<ExprKind>(ir_node.kind);
+        const ExprKind kind = to_expr_kind(ir_node.kind);
 
         ExprNode node;
         node.kind = kind;
@@ -61,13 +96,14 @@ static void intern_nodes(IRLoadContext& ctx) {
 
         if (ir_node.symbol) {
             std::string symbol = *ir_node.symbol;
-            if (kind == ExprKind::FUNCTION_SYMBOL || kind == ExprKind::FLUENT_SYMBOL) {
-                symbol = map_up_operator(symbol);
-            }
-            node.payload = symbol;
+            // An operator takes its standard spelling, and its op from that (an
+            // application's too, see intern()). Any other symbol is a name (of
+            // a fluent, object, parameter or variable) and is kept as it is.
             if (kind == ExprKind::FUNCTION_SYMBOL) {
-                node.op = string_to_expr_operator(symbol);  // its application's too
+                symbol = map_up_operator(symbol);
+                node.op = string_to_expr_operator(symbol);
             }
+            node.payload = std::move(symbol);
         } else if (ir_node.int_value) {
             node.payload = *ir_node.int_value;
         } else if (ir_node.real_value) {
@@ -102,7 +138,7 @@ static Action convert_action(IRLoadContext& ctx, const ir::ActionIR& ir_action) 
 
     std::vector<Effect> effects;
     for (const auto& ir_effect : ir_action.effects) {
-        auto kind = static_cast<EffectExpression::Kind>(ir_effect.kind);
+        EffectExpression::Kind kind = to_effect_kind(ir_effect.kind);
         ExprID fluent_id = ctx.id(ir_effect.fluent);
         ExprID value_id = ctx.id(ir_effect.value);
 
@@ -360,7 +396,7 @@ Problem load_problem_from_ir(const ir::ProblemIR& ir_problem) {
     }
 
     // --- Load metric (costs already resolved per action by the converter) ---
-    auto metric_kind = static_cast<ir::MetricKindIR>(ir_problem.metric_kind);
+    const ir::MetricKindIR metric_kind = ir_problem.metric_kind;
     if (metric_kind == ir::MetricKindIR::MINIMIZE_ACTION_COSTS) {
         problem.set_metric_kind(MetricKind::MINIMIZE_ACTION_COSTS);
         for (size_t i = 0; i < problem.actions_.size(); ++i) {

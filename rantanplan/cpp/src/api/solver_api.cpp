@@ -304,8 +304,8 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
         rantanplan::StrategyFactory::adjust_spec(spec, problem);
     } catch (const rantanplan::UnsupportedProblemError& e) {
         ir::ResultIR unsupported;
-        unsupported.status = static_cast<int>(ir::SolveStatusIR::UNSUPPORTED_PROBLEM);
-        unsupported.log_messages.push_back(ir::LogMessageIR{3 /* ERROR */, e.what()});
+        unsupported.status = ir::SolveStatusIR::UNSUPPORTED_PROBLEM;
+        unsupported.log_messages.push_back(ir::LogMessageIR{ir::LogLevelIR::ERROR, e.what()});
         return unsupported;
     }
     rantanplan::StrategyFactory::validate(spec, config.planner.strategy,
@@ -325,7 +325,7 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
 
     ir::ResultIR result;
     auto add_info = [&result](const std::string& message) {
-        result.log_messages.push_back(ir::LogMessageIR{1 /* INFO */, message});
+        result.log_messages.push_back(ir::LogMessageIR{ir::LogLevelIR::INFO, message});
     };
 
     z3::context ctx;
@@ -361,9 +361,8 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
     // Call planner->search() and get the result
     rantanplan::Plan plan = planner->search();
     if (planner->solution_found()) {
-        result.status = static_cast<int>(planner->optimality_proven()
-                                             ? ir::SolveStatusIR::SOLVED_OPTIMALLY
-                                             : ir::SolveStatusIR::SOLVED_SATISFICING);
+        result.status = planner->optimality_proven() ? ir::SolveStatusIR::SOLVED_OPTIMALLY
+                                                     : ir::SolveStatusIR::SOLVED_SATISFICING;
         result.plan = rantanplan::plan_to_ir(plan);
         result.has_plan = true;
 
@@ -378,13 +377,13 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
             add_info(msg);
         }
     } else if (planner->timed_out()) {
-        result.status = static_cast<int>(ir::SolveStatusIR::TIMEOUT);
+        result.status = ir::SolveStatusIR::TIMEOUT;
         if (config.is_info()) {
             add_info("Timeout reached.");
         }
     } else {
         // No plan found within search limits (max_steps exhausted)
-        result.status = static_cast<int>(ir::SolveStatusIR::UNSOLVABLE_INCOMPLETELY);
+        result.status = ir::SolveStatusIR::UNSOLVABLE_INCOMPLETELY;
         if (config.is_info()) {
             add_info("No plan found within the search limit.");
         }

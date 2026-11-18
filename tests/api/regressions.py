@@ -1507,10 +1507,13 @@ def test_exclusive_guards_are_left_alone():
         assert _metric(r, "effect_normalization.overlap_queries") == 1, strategy
 
 
+_KIND = _rantanplan.ExprKind
+
+
 def _pool_nodes(problem):
     """Every node of the preprocessed problem's expression pool, as
-    (kind, type name, text). The pool keeps every node ever interned, so this
-    shows the converter's nodes beside those the passes made."""
+    (ExprKind, type name, text). The pool keeps every node ever interned, so
+    this shows the converter's nodes beside those the passes made."""
     pre = _rantanplan.preprocess(convert_problem(problem),
                                  ["--strategy", "seq", "--verbosity", "silent"])
     return pre.pool_nodes()
@@ -1542,9 +1545,9 @@ def test_integer_declarations_and_nodes_have_one_type():
 
     nodes = _pool_nodes(p)
     atoms = {text: type_name for kind, type_name, text in nodes
-             if kind == "state_variable" and text in ("(x)", "(a[0])", "(a[1])")}
+             if kind == _KIND.STATE_VARIABLE and text in ("(x)", "(a[0])", "(a[1])")}
     literals = {type_name for kind, type_name, text in nodes
-                if kind == "constant" and text.isdigit()}
+                if kind == _KIND.CONSTANT and text.isdigit()}
     assert len(atoms) == 3, f"expected atoms x, a[0], a[1]; got {atoms}"
     assert set(atoms.values()) | literals == {"up:integer"}, \
         f"int atoms {atoms} and int literals {literals} should share one type"
@@ -1571,7 +1574,7 @@ def test_boolean_constants_have_one_node_each():
     p.add_goal(c())
 
     bools = [(type_name, text) for kind, type_name, text in _pool_nodes(p)
-             if kind == "constant" and text in ("true", "false")]
+             if kind == _KIND.CONSTANT and text in ("true", "false")]
     assert ("up:bool", "true") in bools, f"no typed true among {bools}"
     assert len(bools) == len(set(text for _, text in bools)), \
         f"a boolean value has more than one node: {bools}"
@@ -1603,7 +1606,7 @@ def test_folded_integers_are_integer_constants():
     p.add_goal(And(Equals(x(), 5), Equals(y(), 7)))
 
     constants = [(type_name, text) for kind, type_name, text in _pool_nodes(p)
-                 if kind == "constant"]
+                 if kind == _KIND.CONSTANT]
     for value in (5, 7):
         nodes = [(t, s) for t, s in constants if s.startswith(str(value))]
         assert nodes == [("up:integer", str(value))], \
@@ -1615,21 +1618,83 @@ def test_folded_integers_are_integer_constants():
 
 
 def test_unsupported_expression_kinds_are_rejected():
-    """The IR carries a node's kind as UP's ExpressionKind number, and the
-    loader is the one place it becomes an ExprKind. A number with no supported
-    kind (0 is UNKNOWN, 8 CONTAINER_ID) is an error there. Before, only 8 was:
-    any other number became a node of no kind."""
-    for kind in (0, 8, 9):
-        ir = convert_problem(_two_writes_to_one_fluent_problem())
-        nodes = ir.nodes
-        nodes[-1].kind = kind
-        ir.nodes = nodes
+    """A node's kind in the IR is an ExprKind, so a number with no kind, such
+    as 8 (UP's CONTAINER_ID) or 9, cannot be set, and the loader refuses a node
+    left UNKNOWN. Before, the kind was a bare int and only 8 was refused: any
+    other number became a node of no kind."""
+    for number in (8, 9):
         try:
-            _rantanplan.preprocess(ir, ["--strategy", "seq", "--verbosity", "silent"])
-        except RuntimeError as e:
-            assert f"Unsupported expression kind {kind} " in str(e), str(e)
+            _rantanplan.ExprNodeIR().kind = number
+        except TypeError:
+            pass
         else:
-            raise AssertionError(f"kind {kind} was accepted")
+            raise AssertionError(f"kind {number} was accepted")
+    ir = convert_problem(_two_writes_to_one_fluent_problem())
+    nodes = ir.nodes
+    nodes[-1].kind = _KIND.UNKNOWN
+    ir.nodes = nodes
+    try:
+        _rantanplan.preprocess(ir, ["--strategy", "seq", "--verbosity", "silent"])
+    except RuntimeError as e:
+        assert "Unsupported expression kind 0 " in str(e), str(e)
+    else:
+        raise AssertionError("a node of UNKNOWN kind was accepted")
+
+
+def test_a_conjunction_is_one_node_whoever_builds_it():
+    """An action's list of preconditions and UP's And of the same conditions
+    are one node, with one `and` symbol.
+
+    The converter built the conjunction of a list itself, from an `and` symbol
+    and an application both typed up:bool, while UP's And is the untyped
+    `up:and`. So the pool held two `and` symbols, and the action `two` and the
+    action `one` below had two nodes for one formula. The converter now walks
+    UP's own And of the list."""
+    a, b, g, h = Fluent("a"), Fluent("b"), Fluent("g"), Fluent("h")
+    two = InstantaneousAction("two")
+    two.add_precondition(a())
+    two.add_precondition(b())
+    two.add_effect(g(), True)
+    one = InstantaneousAction("one")
+    one.add_precondition(And(a(), b()))
+    one.add_effect(h(), True)
+    p = Problem("conjunctions")
+    for f in (a, b, g, h):
+        p.add_fluent(f, default_initial_value=False)
+    p.add_action(two)
+    p.add_action(one)
+    for f in (a, b):  # not static, so the preconditions are not folded away
+        set_f = InstantaneousAction(f"set_{f.name}")
+        set_f.add_effect(f(), True)
+        p.add_action(set_f)
+    p.add_goal(And(g(), h()))
+
+    ands = [(kind, type_name) for kind, type_name, text in _pool_nodes(p)
+            if text in ("and", "(and (a) (b))")]
+    assert ands == [(_KIND.FUNCTION_SYMBOL, ""), (_KIND.FUNCTION_APPLICATION, "")], ands
+
+
+def test_fluents_named_like_operators_keep_their_names():
+    """Only an operator symbol takes the standard operator spelling. The loader
+    gave it to fluent names too, so a fluent called `==` became `=` in the
+    expressions while its declaration kept `==`, and preprocessing stopped
+    with "Fluent definition not found for: =". With the name kept, the
+    declared default 2 holds and one increment reaches the goal 3."""
+    for name in ("==", "up:plus"):
+        f = Fluent(name, IntType(0, 5))
+        inc = InstantaneousAction("inc")
+        inc.add_increase_effect(f(), 1)
+        p = Problem("operator_names")
+        p.add_fluent(f, default_initial_value=2)
+        p.add_action(inc)
+        p.add_goal(Equals(f(), 3))
+
+        heads = [text for kind, _, text in _pool_nodes(p) if kind == _KIND.FLUENT_SYMBOL]
+        assert heads == [name], heads
+        r = solve(p, strategy=GROUNDED)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+        assert len(r.plan.actions) == 1, r.plan
+        assert_valid(p, r.plan)
 
 
 CASES = [
@@ -1668,4 +1733,6 @@ CASES = [
     test_boolean_constants_have_one_node_each,
     test_folded_integers_are_integer_constants,
     test_unsupported_expression_kinds_are_rejected,
+    test_a_conjunction_is_one_node_whoever_builds_it,
+    test_fluents_named_like_operators_keep_their_names,
 ]

@@ -354,27 +354,34 @@ public:
         return intern(std::move(node));
     }
 
-    /// Intern a STATE_VARIABLE node: a FLUENT_SYMBOL head (payload = fluent
-    /// name) followed by its argument children. `type_id` is the fluent's value
-    /// type, used for both the head symbol and the state-variable node. `args`
-    /// defaults to empty for a nullary fluent (e.g. an array cell minted by
-    /// array lowering). This is the single place the state-variable node layout
-    /// (children[0] = FLUENT_SYMBOL, children[1..] = arguments) is constructed.
-    ExprID intern_state_variable(const std::string& fluent_name, int type_id,
-                                 const std::vector<ExprID>& args = {}) {
+    /// Intern a FLUENT_SYMBOL, the head of a fluent's state variables: payload
+    /// the fluent's name, `type_id` its value type.
+    ExprID intern_fluent_symbol(const std::string& fluent_name, int type_id) {
         ExprNode head;
         head.kind = ExprKind::FLUENT_SYMBOL;
         head.type_id = type_id;
         head.payload = fluent_name;
-        ExprID head_id = intern(std::move(head));
+        return intern(std::move(head));
+    }
 
+    /// Intern a STATE_VARIABLE node: a FLUENT_SYMBOL head followed by its
+    /// argument children; intern() gives it the head's type. `args` defaults to
+    /// empty for a nullary fluent (e.g. an array cell minted by array
+    /// lowering). This is the single place the state-variable node layout
+    /// (children[0] = FLUENT_SYMBOL, children[1..] = arguments) is constructed.
+    ExprID intern_state_variable(ExprID head, const std::vector<ExprID>& args = {}) {
         ExprNode sv;
         sv.kind = ExprKind::STATE_VARIABLE;
-        sv.type_id = type_id;
         sv.children.reserve(1 + args.size());
-        sv.children.push_back(head_id);
+        sv.children.push_back(head);
         for (ExprID a : args) sv.children.push_back(a);
         return intern(std::move(sv));
+    }
+
+    /// The same, by the fluent's name and value type.
+    ExprID intern_state_variable(const std::string& fluent_name, int type_id,
+                                 const std::vector<ExprID>& args = {}) {
+        return intern_state_variable(intern_fluent_symbol(fluent_name, type_id), args);
     }
 
     /// Check if this is a boolean constant with value true.

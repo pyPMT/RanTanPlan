@@ -26,7 +26,6 @@ struct ArrayInfo {
     std::vector<int64_t> sizes;                       // per-dimension size
     std::set<std::vector<int64_t>> undefined;         // full coordinate tuples
     std::map<std::vector<int64_t>, ExprID> cell_heads;  // defined coords -> cell FLUENT_SYMBOL id
-    int elem_type_id = -1;                            // cell value (element) type
     bool parameterized = false;                       // cells keep the array's object params
 };
 
@@ -192,7 +191,6 @@ private:
 
             ArrayInfo info;
             info.sizes = f.array_sizes();
-            info.elem_type_id = elem_type_id;
             // Object-parameterised array fluents (e.g. grid(p)[r][c]) mint cell
             // fluents that keep the array's object parameters: grid[r][c](p),
             // resolved to a state variable with the access's object args and
@@ -247,13 +245,8 @@ private:
         // nullary array, also pre-intern the full state variable so its ExprID
         // is assigned in mint order; resolve_access rebuilds the identical
         // id via dedup.
-        ExprNode head;
-        head.kind = ExprKind::FLUENT_SYMBOL;
-        head.type_id = elem_type_id;
-        head.payload = cell_name;
-        ExprID head_id = pool_.intern(std::move(head));
-        if (array_fluent.parameter_count() == 0)
-            pool_.intern_state_variable(cell_name, elem_type_id);
+        ExprID head_id = pool_.intern_fluent_symbol(cell_name, elem_type_id);
+        if (array_fluent.parameter_count() == 0) pool_.intern_state_variable(head_id);
         return head_id;
     }
 
@@ -305,16 +298,10 @@ private:
                                      "defined position of array '" + base->name() +
                                      "' in " + context);
         }
-        // Build the cell state variable from its FLUENT_SYMBOL head plus the base
-        // fluent's object args (empty for a nullary array -> dedups to the
-        // pre-interned cell). Mirrors ExprPool::intern_state_variable's layout.
-        ExprNode sv;
-        sv.kind = ExprKind::STATE_VARIABLE;
-        sv.type_id = info.elem_type_id;
-        sv.children.reserve(1 + base_args.size());
-        sv.children.push_back(cit->second);
-        for (ExprID a : base_args) sv.children.push_back(a);
-        out_cell = pool_.intern(std::move(sv));
+        // The cell state variable: its FLUENT_SYMBOL head plus the base fluent's
+        // object args (empty for a nullary array -> dedups to the pre-interned
+        // cell).
+        out_cell = pool_.intern_state_variable(cit->second, base_args);
         return AccessResult::Ok;
     }
 
