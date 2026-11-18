@@ -107,6 +107,17 @@ public:
     int find_grounded_fluent_index(ExprID eid) const;
 
     // Action access
+    //
+    // An action's id is its position: actions()[i].id() == i. Whatever
+    // changes the action set (without_actions, with_actions, with_simplified,
+    // and the lowering passes that replace actions_) numbers the actions it
+    // keeps again from 0, so an id names the same action only within one
+    // Problem. Data keyed by action id that is kept across such a change must
+    // be re-keyed or rebuilt, as ActionPruningPass does with the planning
+    // graph's first layers. ActionPruningPass is the last pass that changes
+    // the action set, so the ids are final after it: the artifacts made from
+    // then on (achievers, landmarks, SDAC cost bounds, symmetries) and the
+    // encoders rely on them.
     const std::vector<Action>& actions() const { return actions_; }
     size_t action_count() const { return actions_.size(); }
     const Action& action(size_t index) const { return actions_[index]; }

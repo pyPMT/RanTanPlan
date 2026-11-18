@@ -25,6 +25,13 @@ namespace rantanplan {
  *
  * Always runs: the published bounds/domains are unconditionally injected at
  * every timestep downstream, so the RPG is always built here to produce them.
+ *
+ * The last pass that changes the action set, so action ids are final after
+ * it (see Problem's action access). Both pruning steps renumber the actions
+ * they keep (Problem::without_actions); the RPG's first layers, taken before
+ * the forward step and handed to AchieversAnalysis after it, are re-keyed to
+ * the new ids there. Everything else the loop keeps is rebuilt from the
+ * pruned problem.
  */
 class ActionPruningPass : public Pass {
 public:

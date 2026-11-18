@@ -12,6 +12,8 @@
 #include <iomanip>
 #include <set>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace rantanplan {
 
@@ -70,10 +72,26 @@ void ActionPruningPass::apply(PreprocessedProblem& result) const {
                 ", conservation laws: " + std::to_string(conservations.size()));
         }
 
-        // 4. Forward prune: remove RPG-unreachable actions
+        // 4. Forward prune: remove RPG-unreachable actions. without_actions
+        // renumbers the actions it keeps (in order: the new id is the
+        // position among them), so the first layers, keyed by action id,
+        // move to the new ids with them.
         if (opts_->rpg_action_removal) {
             auto rpg_removable = rpg->get_removable_action_indices();
             if (!rpg_removable.empty()) {
+                std::unordered_set<size_t> removed(rpg_removable.begin(), rpg_removable.end());
+                std::unordered_map<int, int> renumbered;
+                int new_id = 0;
+                const auto& old_actions = result.problem.actions();
+                for (size_t i = 0; i < old_actions.size(); ++i) {
+                    if (removed.count(i)) continue;
+                    auto it = rpg_data.action_first_layers.find(old_actions[i].id());
+                    if (it != rpg_data.action_first_layers.end()) {
+                        renumbered.emplace(new_id, it->second);
+                    }
+                    ++new_id;
+                }
+                rpg_data.action_first_layers = std::move(renumbered);
                 result.problem = result.problem.without_actions(rpg_removable);
             }
         }
