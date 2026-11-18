@@ -233,10 +233,17 @@ def main():
             print(f"Error: File not found: {file_path}")
             sys.exit(1)
 
-    # Parse problem
+    # Parse problem with Unified Planning's own reader. UP's default reader
+    # parses with the `pddl` package when a domain allows it, and that package
+    # keeps actions, objects and initial facts in sets whose order changes
+    # from one run to the next. The planner numbers everything in the order
+    # it receives and its encodings depend on that numbering (R2E's action
+    # order, for one), so the same problem gave different horizons and plans
+    # in different runs. UP's own reader gives the same order every time,
+    # although it parses some domains more slowly.
     try:
         from unified_planning.io import PDDLReader
-        reader = PDDLReader()
+        reader = PDDLReader(force_up_pddl_reader=True)
         problem = reader.parse_problem(args.domain, args.problem)
     except Exception as e:
         print(f"Error parsing PDDL files: {e}")

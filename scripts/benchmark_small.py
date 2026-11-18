@@ -72,7 +72,8 @@ def discover_instances(bench_dir=BENCH_DIR):
 
 def run_instance(domain_path, problem_path, strategy, timeout, extra_params=None):
     """Run a single (instance, strategy) pair. Returns result dict."""
-    reader = PDDLReader()
+    # Unified Planning's own reader, as in rantanplan/cli.py (same order every run).
+    reader = PDDLReader(force_up_pddl_reader=True)
     prob = reader.parse_problem(domain_path, problem_path)
 
     params = {

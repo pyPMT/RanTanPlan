@@ -163,7 +163,10 @@ def build_test_configs(strategies, quick=False):
 def run_test(name, domain, problem, strategy, verbose=False, up_grounding=False, mode=None):
     """Run one test. Returns (passed: bool, detail: str)."""
     try:
-        reader = PDDLReader()
+        # Unified Planning's own reader, as in rantanplan/cli.py: with the
+        # default reader the order of actions and objects changes between
+        # runs, and the planner's horizons and plans change with it.
+        reader = PDDLReader(force_up_pddl_reader=True)
         prob = reader.parse_problem(str(domain), str(problem))
 
         params = {
