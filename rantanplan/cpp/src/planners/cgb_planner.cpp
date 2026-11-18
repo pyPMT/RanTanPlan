@@ -261,8 +261,8 @@ void CGBPlanner::assert_deficit_budgets(int t) {
 
         double active_mass = 0.0;
         std::vector<std::pair<const Action*, double>> dormant;
-        for (size_t i = 0; i < info.achiever_action_ids.size(); i++) {
-            auto it = action_id_to_ptr_.find(info.achiever_action_ids[i]);
+        for (size_t i = 0; i < info.contributor_action_ids.size(); i++) {
+            auto it = action_id_to_ptr_.find(info.contributor_action_ids[i]);
             if (it == action_id_to_ptr_.end()) continue;
             double cap = info.contributions[i] * t;
             if (blocked_.count(it->second)) {
@@ -296,8 +296,8 @@ int CGBPlanner::count_bound_target() const {
     int target = current_horizon_ + 1;
     for (const LandmarkInfo& info : landmark_data_.landmarks) {
         double active_step_contribution = 0.0;
-        for (size_t i = 0; i < info.achiever_action_ids.size(); i++) {
-            auto it = action_id_to_ptr_.find(info.achiever_action_ids[i]);
+        for (size_t i = 0; i < info.contributor_action_ids.size(); i++) {
+            auto it = action_id_to_ptr_.find(info.contributor_action_ids[i]);
             if (it != action_id_to_ptr_.end() && activated_.count(it->second)) {
                 active_step_contribution += info.contributions[i];
             }

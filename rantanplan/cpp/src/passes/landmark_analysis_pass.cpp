@@ -227,11 +227,6 @@ void LandmarkAnalysisPass::apply(PreprocessedProblem& result) const {
         return init_fluent_value(fluent);
     };
 
-    std::unordered_map<int, const Action*> action_by_id;
-    for (const Action& a : problem.actions()) {
-        action_by_id[a.id()] = &a;
-    }
-
     LandmarkData& data = result.landmark_data;
     std::unordered_map<int, int> landmark_index;  // condition ExprID.id -> index
     std::unordered_set<ExprID> seen;
@@ -266,14 +261,19 @@ void LandmarkAnalysisPass::apply(PreprocessedProblem& result) const {
             data.orderings.push_back({index, parent});
         }
 
-        // Uniform count semantics: default is residual 1 with unit
-        // contributions ("some achiever fires").  A linear numeric
-        // threshold whose achievers all have constant additive effects on
-        // its fluents upgrades to the real deficit (each firing shifts the
-        // linear functional by a state-independent constant); any
-        // assignment, state-dependent, nonlinear, or quantified achiever
-        // effect keeps the sound default.
-        info.contributions.assign(info.achiever_action_ids.size(), 1.0);
+        // Uniform count semantics: default is residual 1 with the achievers
+        // as unit contributors ("some achiever fires").  A linear numeric
+        // threshold whose fluents every action changes by a constant
+        // additive amount upgrades to the real deficit (each firing shifts
+        // the linear functional by a state-independent constant).  The
+        // deficit is filled by every action that moves the functional up,
+        // not only by the achievers: an action that can never make the
+        // condition true (factory-robot's precision-work, which needs low
+        // workload) still adds to it.  Any assignment, state-dependent,
+        // nonlinear, or quantified effect on those fluents, by any action,
+        // keeps the sound default.
+        info.contributor_action_ids = info.achiever_action_ids;
+        info.contributions.assign(info.contributor_action_ids.size(), 1.0);
         if (auto lt = decompose_linear(pool, cond, fold_static)) {
             double e_init = lt->constant;
             bool init_known = true;
@@ -284,24 +284,24 @@ void LandmarkAnalysisPass::apply(PreprocessedProblem& result) const {
             }
             double target = -e_init;  // mass needed to reach E >= 0
             if (init_known && target > 0) {
+                std::vector<int> contributors;
                 std::vector<double> lambdas;
-                lambdas.reserve(info.achiever_action_ids.size());
                 double total = 0.0;
                 bool valid = true;
-                for (int aid : info.achiever_action_ids) {
-                    auto it = action_by_id.find(aid);
-                    auto delta = (it != action_by_id.end())
-                        ? linear_contribution(pool, *it->second, *lt, fold_static)
-                        : std::nullopt;
+                for (const Action& a : problem.actions()) {
+                    auto delta = linear_contribution(pool, a, *lt, fold_static);
                     if (!delta) {
                         valid = false;  // whole landmark keeps the default
                         break;
                     }
-                    double positive = std::max(*delta, 0.0);
-                    lambdas.push_back(positive);
-                    total += positive;
+                    if (*delta > 0.0) {
+                        contributors.push_back(a.id());
+                        lambdas.push_back(*delta);
+                        total += *delta;
+                    }
                 }
                 if (valid && total > 0) {
+                    info.contributor_action_ids = std::move(contributors);
                     info.contributions = std::move(lambdas);
                     info.residual = target;
                 }
@@ -345,8 +345,8 @@ void LandmarkAnalysisPass::apply(PreprocessedProblem& result) const {
         data.landmarks.push_back(std::move(info));
     }
 
-    // Depth lower bound: even with every contributing achiever firing
-    // cumulatively at every step, covering the deficit needs this many steps.
+    // Depth lower bound: even with every contributor firing cumulatively at
+    // every step, covering the deficit needs this many steps.
     int informative = 0;  // landmarks with real (non-default) count structure
     for (const LandmarkInfo& info : data.landmarks) {
         double step_mass = 0.0;

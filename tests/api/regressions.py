@@ -647,6 +647,51 @@ def test_step_limit_is_not_a_proof_of_unsolvability():
     assert _solve_with(capped, numeric_grounding=False, max_steps=1).status == INCOMPLETELY
 
 
+def _residual_contributor_problem():
+    """x must reach 10 from 0, and an action that is not an achiever of
+    x >= 10 supplies most of it:
+
+        big   : PRE x <= 0   effect ready := true, x += 9
+        small : PRE ready    effect x += 1
+        init  x = 0;  goal  x >= 10          (solvable in two steps: big, small)
+
+    Only `small` can make x >= 10 true: `big` needs x <= 0, so it reaches 9
+    at most. `big` also makes `ready` true, the precondition of `small`, so
+    goal-relevance pruning keeps it."""
+    ready = Fluent("ready", BoolType())
+    x = Fluent("x", IntType())
+    big = InstantaneousAction("big")
+    big.add_precondition(LE(x(), 0))
+    big.add_effect(ready(), True)
+    big.add_increase_effect(x(), 9)
+    small = InstantaneousAction("small")
+    small.add_precondition(ready())
+    small.add_increase_effect(x(), 1)
+    p = Problem("residual_contributor")
+    p.add_fluent(ready, default_initial_value=False)
+    p.add_fluent(x, default_initial_value=0)
+    p.add_action(big)
+    p.add_action(small)
+    p.add_goal(GE(x(), 10))
+    return p
+
+
+def test_landmark_residual_counts_every_contributor():
+    """A numeric landmark's deficit is filled by every action that adds to
+    its quantity, not only by its achievers. LandmarkAnalysisPass took the
+    mass per step from the achievers of x >= 10 alone (`small`, 1 a step), so
+    its depth bound was 10 and, under max_steps 5, a problem with a two-step
+    plan came back UNSOLVABLE_INCOMPLETELY. Counting `big` gives 10 a step and
+    a bound of 1. cgb also builds its deficit budgets from the contributors."""
+    p = _residual_contributor_problem()
+    for params in ({}, {"strategy": "cgb"}, {"strategy": "elsc"}):
+        r = _solve_with(p, max_steps=5, **params)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{params}: {r.status}"
+        assert_valid(p, r.plan)
+        assert _metric(r, "landmarks.depth_bound") == 1, params
+
+
 def _breaker_and_needer_problem(case):
     """One step can run `breaker` and `needer` only as needer-then-breaker:
     breaker changes something needer depends on. breaker is declared first,
@@ -756,4 +801,5 @@ CASES = [
     test_a_non_constant_amount_does_not_bound_its_fluent,
     test_step_limit_is_not_a_proof_of_unsolvability,
     test_interference_sees_every_dependency,
+    test_landmark_residual_counts_every_contributor,
 ]

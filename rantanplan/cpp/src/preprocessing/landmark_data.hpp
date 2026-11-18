@@ -13,19 +13,26 @@
  */
 namespace rantanplan {
 
-/// A disjunctive action landmark with a uniform count semantics: achiever
-/// firings must accumulate at least `residual` mass, where achiever
-/// `achiever_action_ids[i]` contributes `contributions[i]` per firing
-/// (parallel vectors).  Numeric threshold landmarks whose achievers all
-/// have constant additive effects on the tracked fluent get real values
-/// (non-helping achievers contribute 0).  Everything else — boolean
-/// landmarks, and any landmark with an assignment, state-dependent,
-/// nonlinear, or quantified achiever effect — takes the sound default:
-/// residual 1 and every contribution 1, i.e. plain "some achiever fires".
+/// A disjunctive action landmark: some action of `achiever_action_ids`
+/// (the actions that can make `condition` true) fires in every plan.
+///
+/// It also has a uniform count semantics: firings of the contributors must
+/// accumulate at least `residual` mass, where `contributor_action_ids[i]`
+/// adds `contributions[i]` per firing (parallel vectors).  For a linear
+/// numeric threshold whose fluents every action changes by a constant
+/// additive amount, the contributors are all the actions that move it
+/// towards the threshold, achievers or not (an action that can never make
+/// the condition true can still add most of the deficit), and `residual`
+/// is the deficit at the initial state.  Everything else — boolean
+/// landmarks, and any threshold whose fluents some action assigns, or
+/// changes by a state-dependent, nonlinear or quantified amount — takes the
+/// sound default: the achievers are the contributors, each adding 1, and
+/// the residual is 1, i.e. plain "some achiever fires".
 struct LandmarkInfo {
     ExprID condition = EXPR_NULL;
     std::vector<int> achiever_action_ids;
-    std::vector<double> contributions;  ///< per-firing mass, parallel to ids
+    std::vector<int> contributor_action_ids;
+    std::vector<double> contributions;  ///< per-firing mass, parallel to contributor_action_ids
     double residual = 1.0;              ///< required total mass (> 0)
 };
 
@@ -46,8 +53,8 @@ struct LandmarkData {
     std::vector<std::pair<int, int>> orderings;
 
     /// max over landmarks of ceil(residual / sum of contributions): no plan
-    /// has fewer steps, even with every achiever firing cumulatively in one
-    /// step.  Default landmarks contribute the trivial bound 1.
+    /// has fewer steps, even with every contributor firing cumulatively in
+    /// one step.  Default landmarks contribute the trivial bound 1.
     int depth_lower_bound = 0;
 };
 
