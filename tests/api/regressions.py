@@ -775,8 +775,17 @@ def test_interference_sees_every_dependency():
             names = [a.action.name for a in r.plan.actions]
             if case == "count":
                 # UP's validator does not support count. The plan is valid if
-                # and only if needer runs while p is false, so before breaker.
-                assert names.index("needer") < names.index("breaker"), \
+                # and only if needer runs while count(p, q) <= 1: before
+                # breaker (p still false), or after write_q (q made false).
+                p_true, q_true = False, True
+                for name in names:
+                    if name == "breaker":
+                        p_true = True
+                    elif name == "write_q":
+                        q_true = False
+                    elif name == "needer":
+                        assert p_true + q_true <= 1, f"{strategy}/{case}: {names}"
+                assert "needer" in names and "breaker" in names, \
                     f"{strategy}/{case}: {names}"
             else:
                 try:

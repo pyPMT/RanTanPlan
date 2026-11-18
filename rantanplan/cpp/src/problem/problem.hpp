@@ -23,6 +23,12 @@ struct ProblemIR;  // plain-data IR (for friend access from ir_io)
 
 namespace rantanplan {
 
+/// The metric the search optimises. Action costs live on the actions, and no
+/// kind reads a fluent otherwise. A kind with a metric expression, such as a
+/// final-value metric (dropped by the converter today), needs: every pass that
+/// rewrites action costs to rewrite it too; preprocess() to drop it in
+/// satisficing mode, which ignores the metric; and WriteOnlyFluentPass to
+/// count its fluents as read, as it does a goal's.
 enum class MetricKind { NONE, MINIMIZE_ACTION_COSTS, MINIMIZE_PLAN_LENGTH };
 
 /**

@@ -30,6 +30,7 @@
 #include "passes/quantifier_expansion_pass.hpp"
 #include "passes/cwa_initial_state_pass.hpp"
 #include "passes/static_fluent_pass.hpp"
+#include "passes/write_only_fluent_pass.hpp"
 #include "passes/effect_normalization_pass.hpp"
 #include "passes/cnf_normalization_pass.hpp"
 #include "passes/mutex_analysis_pass.hpp"
@@ -136,6 +137,10 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     // Ordering constraints:
     //   - Grounding before CWA (CWA needs all grounded fluents visible)
     //   - CWA before StaticFluent (needs complete initial state to identify constants)
+    //   - StaticFluent before WriteOnlyFluent (reads are per atom, after folding)
+    //   - WriteOnlyFluent before EffectNormalization and ActionPruning (neither
+    //     sees the removed fluents; EffectNormalization also drops the actions
+    //     WriteOnlyFluent leaves with no effect)
     //   - StaticFluent before CnfNormalization (folding first collapses disjunctions
     //     over static predicates; distributing before folding can blow up)
     //   - StaticFluent before ActionPruning (simpler expressions → tighter RPG bounds)
@@ -165,6 +170,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     rantanplan::GroundingPass grounding_pass;
     rantanplan::CWAInitialStatePass cwa_pass;
     rantanplan::StaticFluentPass static_fluent_pass;
+    rantanplan::WriteOnlyFluentPass write_only_fluent_pass;
     rantanplan::EffectNormalizationPass effect_normalization_pass;
     rantanplan::CnfNormalizationPass cnf_normalization_pass;
     rantanplan::ActionPruningPass action_pruning_pass(options);
@@ -214,6 +220,7 @@ PreprocessedProblem preprocess(Problem problem, const PreprocessorOptions& optio
     }
     passes.push_back(&cwa_pass);
     passes.push_back(&static_fluent_pass);
+    passes.push_back(&write_only_fluent_pass);
     // After static-fluent folding, not merely after grounding: folding can in
     // principle collapse two distinct expressions onto one fluent, which is the
     // same shape this pass exists to catch.

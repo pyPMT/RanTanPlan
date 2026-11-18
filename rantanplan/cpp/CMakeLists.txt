@@ -152,6 +152,7 @@ add_library(rantanplan_core STATIC
     src/passes/quantifier_expansion_pass.cpp
     src/passes/cwa_initial_state_pass.cpp
     src/passes/static_fluent_pass.cpp
+    src/passes/write_only_fluent_pass.cpp
     src/passes/effect_normalization_pass.cpp
     src/passes/cnf_normalization_pass.cpp
     src/problem/substitution.cpp
