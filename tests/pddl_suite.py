@@ -13,6 +13,7 @@ from pathlib import Path
 
 import rantanplan  # noqa: F401 — registers the UP engines (also in spawned workers)
 from unified_planning.io import PDDLReader
+from unified_planning.model.metrics import MinimizeExpressionOnFinalState
 from unified_planning.shortcuts import OneshotPlanner, PlanValidator
 from unified_planning.engines.results import PlanGenerationResultStatus
 from unified_planning.engines import ValidationResultStatus
@@ -168,6 +169,15 @@ def run_test(name, domain, problem, strategy, verbose=False, up_grounding=False,
         # runs, and the planner's horizons and plans change with it.
         reader = PDDLReader(force_up_pddl_reader=True)
         prob = reader.parse_problem(str(domain), str(problem))
+        if mode == "optimal":
+            # Optimal search rejects final-value metrics, which the planner
+            # does not optimise (zenotravel, rover). Without one it minimises
+            # plan length, as it did before when it ignored them.
+            kept = [m for m in prob.quality_metrics
+                    if not isinstance(m, MinimizeExpressionOnFinalState)]
+            prob.clear_quality_metrics()
+            for m in kept:
+                prob.add_quality_metric(m)
 
         params = {
             'strategy': strategy,
