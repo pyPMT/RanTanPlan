@@ -45,7 +45,8 @@ public:
 
     /// Throw UnsupportedProblemError if strategy @p name (spec @p spec) would
     /// get @p problem wrong: declared numeric bounds with the Chained encoder,
-    /// or declared state invariants with the R2E encoder.
+    /// or declared state invariants with the R2E encoder or parallel (forall-
+    /// or exists-step) semantics.
     /// api::preprocess calls it too, with the registry's spec, so that the
     /// refusal comes before preprocessing.
     static void check_supported(const StrategySpec& spec, const Problem& problem,

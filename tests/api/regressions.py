@@ -2356,15 +2356,23 @@ def _ordered_counters_problem():
     return p
 
 
-def test_r2e_refuses_declared_invariants():
-    """The R2E encoder asserts no state constraints, so r2e refuses a problem
-    with declared invariants (it raised a plain exception, reported as
-    INTERNAL_ERROR); seq keeps them."""
+def test_only_seq_keeps_declared_invariants():
+    """Declared invariants must hold in every state of the plan.
+    - r2e: the R2E encoder asserts no state constraints. It raised a plain
+      exception, reported as INTERNAL_ERROR.
+    - f, e, e-lin and elsc: parallel semantics assert them between steps
+      only. They put inc_x and inc_y in one step, and returned a plan whose
+      state after inc_x has x = 1 > y = 0, which UP's validator rejects.
+    All of them refuse the problem, naming seq; seq keeps the invariant."""
     p = _ordered_counters_problem()
-    r = solve(p, strategy="r2e")
-    assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, r.status
-    assert r.plan is None
-    assert "declared state invariants" in _refusal_reason(r), r.log_messages
+    for strategy in _registered("r2e", "f", "e", "e-lin", "elsc"):
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, \
+            f"{strategy}: {r.status}"
+        assert r.plan is None, strategy
+        reason = _refusal_reason(r)
+        assert "declared state invariants" in reason and "Use seq" in reason, \
+            f"{strategy}: {reason}"
     r = solve(p, strategy="seq")
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     assert_valid(p, r.plan)
@@ -2505,7 +2513,7 @@ CASES = [
     test_split_instances_are_distinct_actions,
     test_a_product_with_an_unbounded_factor_is_not_pruned,
     test_a_derived_bound_near_int64_max_is_not_cast,
-    test_r2e_refuses_declared_invariants,
+    test_only_seq_keeps_declared_invariants,
     test_a_converter_refusal_is_unsupported_problem,
     test_a_number_beyond_64_bits_is_unsupported,
     test_bad_options_are_usage_errors,

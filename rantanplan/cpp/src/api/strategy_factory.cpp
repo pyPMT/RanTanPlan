@@ -171,15 +171,28 @@ void StrategyFactory::check_supported(const StrategySpec& spec, const Problem& p
             "f, seq or r2e.");
     }
 
-    // Declared state invariants are trusted plan requirements asserted at
-    // every state. The R2E encoder deliberately skips state constraints
-    // (chain-substituted intermediate states), so accepting the problem
-    // would silently drop a requirement.
-    if (!problem.state_invariants().empty() && spec.encoder == EncoderFamily::R2E) {
+    // Declared state invariants must hold in every state of the plan. Only
+    // sequential search, with the Grounded encoder, asserts them at each one:
+    if (problem.state_invariants().empty()) return;
+    // - The R2E encoder deliberately skips state constraints
+    //   (chain-substituted intermediate states).
+    if (spec.encoder == EncoderFamily::R2E) {
         throw UnsupportedProblemError(
             "Strategy '" + name + "' (R2E encoder) does not support declared "
-            "state invariants ((:constraints (always ...))). Use a "
-            "Grounded-encoder strategy such as seq, f or e instead.");
+            "state invariants ((:constraints (always ...))). Use seq instead.");
+    }
+    // - Parallel semantics assert them between steps, but the plan runs a
+    //   step's actions one after another, through states in between that
+    //   nothing checks: on counters with (always (<= x y)), e and f put
+    //   inc_x and inc_y in one step and return x = 1 > y = 0 after inc_x.
+    if (spec.semantics != SemanticsKind::Sequential) {
+        const char* semantics =
+            spec.semantics == SemanticsKind::Forall ? "forall-step" : "exists-step";
+        throw UnsupportedProblemError(
+            "Strategy '" + name + "' (" + semantics + " semantics) does not "
+            "support declared state invariants ((:constraints (always ...))): "
+            "they are checked between steps, not between the actions of one "
+            "step. Use seq instead.");
     }
 }
 

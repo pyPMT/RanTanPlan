@@ -880,7 +880,7 @@ def test_state_invariant_with_cell_read():
     p.add_action(bad)
     p.add_trajectory_constraint(Always(LE(em.ArrayIndex(a(), Int(1)), Int(5))))
     p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 1))
-    r = solve(p, strategy=GROUNDED)
+    r = solve(p, strategy="seq")  # the strategy that keeps declared invariants
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     assert [ai.action.name for ai in r.plan.actions] == ["good"], \
         f"invariant not enforced: {r.plan}"
