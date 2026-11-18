@@ -9,11 +9,12 @@ from fractions import Fraction
 from unified_planning.shortcuts import (
     Fluent, InstantaneousAction, Problem, ArrayType, BoolType, IntType, RealType,
     UserType, Object, Always, And, Count, Equals, GE, GT, Iff, Int, LE, LT, Not, Or, Plus,
-    Real, Times,
+    Real, Times, AnytimePlanner, OneshotPlanner,
 )
 from unified_planning.model.metrics import MinimizeActionCosts
 from unified_planning.engines import PlanGenerationResultStatus
 from unified_planning.engines.results import LogLevel
+from unified_planning.exceptions import UPUsageError
 
 from rantanplan import _rantanplan
 from rantanplan.converter import convert_problem
@@ -2409,6 +2410,45 @@ def test_a_number_beyond_64_bits_is_unsupported():
             f"{what}: {r.log_messages}"
 
 
+def test_bad_options_are_usage_errors():
+    """An option the planner cannot take is the caller's mistake: a
+    UPUsageError when the engine is made, not a result status (the C++ side
+    rejected these, reported as INTERNAL_ERROR; max_steps=0 was accepted).
+    So is a double-tail strategy with a search by cost or a schedule other
+    than linear, also through the engines that force their mode."""
+    dt = [s for s in _rantanplan.list_strategies() if s.endswith("-dt")]
+    assert dt, "no double-tail strategy registered"
+    cases = [("rantanplan", params) for params in (
+        {"strategy": "bogus"}, {"mode": "fast"}, {"max_steps": 0}, {"max_steps": -1},
+        {"horizon_schedule": "random"}, {"verbosity": "loud"},
+    )]
+    for strategy in dt:
+        cases += [("rantanplan", {"strategy": strategy, "mode": "optimal"}),
+                  ("rantanplan", {"strategy": strategy, "mode": "anytime"}),
+                  ("rantanplan", {"strategy": strategy, "horizon_schedule": "doubling"}),
+                  ("rantanplan-optimal", {"strategy": strategy}),
+                  ("rantanplan-anytime", {"strategy": strategy})]
+    for name, params in cases:
+        factory = AnytimePlanner if name == "rantanplan-anytime" else OneshotPlanner
+        try:
+            with factory(name=name, params=dict({"verbosity": "silent"}, **params)):
+                pass
+        except UPUsageError:
+            continue
+        raise AssertionError(f"{name} {params}: no UPUsageError")
+
+
+def test_a_negative_timeout_is_a_usage_error():
+    p = _ordered_counters_problem()
+    with OneshotPlanner(name="rantanplan", params={"verbosity": "silent"}) as planner:
+        try:
+            planner.solve(p, timeout=-1)
+        except UPUsageError as e:
+            assert "timeout" in str(e), str(e)
+        else:
+            raise AssertionError("a negative timeout was accepted")
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
@@ -2468,4 +2508,6 @@ CASES = [
     test_r2e_refuses_declared_invariants,
     test_a_converter_refusal_is_unsupported_problem,
     test_a_number_beyond_64_bits_is_unsupported,
+    test_bad_options_are_usage_errors,
+    test_a_negative_timeout_is_a_usage_error,
 ]

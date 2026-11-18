@@ -17,6 +17,7 @@ from unified_planning.engines.results import LogLevel
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
+        prog="rantanplan",
         description="RantanPlan - A planning-as-SMT planner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -47,7 +48,37 @@ Use --list-strategies to see available strategies and their descriptions.
         version=f"RantanPlan {metadata.version('rantanplan')}"
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    check_planner_arguments(parser, args)
+    return args
+
+
+def _non_negative_int(text):
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be non-negative, not {value}")
+    return value
+
+
+def _positive_int(text):
+    value = int(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"must be positive, not {value}")
+    return value
+
+
+def check_planner_arguments(parser, args):
+    """Reject a strategy this build does not register, through parser.error
+    like argparse's own checks ("rantanplan: error: ..." on stderr, exit
+    status 2): a bad option is the user's mistake, not the problem's."""
+    try:
+        from rantanplan import _rantanplan
+    except ImportError:
+        return  # solve_problem reports the missing module
+    strategies = _rantanplan.list_strategies()
+    if args.strategy not in strategies:
+        parser.error(f"argument --strategy: unknown strategy '{args.strategy}' "
+                     f"(choose from {', '.join(strategies)})")
 
 
 def add_planner_arguments(parser):
@@ -67,9 +98,9 @@ def add_planner_arguments(parser):
                             "anytime (keep improving, report intermediate plans)")
 
     # Optional global parameters
-    parser.add_argument("--timeout", type=int, default=None,
+    parser.add_argument("--timeout", type=_non_negative_int, default=None,
                        help="Timeout in seconds (default: None)")
-    parser.add_argument("--max-steps", type=int,
+    parser.add_argument("--max-steps", type=_positive_int,
                        help="Maximum planning steps")
     parser.add_argument("--output-plan", type=str, default="plan.txt",
                        help="Base path for plan output in IPC format (files written as <path>.1, .2, etc.; "
@@ -130,7 +161,7 @@ def _build_planner_params(args) -> Dict[str, object]:
         'strategy': args.strategy,
     }
 
-    if args.max_steps:
+    if args.max_steps is not None:
         planner_params['max_steps'] = args.max_steps
     if args.stats_file:
         planner_params['stats_file'] = args.stats_file
@@ -174,6 +205,7 @@ def solve_problem(problem, args):
     try:
         from unified_planning.shortcuts import OneshotPlanner, AnytimePlanner
         from unified_planning.engines import PlanGenerationResultStatus
+        from unified_planning.exceptions import UPUsageError
         import rantanplan
     except ImportError as e:
         print(f"Error: Failed to import dependencies: {e}")
@@ -215,6 +247,10 @@ def solve_problem(problem, args):
                 planner.skip_checks = True
                 result = planner.solve(problem, timeout=args.timeout)
                 return result
+    except UPUsageError as e:
+        # An option the engine refuses (the parser checks most of them).
+        print(f"rantanplan: error: {e}", file=sys.stderr)
+        sys.exit(2)
     except Exception as e:
         print(f"Error during planning: {e}")
         return None

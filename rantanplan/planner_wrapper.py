@@ -7,13 +7,14 @@ from unified_planning.engines.mixins.oneshot_planner import OptimalityGuarantee
 from unified_planning.engines.mixins.anytime_planner import AnytimePlannerMixin, AnytimeGuarantee
 from unified_planning.engines import PlanGenerationResultStatus, Engine, CompilationKind, ValidationResultStatus
 from unified_planning.engines.compilers import Grounder
-from unified_planning.exceptions import UPException
+from unified_planning.exceptions import UPException, UPUsageError
 from .converter import convert_problem
 from unified_planning.model import ProblemKind, Problem
 from unified_planning.plans import SequentialPlan, ActionInstance
 from unified_planning.shortcuts import get_environment
 from unified_planning.model.fluent import get_all_fluent_exp
 
+import math
 import queue
 import sys
 import threading
@@ -52,6 +53,53 @@ class _RantanPlanBase(Engine):
         # Set per solve call when the caller passes output_stream (UP's
         # official log channel); None means stdout as usual.
         self._output_stream: Optional[IO[str]] = None
+        self._check_options()
+
+    # ── Options ──────────────────────────────────────────────────────────
+
+    _MODES = ("satisficing", "optimal", "anytime")
+    _HORIZON_SCHEDULES = ("linear", "arithmetic", "geometric", "doubling")
+    _VERBOSITIES = ("silent", "info", "verbose", "debug")
+
+    def _check_options(self) -> None:
+        """Raise UPUsageError on an option the planner cannot take. A bad
+        option is the caller's mistake, not the problem's, so it is not a
+        result status (the planner rejected these deep in the C++ side,
+        which surfaced as INTERNAL_ERROR)."""
+        if _rantanplan is not None and self._strategy not in _rantanplan.list_strategies():
+            raise UPUsageError(
+                f"unknown strategy '{self._strategy}'; the strategies are "
+                + ", ".join(_rantanplan.list_strategies()))
+        for name, value, allowed in (("mode", self._mode, self._MODES),
+                                     ("horizon_schedule", self._horizon_schedule,
+                                      self._HORIZON_SCHEDULES),
+                                     ("verbosity", self._verbosity, self._VERBOSITIES)):
+            if value is not None and value not in allowed:
+                raise UPUsageError(f"unknown {name} '{value}'; it is one of "
+                                   + ", ".join(allowed))
+        if self._max_steps is not None and (
+                isinstance(self._max_steps, bool) or not isinstance(self._max_steps, int)
+                or self._max_steps <= 0):
+            raise UPUsageError(
+                f"max_steps must be a positive integer, not {self._max_steps!r}")
+        # The double-tail strategies (the registry's <name>-dt) search by plan
+        # length, from both ends: no search by cost, and the linear schedule.
+        if self._strategy.endswith("-dt"):
+            if self._mode in ("optimal", "anytime"):
+                raise UPUsageError(
+                    f"mode '{self._mode}' is incompatible with the double-tail "
+                    f"strategy '{self._strategy}'; use one without -dt (e.g. "
+                    f"'fl' instead of 'fl-dt')")
+            if self._horizon_schedule not in (None, "linear"):
+                raise UPUsageError(
+                    f"horizon_schedule '{self._horizon_schedule}' is incompatible "
+                    f"with the double-tail strategy '{self._strategy}'; use one "
+                    f"without -dt, or the linear schedule")
+
+    @staticmethod
+    def _check_timeout(timeout: Optional[float]) -> None:
+        if timeout is not None and timeout < 0:
+            raise UPUsageError(f"timeout must be non-negative, not {timeout!r}")
 
     # ── Verbosity helpers ────────────────────────────────────────────────
 
@@ -182,7 +230,8 @@ class _RantanPlanBase(Engine):
         if self._output_plan is not None:
             command.extend(["--output-plan", self._output_plan])
         if timeout:
-            command.extend(["--timeout", str(int(timeout))])
+            # Whole seconds, rounded up: int() made 0.5 s a 0, no limit.
+            command.extend(["--timeout", str(math.ceil(timeout))])
 
         return command
 
@@ -569,6 +618,7 @@ class _RantanPlanBase(Engine):
             raise UPException(
                 "The _rantanplan extension module is not built. Run "
                 "'pip install -e . --no-build-isolation' first.")
+        self._check_timeout(timeout)
 
         rejected = self._unsupported_result(problem)
         if rejected is not None:
@@ -632,9 +682,9 @@ class RantanPlanPlanner(_RantanPlanBase, OneshotPlannerMixin):
 class RantanPlanOptimalPlanner(_RantanPlanBase, OneshotPlannerMixin):
 
     def __init__(self, **options):
-        _RantanPlanBase.__init__(self, **options)
+        # Force optimal mode (before the option checks, which depend on it)
+        _RantanPlanBase.__init__(self, **dict(options, mode="optimal"))
         OneshotPlannerMixin.__init__(self)
-        self._mode = "optimal"  # Force optimal mode
 
     @staticmethod
     def supported_kind():
@@ -662,9 +712,9 @@ class RantanPlanOptimalPlanner(_RantanPlanBase, OneshotPlannerMixin):
 class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
 
     def __init__(self, **options):
-        _RantanPlanBase.__init__(self, **options)
+        # Force anytime mode (before the option checks, which depend on it)
+        _RantanPlanBase.__init__(self, **dict(options, mode="anytime"))
         AnytimePlannerMixin.__init__(self)
-        self._mode = "anytime"  # Force anytime mode
 
     @staticmethod
     def supported_kind():
@@ -699,6 +749,7 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
             raise UPException(
                 "The _rantanplan extension module is not built. Run "
                 "'pip install -e . --no-build-isolation' first.")
+        self._check_timeout(timeout)
 
         rejected = self._unsupported_result(problem)
         if rejected is not None:

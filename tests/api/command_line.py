@@ -76,6 +76,25 @@ def test_the_reason_for_no_plan_reaches_stderr():
             assert "No plan found" in out.stdout, f"{case}: {out.stdout}"
 
 
+def test_bad_options_are_usage_errors():
+    """A bad option is the user's mistake: "rantanplan: error: ..." and exit
+    status 2, as for argparse's own checks (--max-steps 0 was ignored). The
+    parser checks most; the engine, the combinations (a double-tail strategy
+    searches by length, not by cost)."""
+    for options, message in [
+        (["--strategy", "bogus"], "unknown strategy 'bogus'"),
+        (["--max-steps", "0"], "--max-steps: must be positive"),
+        (["--timeout", "-1"], "--timeout: must be non-negative"),
+        (["--strategy", "fl-dt", "--mode", "optimal"], "incompatible with the double-tail"),
+    ]:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = run_cli(Path(tmp), ORDERED_COUNTERS, *options)
+            assert out.returncode == 2, f"{options}: {out.stdout + out.stderr}"
+            assert "rantanplan: error:" in out.stderr and message in out.stderr, \
+                f"{options}: {out.stderr}"
+
+
 CASES = [
     test_the_reason_for_no_plan_reaches_stderr,
+    test_bad_options_are_usage_errors,
 ]
