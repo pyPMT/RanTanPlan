@@ -15,9 +15,8 @@
  * array with index children; children always precede their parents, so the
  * loader interns the array in a single forward pass.
  *
- * Node `kind` values and payload shapes deliberately mirror the
- * unified_planning protobuf ExpressionKind encoding this IR replaced, so
- * the loader stays a port of the protobuf loader, not a redesign.
+ * Node `kind` values are UP's ExpressionKind numbers, and an application's
+ * head symbol (its operator or fluent) is its first child, as in UP.
  *
  * Every enumerated field is one of the enums below, which bindings.cpp
  * exports to Python, so the numbers are written only here. load_problem_from_ir

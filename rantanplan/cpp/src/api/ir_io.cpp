@@ -11,7 +11,7 @@
 namespace rantanplan {
 
 // ============================================================================
-// File-local helpers (ports of the former protobuf loader's logic)
+// File-local helpers
 // ============================================================================
 
 /// The planner's kind for an IR node kind. UNKNOWN is a node the converter left

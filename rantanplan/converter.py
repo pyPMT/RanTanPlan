@@ -1,16 +1,9 @@
 """UP Problem -> ProblemIR converter (the Python side of the C++ contract).
 
-Replaces the protobuf transport: a hand-rolled memoized DFS (see _FNodeToIR)
-flattens every expression into one shared node pool
-(children precede parents, shared subexpressions stored once), and the
-problem structure references nodes by index. The C++ loader (`ir_io.cpp`)
+A memoized DFS (see _FNodeToIR) flattens every expression into one shared
+node pool (children precede parents, shared subexpressions stored once), and
+the problem structure references nodes by index. The C++ loader (`ir_io.cpp`)
 interns the pool in a single forward pass.
-
-The node shapes deliberately mirror what UP's own ``FNode2Protobuf``
-produced, so the C++ loader stayed a port of the protobuf loader. The
-operator/type naming helpers below are small local ports of
-``unified_planning.grpc.proto_writer`` (`map_operator`, `proto_type`) --
-copied rather than imported so this module does not pull in protobuf.
 """
 
 from fractions import Fraction
@@ -42,7 +35,8 @@ _OPERATORS = {OperatorKind[name]: op for name, op in _ir.Operator.__members__.it
 
 
 def _up_type_str(tpe) -> str:
-    """Port of proto_writer.proto_type."""
+    """The type's name in the IR: up:bool, up:integer, up:real or up:time, an
+    array or set type name, or a user type's own name."""
     if tpe.is_bool_type():
         return "up:bool"
     if tpe.is_time_type():
@@ -59,8 +53,8 @@ def _up_type_str(tpe) -> str:
         # *expression* head symbols (a bare FLUENT_EXP inside ARRAY_INDEX); it
         # must match the name the C++ loader generates from the same structured
         # shape (ir_io.cpp array_type_name), and a mismatch surfaces as a hard
-        # "could not find type" at load. The fluent *declaration* no longer
-        # carries this string -- C++ derives the fluent's value type from
+        # "could not find type" at load. The fluent *declaration* does not
+        # carry this string: C++ derives the fluent's value type from
         # element_type + array_sizes.
         return f"array[{tpe.size}, {_up_type_str(tpe.elements_type)}]"
     if tpe.is_set_type():
@@ -157,7 +151,7 @@ class _FNodeToIR:
             self._head_memo[key] = idx
         return idx
 
-    # ── FNode conversion (shapes mirror UP's FNode2Protobuf) ─────────────
+    # ── FNode conversion ─────────────────────────────────────────────────
 
     def _convert(self, expression):
         if expression.is_bool_constant():
@@ -347,9 +341,8 @@ def _emit_array_cells(walker, expr_manager, array_expr, array_const,
 def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
     """Convert a UP Problem into the ProblemIR the C++ loader consumes.
 
-    Walk order matches the C++ loader's interning order (actions, then
-    initial state, goals, metric costs), so the resulting ExprPool is
-    identical to the one the protobuf path produced.
+    The walk order (actions, then initial state, goals, metric costs) fixes
+    the order of the ExprPool's ids.
     """
     walker = _FNodeToIR()
     out = _ir.ProblemIR()
@@ -525,7 +518,7 @@ def convert_problem(problem: model.Problem) -> "_ir.ProblemIR":
         state_invariants.append(walker.walk(tc.arg(0)))
     out.state_invariants = state_invariants
 
-    # --- Metric (first supported one wins, like the protobuf loader) ---
+    # --- Metric (the first supported one wins) ---
     metric_kind = _ir.MetricKind.NONE
     for metric in problem.quality_metrics:
         if isinstance(metric, MinimizeActionCosts):

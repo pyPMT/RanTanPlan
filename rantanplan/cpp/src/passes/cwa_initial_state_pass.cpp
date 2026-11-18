@@ -19,8 +19,8 @@ void CWAInitialStatePass::apply(PreprocessedProblem& result) const {
     }
 
     // Fill every grounded fluent missing from the initial state. This is the
-    // sole materialiser of default initial values (the Python wrapper no longer
-    // does it): a declared default_initial_value is authoritative (including an
+    // sole materialiser of default initial values: a declared
+    // default_initial_value is authoritative (including an
     // object/UserType default, which the ObjectFluentIndex has already seeded
     // for the grounder); otherwise a boolean is closed-world false and a numeric
     // is 0 clamped into its declared bounds. An object fluent with neither an
