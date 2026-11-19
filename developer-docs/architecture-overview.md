@@ -75,7 +75,10 @@ specific to one:
 - **`api::preprocess(Problem, PreprocessorOptions) -> PreprocessedProblem`**
   — grounding, canonicalization, pruning, invariant/mutex discovery,
   symmetry detection, arithmetic profiling. Nothing here knows what an
-  encoder or a planner is.
+  encoder or a planner is (except one up-front gate: `api::preprocess`
+  first asks `StrategyFactory::check_supported` whether the configured
+  strategy can take the problem at all, so that a refusal costs no
+  preprocessing).
 - **`api::solve(PreprocessedProblem) -> ResultIR`** — resolves the chosen
   strategy, builds interference analysis, wires up the encoder/parallelism/
   propagator/planner combination, and runs the search.
@@ -347,11 +350,13 @@ rantanplan -d pddl/small-test/zenotravel/domain.pddl \
            --strategy elsc -v
 ```
 
-The bracketed log tags are the pipeline stages, in order: `[Grounding I1]`…
+The bracketed log tags are the pipeline stages, in order:
+`[int-parameter-instantiation]`, `[quantifier-expansion]`, `[Grounding I1]`…
 (the reachability fixpoint, iteration by iteration), `[CWA]`,
-`[StaticFluent]`, `[RPG.Numeric L0]`… and `[ActionPruning]`, `[MutexAnalysis]`
-(mutex discovery), `[ArithProfile]` (which SMT logic the problem gets) —
-everything up to there is `api::preprocess()`. Then `[Solving T3]`,
+`[static-fluent]`, `[write-only-fluent]`, `[cnf-normalization]`,
+`[RPG.Numeric L0]`… and `[ActionPruning]`, `[MutexAnalysis]` (mutex
+discovery), `[Landmarks]`, `[ArithProfile]` (which SMT logic the problem
+gets) — everything up to there is `api::preprocess()`. Then `[Solving T3]`,
 `[Solving T4]`, … is `api::solve()` — and note it starts at T3, the lower
 bound preprocessing just proved, not at T1.
 

@@ -24,9 +24,10 @@ strategy implements: `encode_initial_state()`, `encode_actions(t)`,
   with **chain variables for cumulative numeric effects**, so several
   actions writing the same numeric fluent can legally share a timestep
   (see the section below). This is the encoder behind the
-  `elsc`/`elsc-dt`/`elsc-fp`/`cgb` family and the
-  `flsc`/`flsc-dt`/`fgsc`/`egsc` family — a single encoder implementation
-  serves both sequential-planner and CGB consumers, which is the strategy
+  `elsc`/`elsc-dt`/`elsc-fp` family and the
+  `flsc`/`flsc-dt`/`fgsc`/`egsc` family, the only strategies with semantic
+  interference — a single encoder implementation serves the incremental,
+  double-tail and branch-and-bound planners alike, which is the strategy
   pattern's component-reuse payoff described in
   [`architecture-overview.md`](architecture-overview.md): the contributor
   unit is "one encoder," not "one encoder-planner pair."
@@ -51,6 +52,12 @@ refuel_b@t → fuel@t+1 = fuel@t + 3
 are jointly unsatisfiable when both fire — `fuel@t+1` can't equal two
 different values — so the encoding would *forbid* exactly the parallelism
 the interference analysis just permitted, silently forcing longer plans.
+With equal amounts it is worse: two `fuel += 3` writers give the same
+equality twice, both can fire, and the step counts one increase, so the plan
+is invalid. This is why `StrategyFactory::validate` accepts semantic
+interference only with the Chained encoder; syntactic interference keeps
+two writers of one numeric fluent in different steps, so it is sound with
+the Grounded encoder.
 `ChainedGroundedEncoder` (implementing Section 5.2 of the
 semantic-interference paper, *"Relaxing non-interference requirements in
 parallel plans"*) fixes this by threading each multi-written numeric
@@ -85,10 +92,14 @@ per-variable linking constraints tie `x@t+1` to the last chain position.
 and ordering are built into the chain structure, so there are no frame
 axioms, no mutex clauses, and no ordering propagator.
 
-Two consequences worth knowing: state constraints are currently *disabled*
-under R2E (they hold at true timestep boundaries, not at intermediate
-chain values — asserting them on ζ variables would be unsound; the header
-comment records this), and SDAC (state-dependent action cost) costs must
+Two consequences worth knowing: R2E asserts none of the state constraints
+the preprocessor derives (`encode_state_constraints` returns `true`; they
+are redundant and only ever cost or buy speed), but declared bounds of
+bounded int/real types define which plans are valid, so
+`encode_declared_bounds` asserts them on every chain variable (the header
+comment records this; declared state invariants are refused, as for every
+strategy but `seq` and `seq-dt`); and SDAC (state-dependent action cost)
+costs must
 be evaluated at the chain-substituted state each action actually
 observes — `convert_cost_to_z3()`'s default, evaluating the cost
 expression at the start-of-timestep state, would silently miscompute them,
@@ -136,31 +147,19 @@ schedule, and the intermediate-plan callback used for anytime results (see
   ```
 
   Because it has no single linear horizon to schedule non-uniformly, it's
-  incompatible with non-linear horizon schedules (`Config::validate()`
-  enforces this) and cannot run under optimal/anytime search modes
+  incompatible with non-linear horizon schedules (`StrategyFactory::validate`
+  enforces this, and the Python engine refuses the combination first, as a
+  `UPUsageError`) and cannot run under optimal/anytime search modes
   (`resolve_planner_kind` raises if you try).
 - **`BranchAndBoundPlanner`** — the cost-optimal (and anytime) planner.
   Notably, it does **not** use `z3::optimize` — that API is incompatible
-  with Z3 user propagators, which every forall/exists/lazy strategy
+  with Z3 user propagators, which every strategy with propagator modules
   depends on. Instead it reformulates cost minimization as a sequence of
   plain `z3::solver` feasibility checks with progressively tighter cost
   bounds, preserving full propagator compatibility. The full algorithm is
   the "Optimal and anytime" section below.
-- **CGB** (`CGBPlanner`) — core-guided lazy activation under ∃-step
-  semantics (successor to the removed PDLA family, which it dominated on
-  both benchmark suites): every ground action starts dormant behind a
-  per-action blocking assumption literal, and UNSAT cores drive all
-  growth — blocking literals in the core name exactly the actions to
-  activate; a blocking-free core means the horizon itself binds, so the
-  planner extends it (jumping past horizons the count landmarks refute).
-  Relaxed-plan seeding pre-activates near-certain actions, and landmark
-  presence clauses plus count-landmark deficit budgets (from
-  `LandmarkAnalysisPass`) let single cores name whole activation sets.
-  This is why CGB is the planner that consumes the achiever and landmark
-  artifacts from `PreprocessedProblem` (via `consume_artifacts`). Like
-  double-tail, it cannot run under optimal/anytime modes. Full
-  implementation log with measurements:
-  `docs/pdla-optional-occurrence-roadmap.md`.
+- **CGB** (`CGBPlanner`, core-guided lazy activation) was removed, with
+  the `cgb` strategy, in 0a35759.
 
 ## Search modes and how a planner gets picked
 
@@ -169,9 +168,10 @@ choice, orthogonal to the strategy's own declared `PlannerKind`.
 `resolve_planner_kind(mode, spec)` (`config/strategy_spec.hpp`) reconciles
 the two: satisficing mode uses whatever planner the strategy names;
 optimal and anytime modes always force `BranchAndBoundPlanner`, and raise
-`std::invalid_argument` up front if the strategy is double-tail or CGB —
-both of those are structurally satisficing-only, not something the search
-loop could accommodate.
+`std::invalid_argument` up front if the strategy is double-tail, which is
+structurally satisficing-only, not something the search loop could
+accommodate. (Through the Python engines the combination is refused
+earlier, as a `UPUsageError` when the engine is created.)
 
 **Example.** Four `(mode, strategy)` combinations and what
 `resolve_planner_kind` does with each:
@@ -181,7 +181,7 @@ loop could accommodate.
 | Satisficing | `Sequential` (e.g. `"elsc"`) | `Sequential` — unchanged, runs as `IncrementalHorizonPlanner` |
 | Satisficing | `DoubleTail` (e.g. `"elsc-dt"`) | `DoubleTail` — unchanged, runs as `DoubleTailPlanner` |
 | Optimal | `Sequential` (e.g. `"seq --mode optimal"`) | `BranchAndBound` — forced, regardless of the strategy's own planner |
-| Optimal or Anytime | `DoubleTail` or `CGB` | throws `std::invalid_argument` at resolution time, before any solving starts |
+| Optimal or Anytime | `DoubleTail` | throws `std::invalid_argument` at resolution time, before any solving starts |
 
 The forcing in row 3 is why `"elsc"` under `--mode optimal` and `"elsc"`
 under `--mode satisficing` run entirely different planner classes despite
@@ -215,13 +215,22 @@ continuation* of any length at once —
 - an **abstract goal**: each goal holds at *h* or is modifiable by the
   suffix,
 - **loop formulas** (SCC-based) that stop a cycle of abstract actions
-  from justifying each other's preconditions with no external support.
+  from justifying each other's preconditions with no external support. A
+  loop is supported by an action that modifies it with its preconditions
+  holding at state *h*, up to fluents outside the loop, so the formulas
+  are built per horizon.
+
+Inside the horizon scope the planner also adds the paper's per-step
+axioms 6 (no arbitrary deferral of an action) and 7. Axiom 6 is left out
+with state-dependent costs under parallel semantics: there, moving an
+action to an earlier step changes the state its cost is read in, so the
+front-loading it assumes is not cost-preserving.
 
 The suffix's cost contribution is a lower bound on any real continuation:
 exact for constant action costs; for SDAC costs it uses the per-action
 lower bounds `ActionPruningPass` computed from the RPG's fixpoint
-intervals — this is precisely the artifact `consume_artifacts()` moves
-out of `PreprocessedProblem` for this planner. Because the suffix only
+intervals — this is precisely the artifact `consume_artifacts()` takes
+from `PreprocessedProblem` for this planner. Because the suffix only
 ever *under*-counts the remaining cost, an UNSAT answer is trustworthy
 across all horizons.
 
@@ -229,21 +238,31 @@ across all horizons.
 
 ```mermaid
 flowchart TD
-    S["assert initial state +<br/>permanent suffix parts<br/>(mod_v equivalences, loop formulas)"] --> H["next horizon h:<br/>add concrete transitions (permanent)"]
-    H --> P["solver.push() — horizon scope:<br/>relaxed preconditions, abstract goal,<br/>total_cost = concrete + abstract"]
-    P --> C{"check( total_cost < C* )<br/>(assumption literal)"}
-    C -->|"SAT, plan is all-concrete"| U["improving plan!<br/>C* := its cost, save plan,<br/>notify_intermediate_plan()"]
+    S["assert initial state +<br/>permanent mod_v equivalences"] --> H["next horizon h:<br/>add concrete transitions (permanent)"]
+    H --> P["solver.push() — horizon scope:<br/>axioms 6/7, relaxed preconditions, abstract goal,<br/>loop formulas at h,<br/>total_cost = concrete + abstract"]
+    P --> C{"concrete query:<br/>goal at h, no abstract action,<br/>total_cost < C*"}
+    C -->|SAT| U["improving plan!<br/>C* := its cost, save plan,<br/>notify_intermediate_plan()"]
     U --> C
-    C -->|"SAT, but abstract<br/>actions were used"| N["a cheaper plan may need<br/>more concrete steps —<br/>solver.pop(), grow horizon"]
+    C -->|UNSAT| Q{"proof query:<br/>total_cost < C* only<br/>(no goal at h)"}
+    Q -->|"SAT, plan is all-concrete"| U
+    Q -->|"SAT, but abstract<br/>actions were used"| N["a cheaper plan may need<br/>more concrete steps —<br/>solver.pop(), grow horizon"]
     N --> H
-    C -->|"UNSAT, a plan is saved"| O["no plan of cost < C*<br/>exists at ANY horizon:<br/>C* is optimal — return"]
-    C -->|"UNSAT, no plan yet"| N2["nothing at this horizon —<br/>solver.pop(), grow horizon"]
-    N2 --> H
+    Q -->|"UNSAT, a plan is saved"| O["no plan of cost < C*<br/>exists at ANY length:<br/>C* is optimal — return"]
+    Q -->|"UNSAT, no plan yet"| X["no plan exists<br/>at any length — return"]
 ```
 
-The inner loop keeps re-checking with the same assumption-gated bound
-`total_cost < C*` as `C*` drops, so one horizon can yield several
-improving plans before the search moves on. The push/pop discipline —
+Each horizon asks two kinds of query, both under assumption literals. The
+**concrete query** assumes the goal at *h* and that no abstract action is
+used: a SAT answer is a plan that ends at *h* and is cheaper than `C*`, so
+it improves the bound, and the query is asked again. Once it is UNSAT, the
+**proof query** drops both assumptions, so the abstract suffix (whose goal
+is relaxed) stands in for every plan longer than *h*: UNSAT proves that no
+cheaper plan exists at any length, or, before any plan was found, that
+none exists at all. The proof query must not assume the goal at *h*; when
+it did, its UNSAT only meant that no cheaper plan ends at *h*, and the
+cheapest plan of the first solvable horizon was reported as optimal
+(fixed in 6877cb0). One horizon can therefore yield several improving
+plans before the search moves on. The push/pop discipline —
 concrete transitions permanent and outside the scope, suffix constraints
 inside it — is the `push()`/`pop()` usage described in
 [`z3-control-and-interruption.md`](z3-control-and-interruption.md).
@@ -251,7 +270,13 @@ inside it — is the `push()`/`pop()` usage described in
 Exit statuses map directly onto how the loop ends: `SOLVED_OPTIMALLY`
 (the UNSAT-with-saved-plan branch — optimality *proven*),
 `SOLVED_SATISFICING` (a plan was found but timeout/`max_steps` ran out
-before the proof), `UNSOLVABLE_INCOMPLETELY` (no plan within limits).
+before the proof), `UNSOLVABLE_INCOMPLETELY` (no plan within limits, and
+also when the proof query is UNSAT before any plan was found: the planner
+logs `*** UNSOLVABLE_PROVEN: no plan exists ***` and returns no plan, but
+`api::solve` has no proven-unsolvable flag to read from a planner, so the
+status is the same).
+Because the proof covers plans of every length, it can take far longer
+than finding the plans.
 `optimality_proven()` and `best_cost()` carry the distinction back
 through `ResultIR`.
 
@@ -265,7 +290,8 @@ are evaluated at the timestep state `x_t` — for SDAC that can
 under-estimate the true cost and produce false optimality claims. The
 factory's `adjust_spec` therefore *downgrades* an exists-step strategy to
 forall semantics when SDAC meets branch-and-bound (swapping the
-`ExistsCycle` propagator module for `ForallLazy`), logging why.
+`ExistsCycle` propagator module for `ForallLazy`, and `e-lin`'s chains for
+pairs), logging why.
 
 ### Anytime = the same search, streamed
 
@@ -278,23 +304,28 @@ the Python `on_plan` callable (GIL re-acquired for the call), and UP's
 the sequence diagram in
 [`python-cpp-boundary.md`](python-cpp-boundary.md). The final result
 still reports `SOLVED_OPTIMALLY` if the proof completed, so "anytime" is
-strictly extra visibility, not a weaker search. On zenotravel pfile13
-(≈20 s):
+strictly extra visibility, not a weaker search. On the transport instance
+of the test suite (under a second; output abridged):
 
 ```bash
-rantanplan -d pddl/small-test/zenotravel/domain.pddl \
-           -p pddl/small-test/zenotravel/instances/pfile13.pddl \
+rantanplan -d pddl/test/transport-sequential-optimal-strips/domain.pddl \
+           -p pddl/test/transport-sequential-optimal-strips/problem.pddl \
            --strategy elsc --mode anytime --timeout 60
-# Improving plan found (34 actions)
-# Improving plan found (33 actions)
-# Improving plan found (32 actions)
-# *** OPTIMAL PLAN FOUND: horizon=5, actions=32, cost=32 ***
+#   Improved plan: cost=176.000000, horizon=3, actions=8
+#   Improved plan: cost=126.000000, horizon=3, actions=7
+#   Improved plan: cost=98.000000, horizon=4, actions=7
+#   Improved plan: cost=54.000000, horizon=4, actions=5
+# *** OPTIMAL PLAN FOUND: horizon=4, actions=5, cost=54.000000 (total time: 0.547528s) ***
 # Status: PlanGenerationResultStatus.SOLVED_OPTIMALLY
 ```
 
-Each `Improving plan found` line is one traversal of that edge — the plan
-was already usable when it printed; the remaining runtime is spent
-*proving* nothing cheaper exists.
+Each `Improved plan` line is one traversal of that edge — the plan was
+already usable when it printed; the remaining runtime is spent *proving*
+nothing cheaper exists. The last two plans need a fourth step: before
+6877cb0 the proof stopped at horizon 3 and reported 126 as optimal. On
+larger instances the proof can outlast the time limit: `mprime` pfile05 of
+`pddl/small-test` improves from 29 to 26 actions within 60 s and ends
+`SOLVED_SATISFICING`.
 
 ## The horizon schedule
 
@@ -347,5 +378,8 @@ run checks `T3, T6` — two SAT calls instead of three — and finds the *same*
 plan at horizon 6, front-loaded into the first 5 slots with one empty
 trailing step, exactly the prefix-monotone batching described above. Swap
 in `--strategy elsc-dt` while keeping `--horizon-schedule doubling` and
-`Config::validate()` aborts the solve: *"Non-linear horizon schedule
-'doubling' is not compatible with double-tail strategy 'elsc-dt'."*
+the command line refuses the options before solving, with exit status 2:
+*"rantanplan: error: horizon_schedule 'doubling' is incompatible with the
+double-tail strategy 'elsc-dt'; use one without -dt, or the linear
+schedule"* (the engine's option check; `StrategyFactory::validate` makes
+the same check on the C++ side).

@@ -30,7 +30,7 @@ flowchart LR
         F0["at_rob1_room-a_0<br/>at_rob1_room-b_0"]
     end
     subgraph acts["actions @ 0"]
-        A0["move_rob1_room-a_room-b_0<br/>move_rob1_room-b_room-a_0"]
+        A0["move_rob1_room-a_room-b!0_0<br/>move_rob1_room-b_room-a!1_0"]
     end
     subgraph s1["state @ 1"]
         F1["at_rob1_room-a_1<br/>at_rob1_room-b_1"]
@@ -54,9 +54,14 @@ goes through it, which is what keeps them all talking about the *same* Z3
 variable for "fluent `at(rob1, room-a)` at timestep 3".
 
 - **Naming**: name + parameters + timestep, joined by underscores. Fluent
-  `at(rob1, room-a)` at timestep 0 is the variable `at_rob1_room-a_0`;
-  action `move(rob1, room-a, room-b)` at timestep 0 is
-  `move_rob1_room-a_room-b_0`.
+  `at(rob1, room-a)` at timestep 0 is the variable `at_rob1_room-a_0`. An
+  action's name also carries its id, its place in `Problem::actions()`,
+  after a `!`: action `move(rob1, room-a, room-b)` with id 0, at timestep 0,
+  is `move_rob1_room-a_room-b!0_0`. Z3 interns constants by name, and the
+  instances `TermResolutionPass` splits an action into share its name and
+  parameters, so without the id they would be one variable; `!` never
+  occurs in a planning identifier. (The examples below take the robot's two
+  moves to be actions 0 and 1.)
 - **Action variables** are always `Bool`.
 - **Fluent variables** are typed by the fluent's value type: `Bool` for
   predicates; `Int` or `Real` for numeric fluents. When every numeric
@@ -130,8 +135,8 @@ happily start the robot in both rooms.
 Two implications per ground action (`encode_single_action`):
 
 ```
-move_rob1_room-a_room-b_0  →  at_rob1_room-a_0                                  (precondition @ t)
-move_rob1_room-a_room-b_0  →  ¬at_rob1_room-a_1 ∧ at_rob1_room-b_1              (effects @ t+1)
+move_rob1_room-a_room-b!0_0  →  at_rob1_room-a_0                                (precondition @ t)
+move_rob1_room-a_room-b!0_0  →  ¬at_rob1_room-a_1 ∧ at_rob1_room-b_1            (effects @ t+1)
 ```
 
 Effect kinds map to (`convert_effect_to_z3`): `ASSIGN` →
@@ -165,8 +170,9 @@ where conditional effects contribute `action ∧ condition` instead of just
 the action variable. A fluent no action can modify gets
 `(f@t ≠ f@t+1) → false` — it can never change, which is exactly right.
 
-(The `elsc-fp` strategy replaces these clauses entirely with a propagator
-module that supplies the same information lazily during search —
+(The `-fp` strategies, `e-fp` and `elsc-fp`, replace these clauses entirely
+with a propagator module that supplies the same information lazily during
+search —
 `set_lazy_frames(true)` makes `encode_frames` return `true` and
 `FrameAxiomModule` takes over; see
 [`interference-and-propagators.md`](interference-and-propagators.md).)
@@ -175,7 +181,12 @@ module that supplies the same information lazily during search —
 
 `encode_parallelism(t)` delegates to the constructor-injected
 `ParallelismStrategy` (`encoders/parallelism/`), one class per semantics
-from [`architecture-overview.md`](architecture-overview.md):
+from [`architecture-overview.md`](architecture-overview.md). The planner
+asserts it only when no propagator module manages parallelism (`seq`,
+`r2e`, `e`, `e-lin`, `f` and their `-dt` variants); the strategies with a
+`ForallEager`, `ForallLazy` or `ExistsCycle` module (`f-p`, `fl`, `e-p`,
+`el`, `elsc`, ...) skip these clauses and enforce the semantics from the
+propagator during search instead:
 
 - **`SequentialSemantics`** — one pseudo-Boolean constraint,
   `AtMost(a₁@t, ..., aₙ@t; 1)`. At-most-one rather than exactly-one so
@@ -185,14 +196,22 @@ from [`architecture-overview.md`](architecture-overview.md):
   the interference graph. Needs the whole graph up front, which is why it
   requires an *eager* (graph-bearing) interference analysis — see
   [`interference-and-propagators.md`](interference-and-propagators.md).
-- **`ExistsSemantics`** — mutexes only for interfering pairs in the *same
-  strongly connected component* of the interference graph. Across
-  different SCCs an execution order always exists (the SCC condensation is
-  a DAG), so those pairs never need blocking; within an SCC this static
-  clause form conservatively blocks the pair. The exact ∃-step semantics —
-  "block only genuine cycles" — can't be expressed as a fixed clause set of
-  this size, so the lazy strategies (`elsc`, ...) skip these clauses and
-  enforce acyclicity with the `ExistsCycleModule` propagator during search
+- **`ExistsSemantics`** — a fixed step order, the same at every step
+  (`ExistsStepOrder`), and clauses that forbid an edge `u → v` (u affects
+  v) whenever u runs before v. The order runs the strongly connected
+  components of the interference graph one after another, the affected
+  component first, so no pair across two components is forbidden; a pair
+  with edges both ways is forbidden whatever the order; and for the one-way
+  pairs inside a component the order is chosen greedily, running the
+  affected action first in as many of them as it can. The forbidden pairs
+  are written in one of two ways (`EstepMutexes`): one clause per pair
+  (`e`), or Rintanen's linear encoding (`e-lin`), one chain per interference
+  unit — the writers of one fluent of one kind and the actions they affect —
+  with at most R + 2M binary clauses and M - 1 new variables per step, for M
+  writers and R affected actions, where the pairs take up to M·R clauses.
+  Both forbid the same pairs. The exact ∃-step semantics — "block only
+  genuine cycles" — can't be expressed as a fixed clause set of this size;
+  the `ExistsCycleModule` propagator enforces acyclicity during search
   instead.
 
 ### State constraints, symmetries
@@ -204,7 +223,11 @@ bounds (`fuel_rob1_t ≤ 3`), object-fluent domain restrictions, and
 conservation laws (`f@t + g@t = C`). The solver could rediscover each of
 these by search, at every horizon — asserting them up front prunes those
 branches for free. Where they come from is covered in
-[`preprocessing-and-strategy.md`](preprocessing-and-strategy.md).
+[`preprocessing-and-strategy.md`](preprocessing-and-strategy.md). The same
+method asserts what the problem *declares*, which defines plan validity
+rather than speeding the search: declared state invariants
+(`(:constraints (always φ))`, accepted only by `seq` and `seq-dt`) and the
+bounds of bounded int/real fluent types, as exact values.
 
 `encode_symmetries(t)` emits, per detected object swap: *if* the state is
 symmetric under the swap at *t*, *then* the swap-related action pairs must
@@ -229,8 +252,8 @@ literal so it can be retracted when the horizon grows
 
 The two-room robot problem from the overview, horizon 1, `seq` strategy.
 Six variables: four state (`at_rob1_room-a_{0,1}`, `at_rob1_room-b_{0,1}`),
-two action (`move_rob1_room-a_room-b_0`, `move_rob1_room-b_room-a_0`).
-Abbreviating `move_rob1_room-a_room-b` as `move_a_b`, `at_rob1_room-a` as
+two action (`move_rob1_room-a_room-b!0_0`, `move_rob1_room-b_room-a!1_0`).
+Abbreviating `move_rob1_room-a_room-b!0` as `move_a_b`, `at_rob1_room-a` as
 `at_a`:
 
 ```
@@ -290,8 +313,9 @@ Both are covered in [`encoders-and-planners.md`](encoders-and-planners.md).
 Export the real formula for a real problem and read it — every schema above
 is visible in the SMT-LIB2 output. The module's `export_formula` builds the
 encoder and prints the formula instead of solving (the problem must already
-be ground, so this uses UP's grounder; export is limited to
-propagator-free strategies — `seq` and `r2e`):
+be ground, so this uses UP's grounder; export is limited to strategies
+without propagator modules on the plain planner — `seq`, `r2e`, `e`,
+`e-lin` and `f`):
 
 ```python
 # from the repo root, inside the venv
@@ -313,7 +337,8 @@ open("/tmp/plan.smt2", "w").write(smt2)
 
 Skim `/tmp/plan.smt2`: the declarations follow the factory's
 `name_params_timestep` convention (`located_person1_city0_0 : Bool`,
-`fuel_plane1_2 : Real`, ...), and the assertions are the action
+`fuel_plane1_2 : Real`, ...; action variables add `!<id>` before the
+timestep), and the assertions are the action
 implications, frame axioms, and at-most-one constraints from this doc,
 thousands of times over. The file is self-contained — a stock
 `z3 /tmp/plan.smt2` solves it with no planner involved.

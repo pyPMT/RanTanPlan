@@ -67,9 +67,11 @@ here is a UP type *string* (`"up:bool"`, `"up:integer"`, or a user type
 name), resolved to an integer `type_id` only once it's loaded into the C++
 side's type table. Deduplication exists on the wire too, but it's coarser
 than `ExprPool::intern()`'s full structural hashing: `_FNodeToIR._head()`
-memoizes head symbols (fluent/function/object/variable nodes) by their
+memoizes head symbols (fluent/object/variable nodes) by their
 `(kind, symbol, type)` tuple — so the `"at"` `FLUENT_SYMBOL` node above is
-reused everywhere `at(...)` appears — and `walk()` separately memoizes by
+reused everywhere `at(...)` appears — `_operator()` memoizes operator heads
+(`FUNCTION_SYMBOL` nodes, which carry an `Operator` value instead of a
+symbol string) by their operator, and `walk()` separately memoizes by
 UP `FNode` identity, so the same shared subexpression object isn't
 re-converted twice. Neither is a full structural comparison across
 differently-built compound expressions the way `ExprPool::intern()` is; that
@@ -123,15 +125,17 @@ assignments — everything else about them is compiled away in the C++ grounder
 **Set fluents** (`shape = SET`) likewise carry only `element_type` (the set's
 element type) — the `set{T}` type-table name is generated once on the C++ side,
 so the converter authors no `value_type` string, exactly as for arrays. The
-`SET_*` operators are labelled with `up:set_*` heads and flow through the pool
-like any function application; `SetLoweringPass` compiles them away in C++. One
-deliberate asymmetry with arrays: a `SET_CONSTANT` value is *not* normalised at
-conversion — it crosses the boundary as an `up:set_constant` node (its elements
+`SET_*` operators cross as `Operator` values (`SET_MEMBER`, `SET_ADD`, …) on
+their `FUNCTION_SYMBOL` heads and flow through the pool like any function
+application; `SetLoweringPass` compiles them away in C++. One deliberate
+asymmetry with arrays: a `SET_CONSTANT` value is *not* normalised at
+conversion — it crosses the boundary as a `SET_CONSTANT` application (its elements
 walked in payload order for determinism), and the pass does the per-cell
 normalisation of initial-state and effect set constants uniformly. The converter
 rejects the out-of-scope cases (nested set types, set/array mixing, set-typed
 parameters, fluent-valued elements, non-empty set defaults) with clear
-`UPException`s. See [`grounding.md`](grounding.md) for the lowering.
+`UPException`s, which the engine reports as `UNSUPPORTED_PROBLEM` with the
+message as the reason. See [`grounding.md`](grounding.md) for the lowering.
 
 ## The two calls: `preprocess` and `solve`
 
@@ -163,11 +167,12 @@ sequenceDiagram
 
 `preprocess()` returns a `Preprocessed` handle — an opaque C++ object owning
 the `PreprocessedProblem` — rather than the struct itself, because
-preprocessing artifacts are **single-consumer**: `solve()` moves achievers
-(the which-action-can-supply-which-fact analysis the CGB planner consumes)
-and SDAC (state-dependent action cost) bounds out of the bundle it's handed. A second `solve()` call
-on an already-consumed handle raises rather than silently running without
-those artifacts (`handle.consumed`, checked in `solve_handle_impl`).
+preprocessing artifacts are **single-consumer**: `solve()` moves the state
+constraints into the encoder it builds, and the planner takes what it
+declares it needs (branch-and-bound: the SDAC, state-dependent action cost,
+bounds). A second `solve()` call on an already-consumed handle raises
+rather than silently running without those artifacts (`handle.consumed`,
+checked in `solve_handle_impl`).
 
 By default, `solve()`/`solve_anytime()` reuse the CLI-style args list the
 handle was preprocessed with (stored on the handle). You *can* pass a

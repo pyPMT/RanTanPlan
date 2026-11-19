@@ -28,11 +28,12 @@ the "GBFS test" in
 true: a consumer of `PreprocessedProblem` that never wants to touch Z3 can
 include this header without pulling Z3 in transitively.
 
-Artifacts are also **single-consumer**: `BasePlanner::consume_artifacts()`
-*moves* what a planner needs (achievers for CGB, SDAC cost bounds for
-branch-and-bound) out of the bundle. A `PreprocessedProblem` cannot feed a
-second `solve()` call — this is enforced at the nanobind layer too (the
-`Preprocessed.consumed` flag; see
+Artifacts are also **single-consumer**: `solve()` moves the state
+constraints into the encoder it builds (`StrategyFactory::create_encoder`),
+and `BasePlanner::consume_artifacts()` hands a planner what it declares it
+needs (today only branch-and-bound takes one, the SDAC cost bounds). A
+`PreprocessedProblem` cannot feed a second `solve()` call — this is
+enforced at the nanobind layer too (the `Preprocessed.consumed` flag; see
 [`python-cpp-boundary.md`](python-cpp-boundary.md)).
 
 ## The pass pipeline
@@ -44,12 +45,15 @@ second `solve()` call — this is enforced at the nanobind layer too (the
 flowchart LR
     P[Problem] --> IP[Int-param instantiation]
     IP --> QE[Quantifier expansion]
-    QE --> AL["[Array lowering]<br/>(arrays only)"]
+    QE --> TR["[Term resolution]<br/>(nested terms only)"]
+    TR --> AL["[Array lowering]<br/>(arrays only)"]
     AL --> SL["[Set lowering]<br/>(sets only)"]
     SL --> A["[Grounding]<br/>(optional)"]
     A --> B[CWA initial state]
     B --> C[Static fluent folding]
-    C --> CN["[CNF normalization]<br/>(optional)"]
+    C --> WO[Write-only fluent removal]
+    WO --> EN[Effect normalization]
+    EN --> CN["[CNF normalization]<br/>(optional)"]
     CN --> D["Action pruning<br/>(RPG + goal relevance)"]
     D --> E[Mutex analysis]
     E --> L["[Landmark analysis]<br/>(goal-relevance on)"]
@@ -101,6 +105,21 @@ assign), leaving grounding set-free. Also a no-op without set fluents. The
 lowerings run adjacent; arrays and sets don't interact
 (set-of-array / array-of-set is rejected at conversion), so their relative order
 is free.
+
+After CWA completion and static-fluent folding, two passes clean up what
+the actions write. `WriteOnlyFluentPass` removes the fluents nothing reads:
+a written fluent is read if a precondition, goal, state invariant or action
+cost mentions it, if its type declares bounds, or if it feeds the value or
+condition of a write to a read fluent; the rest (accumulators only a
+final-value metric mentions, such as zenotravel's `total-fuel-used`) lose
+their effects and initial values. `EffectNormalizationPass` then makes
+every ground action write each fluent at most once in any state, which the
+encoders need, as they give every write its own equation on the fluent's
+next value: several writes to one fluent are combined or guarded following
+Unified Planning's semantics (add after delete, increases add up, two
+different assignments make the action inapplicable where both apply), and
+only an action that can never apply or has no effect is removed. It
+replaced a pass that dropped such actions outright, which lost legal plans.
 
 `Pass` (`passes/pass.hpp`) is deliberately minimal: `apply(PreprocessedProblem&)`
 and `name()` (for logging). Passes are **stateless** — every pass-specific
@@ -154,11 +173,14 @@ multi-entry rows.
 |---|---|---|
 | `IntParameterInstantiationPass` | transformer | shaping |
 | `QuantifierExpansionPass` | transformer | shaping |
+| `TermResolutionPass` | transformer | shaping (no-op without nested terms or state-dependent indices) |
 | `ArrayLoweringPass` | transformer | shaping (no-op without arrays) |
 | `SetLoweringPass` | transformer | shaping (no-op without sets) |
 | `GroundingPass` (optional) | transformer | shaping + rewriting + verdict — reachability grounding *is* pruning, and it sets `lower_bound`/`proven_unsolvable` |
 | `CWAInitialStatePass` | transformer | shaping (sole materialiser of default initial values) |
 | `StaticFluentPass` | transformer | performance by rewriting (also tightens later RPG bounds) |
+| `WriteOnlyFluentPass` | transformer | performance by rewriting |
+| `EffectNormalizationPass` | transformer | shaping (the encoders need at most one applying write per fluent) |
 | `CnfNormalizationPass` (optional) | transformer | analysis-enabling rewriting |
 | `ActionPruningPass` | transformer + analyzer | rewriting + annotation + verdict — prunes, proves bounds/unsolvability, and publishes achievers, SDAC cost bounds, and the bounds/conservations/domains part of `state_constraints` |
 | `MutexAnalysisPass` | analyzer | performance by annotation |
@@ -234,7 +256,7 @@ flowchart TD
   exactly one place, counting being aboard a plane").
 
 You can watch both producers in any verbose run — zenotravel pfile13 gives
-`[ActionPruning] rpg_bounds: 7 | conservation_laws: 0 |
+`[ActionPruning] rpg_bounds: 6 | conservation_laws: 0 |
 domain_constraints: 0` followed by `[MutexAnalysis] mutex_candidates: 32 |
 tier1_amo: 0 | h2_amo: 20 | exactly_one: 13` (see "Try it" below).
 
@@ -244,8 +266,15 @@ additionally carry *declared* state invariants, the bodies of PDDL
 `(:constraints (always φ))` blocks: these live on `Problem` itself
 (`state_invariants()`), not in `state_constraints`, precisely because they
 are trusted requirements that define plan validity, not derived hints. The
-encoder asserts them at every state including the goal
-state, and `r2e` rejects problems that declare them. See the comment on
+encoder asserts them at every state including the goal state, and only
+sequential semantics (`seq`, `seq-dt`) accept them:
+`StrategyFactory::check_supported` refuses them under every other strategy,
+`r2e` included, as `UNSUPPORTED_PROBLEM` naming `seq`, because a parallel
+step would be checked at its boundaries but not between its actions. The
+bounds of bounded int/real fluent types are declared too: the Grounded
+encoder asserts them exactly at every state, R2E on every chain variable,
+and the Chained encoder refuses them (its intermediate variables could
+violate them). See the comment on
 `GroundedEncoder::encode_state_constraints` for the full contrast.
 
 ## Landmark analysis: `LandmarkAnalysisPass`
@@ -260,9 +289,9 @@ required by *all* achievers of a landmark is itself a landmark) produces
 where linear numeric thresholds get real residuals and per-firing
 contributions, and everything else takes the sound default of residual 1 —
 plus natural orderings and a depth lower bound folded into the pipeline's
-`lower_bound`. The CGB planner consumes this artifact for its presence
-clauses, deficit budgets, and horizon jumps. The full design-and-measurement
-log is `docs/pdla-optional-occurrence-roadmap.md` §5.
+`lower_bound`. The depth bound is what the search uses today: `LandmarkData`
+itself has had no consumer since the CGB planner, which built its presence
+clauses, deficit budgets and horizon jumps on it, was removed (0a35759).
 
 ## Symmetry detection: `SymmetryAnalysisPass`
 
@@ -323,8 +352,9 @@ consumer, or a `--list-strategies` inspection tool can all call
 
 ## The strategy system
 
-A **strategy** is a named, validated combination of five axes, expressed as
-a plain `StrategySpec` (`config/strategy_spec.hpp`):
+A **strategy** is a named, validated combination of five axes, plus a
+sixth field for how exists-step writes its clauses, expressed as a plain
+`StrategySpec` (`config/strategy_spec.hpp`):
 
 | Axis | Enum | What it controls |
 |---|---|---|
@@ -332,10 +362,11 @@ a plain `StrategySpec` (`config/strategy_spec.hpp`):
 | Semantics | `SemanticsKind` | Sequential, Forall, Exists |
 | Interference | `InterferenceKind` | None / Eager·Lazy × Syntactic·Semantic |
 | Propagator modules | `PropagatorFlags` (a `std::set<PropagatorModuleKind>`) | ForallEager, ForallLazy, ExistsCycle, FrameAxiom |
-| Planner | `PlannerKind` | Sequential, DoubleTail, BranchAndBound, CGB |
+| Planner | `PlannerKind` | Sequential, DoubleTail, BranchAndBound |
+| Exists-step clauses | `EstepMutexes` | Pairs (the default), Chains (`e-lin`; needs exists-step semantics, eager syntactic interference and no module that manages parallelism) |
 
 `StrategyRegistry` (`config/strategy_registry.cpp`) maps CLI strategy names
-(`"elsc"`, `"fl-dt"`, `"cgb"`, …) to `StrategyEntry { spec, description }`.
+(`"elsc"`, `"fl-dt"`, `"e-lin"`, …) to `StrategyEntry { spec, description }`.
 This table is the single place a new strategy gets added — see the
 `/add-strategy` skill. `--list-strategies` and `test.py`'s strategy
 discovery both read this registry; neither hardcodes a strategy list.
@@ -345,15 +376,22 @@ discovery both read this registry; neither hardcodes a strategy list.
 
 ```mermaid
 flowchart LR
-    S[StrategySpec] --> V["validate()<br/>(compatibility checks)"]
-    V --> AJ["adjust_spec()<br/>(problem-specific: SDAC to exists downgrade)"]
-    AJ --> I[Interference analyzer]
+    S[StrategySpec] --> RP["resolve_planner_kind()<br/>(search mode)"]
+    RP --> AJ["adjust_spec()<br/>(problem-specific: SDAC exists-to-forall downgrade;<br/>ends with check_supported())"]
+    AJ --> V["validate()<br/>(compatibility checks)"]
+    V --> I[Interference analyzer]
     I -->|constructor-injected| PA[Parallelism strategy]
     PA -->|constructor-injected| E[Encoder]
-    E --> PR["Propagator<br/>(attaches to planner's solver)"]
+    E --> PR["Propagator, if the spec has modules<br/>(attaches to planner's solver)"]
     E --> PL[Planner]
-    PL -->|consume_artifacts| ART["achievers / SDAC bounds<br/>from PreprocessedProblem"]
+    PL -->|consume_artifacts| ART["SDAC bounds<br/>from PreprocessedProblem"]
 ```
+
+`check_supported()` holds the refusals: declared bounds under the Chained
+encoder, and declared state invariants under any semantics but sequential.
+`preprocess()` calls it first, with the configured strategy, so a refusal
+comes before any preprocessing; `solve()` calls it again through
+`adjust_spec()` and returns an `UNSUPPORTED_PROBLEM` result.
 
 **Wiring discipline**, stated in the `StrategyFactory` header comment and
 worth internalizing: mandatory dependencies are constructor-injected
@@ -400,7 +438,7 @@ handles the interaction between the CLI's search mode and the strategy's
 declared planner: satisficing mode (any valid plan is acceptable — the
 default) uses whatever planner the strategy names,
 but optimal/anytime mode always forces `BranchAndBound` — and raises if the
-strategy is double-tail or CGB, which cannot run under those modes at all
+strategy is double-tail, which cannot run under those modes at all
 (see [`encoders-and-planners.md`](encoders-and-planners.md) for why).
 
 ## Extension points
@@ -475,7 +513,7 @@ public:
         init_deadline();
         for (int h = 0; h <= Config::instance().planner.max_steps; ++h) {
             if (!apply_solver_timeout(solver_)) break;
-            add_timestep_constraints(solver_, encoder_, *propagator_strategy_, h);
+            add_timestep_constraints(solver_, encoder_, propagator_strategy_.get(), h);  // null without modules
             if (solver_.check() == z3::sat) {
                 solution_found_ = true;
                 return encoder_.extract_plan(solver_.get_model(), h);
@@ -530,16 +568,20 @@ this is a parallel consumer of `api::preprocess()`'s output, not a new
 Both the registry and the pass pipeline are directly observable:
 
 ```bash
-rantanplan --list-strategies      # every StrategyEntry, name + description
+rantanplan --list-strategies      # every registered strategy name
 rantanplan -d pddl/small-test/zenotravel/domain.pddl \
            -p pddl/small-test/zenotravel/instances/pfile13.pddl \
            --strategy elsc -v
 ```
 
-The verbose log's bracketed tags fire in the pipeline diagram's order —
-starting at `[Grounding]` here because zenotravel has no integer parameters or
-quantifiers, so the two front canonicalization passes are silent no-ops:
-`[Grounding]` → `[CWA]` → `[StaticFluent]` → `[ActionPruning]` (with
-`[RPG.Numeric]` and `[Achievers]` inside it, and ending with the
+The verbose log's bracketed tags fire in the pipeline diagram's order:
+`[int-parameter-instantiation]` → `[quantifier-expansion]` (both no-ops on
+zenotravel) → `[Grounding]` → `[CWA]` → `[static-fluent]` →
+`[write-only-fluent]` (one fluent, `total-fuel-used`) →
+`[cnf-normalization]` → `[ActionPruning]` (with `[RPG.Numeric]` and
+`[Achievers]` inside it, and ending with the
 `rpg_bounds`/`conservation_laws`/`domain_constraints` counts it publishes
-as state constraints) → `[MutexAnalysis]` → `[ArithProfile]`.
+as state constraints) → `[MutexAnalysis]` → `[Landmarks]` →
+`[ArithProfile]`. Term resolution and the lowerings have nothing to do
+here, and effect normalization logs only warnings (a write conflict in the
+model, or a split into many guarded writes).

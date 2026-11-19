@@ -210,7 +210,8 @@ machinery for this kind of pruning.
 **Cost and payoff.** An orbit of k objects contributes C(k,2) entries, each
 with a per-step guard and orderings — quadratic in orbit size, per
 timestep. At `dump_trucks` scale that is 45 entries for k = 10, and the
-measured effect (els strategy):
+measured effect (the dt20 row used `els`, a strategy since removed in
+31fb963; the "Try it" below uses `elsc`):
 
 | instance | symmetries off | symmetries on |
 |---|---|---|
@@ -301,14 +302,15 @@ from benchmarks.domains.dump_trucks import DOMAIN
 problem = DOMAIN.build_problem("dt20")
 for sym in (False, True):
     with OneshotPlanner(name="rantanplan",
-                        params={"verbosity": "silent", "strategy": "els",
+                        params={"verbosity": "silent", "strategy": "elsc",
                                 "symmetries": sym}) as planner:
         t0 = time.time()
         res = planner.solve(problem, timeout=120)
         print(f"symmetries={sym}: {res.status.name} in {time.time()-t0:.1f}s")
 ```
 
-Expected: ~67s without symmetries, ~1.2s with. Add `"verbosity": "info"`
+Expected: ~70s without symmetries, ~2s with (74.0 s and 1.7 s measured
+with four runs in parallel). Add `"verbosity": "info"`
 (and a log sink via `rantanplan._rantanplan.set_log_sink`) to see
 `Symmetry detection: 190 symmetric pairs` — the complete pairwise encoding
 of the one 20-package orbit (190 = C(20,2)).

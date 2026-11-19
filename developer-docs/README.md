@@ -40,10 +40,11 @@ Concepts first, plumbing last — each doc leans only on the ones before it.
 7a. [`frame-propagator.md`](frame-propagator.md) — a from-scratch
    walkthrough of one propagator module in depth: what a frame axiom is, how
    the lazy propagator watches it instead of posting it, and the whole design
-   traced on one tiny worked example. Also records how it currently measures
-   against the eager encoding it replaces (`els-fp` vs `els`), which is not
-   yet a win. Read after doc 7; optional unless you're touching the frame
-   propagator.
+   traced on one tiny worked example. Also records how it measured
+   against the eager encoding it replaces (`els-fp` vs `els`, two strategies
+   since removed; the registered pairs are `e-fp`/`e-p` and
+   `elsc-fp`/`elsc`), which was not yet a win. Read after doc 7; optional
+   unless you're touching the frame propagator.
 8. [`encoders-and-planners.md`](encoders-and-planners.md) — the encoder
    families, the planner backends, optimal/anytime branch-and-bound, and
    how a search mode resolves to a planner.
@@ -67,8 +68,9 @@ for when you meet one out of order.
 
 - **Achiever** — a ground action that can make a given fact true.
   `AchieversAnalysis` precomputes, for every fact, its possible achievers;
-  the CGB planner and the landmark analysis pass chain backward through
-  this graph ([`encoders-and-planners.md`](encoders-and-planners.md)).
+  goal-relevance pruning and the landmark analysis pass chain backward
+  through this graph
+  ([`preprocessing-and-strategy.md`](preprocessing-and-strategy.md)).
 - **Anytime** — search mode that reports every improving plan as it's
   found, converging toward optimal. Runs on the branch-and-bound planner
   ([`encoders-and-planners.md`](encoders-and-planners.md)).
@@ -116,8 +118,8 @@ for when you meet one out of order.
   representative ([`symmetries.md`](symmetries.md)).
 - **Propagator (user propagator)** — Z3's extension point for injecting
   custom reasoning *during* search via callbacks; RantanPlan hosts one and
-  dispatches to composable modules
-  ([`interference-and-propagators.md`](interference-and-propagators.md)).
+  dispatches to composable modules (a strategy without modules attaches
+  none) ([`interference-and-propagators.md`](interference-and-propagators.md)).
 - **RPG (relaxed planning graph)** — layer-by-layer reachability under
   delete relaxation; source of horizon lower bounds, pruning, and bounds
   ([`relaxed-planning-graph.md`](relaxed-planning-graph.md)).

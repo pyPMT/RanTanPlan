@@ -28,10 +28,10 @@ backend (`phase_selection`, `restart_strategy`, ...) that Z3 switches to
 the moment a `z3::user_propagator_base` is registered. Setting `sat.*`
 parameters *before* that switch silently no-ops — the propagator object
 exists and is attached, but Z3 never invokes any of its callbacks, and
-every propagator-dependent strategy (forall/exists/lazy) would produce
-invalid plans with interfering actions in the same timestep. The fix, and
-the reason for the ordering, is recorded directly in the source comment at
-`set_propagator_strategy()`.
+every strategy with a parallelism propagator module (`f-p`, `fl`, `e-p`,
+`el`, `elsc`, ...) would produce invalid plans with interfering actions in
+the same timestep. The fix, and the reason for the ordering, is recorded
+directly in the source comment at `set_propagator_strategy()`.
 
 ## The timeout: a shrinking budget, not one deadline
 
@@ -184,9 +184,9 @@ than the classic `push()`-solve-`pop()`-solve-again loop.
 
 `BranchAndBoundPlanner` is the one place that *does* use explicit
 `push()`/`pop()`: it opens a scope per horizon for the horizon-dependent
-abstract-suffix constraints (relaxed preconditions, abstract goal, the
-running cost bound), asserts permanent concrete transitions *outside* that
-scope, and pops the scope before moving to the next horizon. It needs
+abstract-suffix constraints (relaxed preconditions, abstract goal, loop
+formulas, the running cost bound), asserts permanent concrete transitions
+*outside* that scope, and pops the scope before moving to the next horizon. It needs
 `push`/`pop` rather than an assumption literal because it's asserting a
 whole family of horizon-specific constraints, not gating a single fact.
 
@@ -201,14 +201,16 @@ solver.set("smt.up.persist_clauses", Config::instance().global.persist_clauses);
 ```
 
 Z3's unit-propagation engine can discard theory lemmas it derived once a
-`pop()` backtracks past the point they were learned (the default,
-`persist_clauses = false`), forcing propagators to re-derive them if the
-same situation recurs — or keep them around across backtracking
-(`persist_clauses = true`) at the cost of extra memory. It's a
-throughput/memory tradeoff exposed as a flag rather than a fixed choice
-because which side wins depends on how expensive a given propagator
-module's re-derivation is versus how much backtracking a given problem
-triggers; there's no universally-better setting.
+`pop()` backtracks past the point they were learned (`persist_clauses =
+false`, `--no-persist-clauses`), forcing propagators to re-derive them if
+the same situation recurs — or keep them around across backtracking
+(`persist_clauses = true`, RantanPlan's default) at the cost of extra
+memory. It only matters when a propagator is attached: a strategy without
+propagator modules has none. It's a throughput/memory tradeoff exposed as
+a flag rather than a fixed choice because which side wins depends on how
+expensive a given propagator module's re-derivation is versus how much
+backtracking a given problem triggers; there's no universally-better
+setting.
 
 ## Try it
 
