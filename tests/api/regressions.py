@@ -2583,6 +2583,110 @@ def test_internal_names_are_not_planning_names():
                 assert_valid(p, r.plan)
 
 
+def _render_alike_problem(numeric):
+    """at(pkg, loc) and at_pkg(loc), both at_pkg_loc through the '_' joiner.
+    at(pkg, loc) starts true and take clears it; put makes at_pkg(loc) true,
+    or, numeric, adds 1 to it (an integer in [0, 5]). The goal wants both
+    done: plan [put, take]."""
+    T, L = UserType("T"), UserType("L")
+    pkg, loc = Object("pkg", T), Object("loc", L)
+    at = Fluent("at", BoolType(), p=T, l=L)
+    at_pkg = Fluent("at_pkg", IntType(0, 5) if numeric else BoolType(), l=L)
+    p = Problem("render_alike")
+    p.add_fluent(at, default_initial_value=False)
+    p.add_fluent(at_pkg, default_initial_value=0 if numeric else False)
+    p.add_objects([pkg, loc])
+    p.set_initial_value(at(pkg, loc), True)
+    put = InstantaneousAction("put", l=L)
+    if numeric:
+        put.add_increase_effect(at_pkg(put.parameter("l")), 1)
+    else:
+        put.add_effect(at_pkg(put.parameter("l")), True)
+    take = InstantaneousAction("take", q=T, l=L)
+    take.add_effect(at(take.parameter("q"), take.parameter("l")), False)
+    p.add_action(put)
+    p.add_action(take)
+    p.add_goal(And(GE(at_pkg(loc), 1) if numeric else at_pkg(loc), Not(at(pkg, loc))))
+    return p
+
+
+def _atom_named_like_an_action_problem(k, n):
+    """go(o<i>) visits o<i>, and the goal visits all n. The 0-ary go_o<k>
+    starts false, only set_flag sets it, and the goal keeps it false: go(o<k>)
+    and go_o<k> render alike."""
+    O = UserType("O")
+    objs = [Object(f"o{i}", O) for i in range(n)]
+    visited = Fluent("visited", BoolType(), o=O)
+    flag = Fluent(f"go_o{k}", BoolType())
+    p = Problem(f"atom_named_like_an_action_{k}")
+    p.add_fluent(visited, default_initial_value=False)
+    p.add_fluent(flag, default_initial_value=False)
+    p.add_objects(objs)
+    go = InstantaneousAction("go", o=O)
+    go.add_effect(visited(go.parameter("o")), True)
+    set_flag = InstantaneousAction("set_flag")
+    set_flag.add_effect(flag(), True)
+    p.add_action(go)
+    p.add_action(set_flag)
+    p.add_goal(And(*[visited(o) for o in objs], Not(flag())))
+    return p
+
+
+def _spaced_name_problem():
+    """A UP name may hold a space: n(a) and the 0-ary "n a" both render as
+    (n a). w and u each add 1 to n(a) and 5 to "n a"; the goal wants 2 and
+    10: any two of them."""
+    O = UserType("O")
+    a = Object("a", O)
+    n = Fluent("n", IntType(), o=O)
+    m = Fluent("n a", IntType())
+    p = Problem("spaced_name")
+    p.add_fluent(n, default_initial_value=0)
+    p.add_fluent(m, default_initial_value=0)
+    p.add_object(a)
+    for name in ("w", "u"):
+        act = InstantaneousAction(name)
+        act.add_increase_effect(n(a), 1)
+        act.add_increase_effect(m(), 5)
+        p.add_action(act)
+    p.add_goal(And(Equals(n(a), 2), Equals(m(), 10)))
+    return p
+
+
+def test_atoms_that_render_alike_have_their_own_variables():
+    """Z3 interns constants by name, and a state variable was named
+    <fluent>_<args>_<t>: at(pkg, loc) and at_pkg(loc) were one variable,
+    at_pkg_loc_<t>. Two Bools (take clearing one cleared the other) came out
+    UNSOLVABLE_INCOMPLETELY; a Bool and an Int were one constant of two sorts,
+    an INTERNAL_ERROR. The name now carries the atom's id, after an '@'.
+    - Not after a '!', which is an action's: go_o<k>!<id>_<t> was the action
+      go(o<k>) when the atom's id was the action's (some k below).
+    - The Chained encoder's zeta and R2E's chain variables were named after
+      the atom's rendering, which a UP name with a space shares (n(a) and
+      "n a"); they carry the id too."""
+    for numeric in (False, True):
+        strategies = ("seq", "e", "e-lin", "f", "r2e", "e-dt") + (() if numeric else ("elsc",))
+        for strategy in _registered(*strategies):
+            p = _render_alike_problem(numeric)
+            r = solve(p, strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"numeric={numeric}, {strategy}: {r.status}"
+            assert_valid(p, r.plan)
+    n = 12
+    for k in range(n):
+        p = _atom_named_like_an_action_problem(k, n)
+        r = solve(p, strategy="e")
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"go_o{k}: {r.status}"
+        assert_valid(p, r.plan)
+    for strategy in _registered("r2e", "elsc", "flsc"):
+        p = _spaced_name_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"spaced name, {strategy}: {r.status}"
+        assert_valid(p, r.plan)
+
+
 def test_bad_options_are_usage_errors():
     """An option the planner cannot take is the caller's mistake: a
     UPUsageError when the engine is made, not a result status (the C++ side
@@ -2686,4 +2790,5 @@ CASES = [
     test_bad_options_are_usage_errors,
     test_a_negative_timeout_is_a_usage_error,
     test_internal_names_are_not_planning_names,
+    test_atoms_that_render_alike_have_their_own_variables,
 ]

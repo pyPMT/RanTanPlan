@@ -68,14 +68,14 @@ def parse_log(path: str, max_lines: int | None = None) -> list[tuple]:
 # ---------------------------------------------------------------------------
 
 _TRAILING_INT_RE = re.compile(r"^(.*?)_(\d+)$")
-_ACTION_ID_RE = re.compile(r"!\d+(?=_\d+$)")  # an action variable's "!<id>"
+_VAR_ID_RE = re.compile(r"[!@]\d+(?=_\d+$)")  # a state variable's "@<id>", an action's "!<id>"
 _PARAM_START_RE = re.compile(r"_[a-zA-Z][a-zA-Z_-]*\d")
 _SMTLIB_OP_RE = re.compile(r"^\((\S+)")
 _PDDL_IDENT_RE = re.compile(r"[a-zA-Z][a-zA-Z-]+")
 
 
 def _get_bool_predicate(name: str) -> str:
-    name = _ACTION_ID_RE.sub("", name)
+    name = _VAR_ID_RE.sub("", name)
     m = _PARAM_START_RE.search(name)
     if m:
         return name[:m.start()]

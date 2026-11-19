@@ -114,12 +114,13 @@ public:
     // ========================================================================
     //
     // Interning distinguishes nodes by kind:op:TYPE_ID and children, but the
-    // Z3 variable a state variable becomes is named from PAYLOAD STRINGS ONLY
+    // Z3 variable a state variable becomes is decided by PAYLOAD STRINGS ONLY
     // — GroundedEncodingVisitor reads the head symbol's payload and each
-    // argument's payload, and Z3VariableFactory::get_fluent_var_name uses only
-    // those. So interning is FINER than the identity the solver sees: two ids
-    // for `at(truck1, depot)` that differ only in an argument's type_id both
-    // become the variable `at_truck1_depot`.
+    // argument's payload, and names the variable after those and the id of
+    // the representative below (Z3VariableFactory::get_fluent_var_name). So
+    // interning is FINER than the identity the solver sees: two ids for
+    // `at(truck1, depot)` that differ only in an argument's type_id both
+    // become the variable `at_truck1_depot@<representative>`.
     //
     // Anything that groups by fluent ExprID assumes one ground atom has one id:
     // WriteOnlyFluentPass's reads and writes, SemanticInterferencePredicate's

@@ -115,6 +115,8 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
     for (const auto& [var_eid, writes] : variable_modifiers_) {
         if (!is_chained(var_eid)) continue;
 
+        // ζ is named after the atom and its id: a UP name may hold a space,
+        // and n(a) and a 0-ary "n a" both render as (n a).
         const std::string var_str = problem_.pool().to_string(var_eid);
         const Type* var_type = problem_.type_for_id(var_eid);
 
@@ -132,8 +134,8 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
             z3::expr chain_next =
                 is_last ? convert_expr_id_to_z3(var_eid, t + 1)
                         : variable_factory_.create_symbol_variable(
-                              "zeta_" + var_str + "_t" + std::to_string(t) +
-                                  "_i" + std::to_string(i + 1),
+                              "zeta_" + var_str + Z3VariableFactory::atom_tag(var_eid) +
+                                  "_t" + std::to_string(t) + "_i" + std::to_string(i + 1),
                               var_type);
 
             // Equation (8): Apply effect conditionally based on action execution.

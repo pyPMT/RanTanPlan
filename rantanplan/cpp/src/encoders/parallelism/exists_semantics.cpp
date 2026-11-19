@@ -263,8 +263,8 @@ void ExistsSemantics::add_chain(const std::vector<int>& writers, const std::vect
 void ExistsSemantics::encode_chain(size_t unit, int timestep, z3::expr_vector& clauses) const {
     // The chain variables are new at every step, unlike the action variables,
     // which the factory keeps: each occurs only in its unit's clauses at its
-    // step. A PDDL name has no '.', so no state or action variable has these
-    // names.
+    // step. State and action variables end in @<id>_<t> and !<id>_<t>, so
+    // none has these names.
     const Chain& chain = chains_[unit];
     const std::string prefix = "estep.chain." + std::to_string(unit) + ".";
     const std::string suffix = "_" + std::to_string(timestep);

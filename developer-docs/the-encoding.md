@@ -27,13 +27,13 @@ off, timestep by timestep, *is* the plan.
 flowchart LR
     I["initial-state<br/>constraints"] --> F0
     subgraph s0["state @ 0"]
-        F0["at_rob1_room-a_0<br/>at_rob1_room-b_0"]
+        F0["at_rob1_room-a@5_0<br/>at_rob1_room-b@7_0"]
     end
     subgraph acts["actions @ 0"]
         A0["move_rob1_room-a_room-b!0_0<br/>move_rob1_room-b_room-a!1_0"]
     end
     subgraph s1["state @ 1"]
-        F1["at_rob1_room-a_1<br/>at_rob1_room-b_1"]
+        F1["at_rob1_room-a@5_1<br/>at_rob1_room-b@7_1"]
     end
     F0 -->|"preconditions<br/>read state @ t"| A0
     A0 -->|"effects<br/>write state @ t+1"| F1
@@ -53,15 +53,25 @@ naming, and caching. Every encoder, propagator, and plan-extraction path
 goes through it, which is what keeps them all talking about the *same* Z3
 variable for "fluent `at(rob1, room-a)` at timestep 3".
 
-- **Naming**: name + parameters + timestep, joined by underscores. Fluent
-  `at(rob1, room-a)` at timestep 0 is the variable `at_rob1_room-a_0`. An
-  action's name also carries its id, its place in `Problem::actions()`,
-  after a `!`: action `move(rob1, room-a, room-b)` with id 0, at timestep 0,
-  is `move_rob1_room-a_room-b!0_0`. Z3 interns constants by name, and the
-  instances `TermResolutionPass` splits an action into share its name and
-  parameters, so without the id they would be one variable; `!` never
-  occurs in a planning identifier. (The examples below take the robot's two
-  moves to be actions 0 and 1.)
+- **Naming**: name + parameters, joined by underscores, then a mark and an
+  id, then the timestep. Z3 interns constants by name, and name +
+  parameters alone is not unique, so each name carries an id; neither mark
+  occurs in a planning identifier:
+  - a state variable carries its atom's `ExprID` (the pool's representative,
+    `canonical_state_variable`) after a `@`: atom `at(rob1, room-a)` with id
+    5, at timestep 0, is `at_rob1_room-a@5_0`. Without it, `at(pkg, loc)`
+    and `at_pkg(loc)` would both be `at_pkg_loc`;
+  - an action variable carries the action's id, its place in
+    `Problem::actions()`, after a `!`: action `move(rob1, room-a, room-b)`
+    with id 0, at timestep 0, is `move_rob1_room-a_room-b!0_0`. The
+    instances `TermResolutionPass` splits an action into share its name and
+    parameters.
+
+  The marks differ so that a state variable is never an action variable:
+  with one mark, the 0-ary `go_o5` with id 5 would be the action `go(o5)`
+  with id 5. (The examples below take the robot's two moves to be actions 0
+  and 1, and its atoms `at(rob1, room-a)`, `at(rob1, room-b)` and
+  `fuel(rob1)` to be 5, 7 and 9.)
 - **Action variables** are always `Bool`.
 - **Fluent variables** are typed by the fluent's value type: `Bool` for
   predicates; `Int` or `Real` for numeric fluents. When every numeric
@@ -93,7 +103,7 @@ the `ExprNode` tree once, recursively —
   ...).
 
 So `(and (at rob1 room-a) (>= (fuel rob1) 1))` at timestep 2 comes out as
-`at_rob1_room-a_2 ∧ fuel_rob1_2 ≥ 1`. There is a second visitor,
+`at_rob1_room-a@5_2 ∧ fuel_rob1@9_2 ≥ 1`. There is a second visitor,
 `LiftedEncodingVisitor`, which maps fluent applications to *uninterpreted
 functions* instead of per-timestep variables — it's used only by the
 symmetry checker, which needs to reason about lifted expressions under
@@ -121,13 +131,13 @@ baseline implementation is `GroundedEncoder`
 
 ### Initial state
 
-One equality per assignment: `at_rob1_room-a_0 = true`. This is only
+One equality per assignment: `at_rob1_room-a@5_0 = true`. This is only
 complete because the **CWA pass** ran first
 ([`preprocessing-and-strategy.md`](preprocessing-and-strategy.md)): the
 closed-world assumption — anything not stated true initially is false — is
 made explicit there, so every ground fluent has an assignment and the
 encoder can just iterate, with no "everything else is false" logic of its
-own. Without it, `at_rob1_room-b_0` would be unconstrained and Z3 would
+own. Without it, `at_rob1_room-b@7_0` would be unconstrained and Z3 would
 happily start the robot in both rooms.
 
 ### Actions: preconditions and effects
@@ -135,8 +145,8 @@ happily start the robot in both rooms.
 Two implications per ground action (`encode_single_action`):
 
 ```
-move_rob1_room-a_room-b!0_0  →  at_rob1_room-a_0                                (precondition @ t)
-move_rob1_room-a_room-b!0_0  →  ¬at_rob1_room-a_1 ∧ at_rob1_room-b_1            (effects @ t+1)
+move_rob1_room-a_room-b!0_0  →  at_rob1_room-a@5_0                              (precondition @ t)
+move_rob1_room-a_room-b!0_0  →  ¬at_rob1_room-a@5_1 ∧ at_rob1_room-b@7_1        (effects @ t+1)
 ```
 
 Effect kinds map to (`convert_effect_to_z3`): `ASSIGN` →
@@ -251,9 +261,9 @@ literal so it can be retracted when the horizon grows
 ## The whole formula, once
 
 The two-room robot problem from the overview, horizon 1, `seq` strategy.
-Six variables: four state (`at_rob1_room-a_{0,1}`, `at_rob1_room-b_{0,1}`),
+Six variables: four state (`at_rob1_room-a@5_{0,1}`, `at_rob1_room-b@7_{0,1}`),
 two action (`move_rob1_room-a_room-b!0_0`, `move_rob1_room-b_room-a!1_0`).
-Abbreviating `move_rob1_room-a_room-b!0` as `move_a_b`, `at_rob1_room-a` as
+Abbreviating `move_rob1_room-a_room-b!0` as `move_a_b`, `at_rob1_room-a@5` as
 `at_a`:
 
 ```
@@ -336,9 +346,9 @@ open("/tmp/plan.smt2", "w").write(smt2)
 ```
 
 Skim `/tmp/plan.smt2`: the declarations follow the factory's
-`name_params_timestep` convention (`located_person1_city0_0 : Bool`,
-`fuel_plane1_2 : Real`, ...; action variables add `!<id>` before the
-timestep), and the assertions are the action
+`name_params@id_timestep` convention (`located_person1_city0@<id>_0 : Bool`,
+`fuel_plane1@<id>_2 : Real`, ...; action variables have `!<id>` instead of
+`@<id>`), and the assertions are the action
 implications, frame axioms, and at-most-one constraints from this doc,
 thousands of times over. The file is self-contained — a stock
 `z3 /tmp/plan.smt2` solves it with no planner involved.

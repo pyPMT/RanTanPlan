@@ -299,7 +299,8 @@ z3::expr GroundedEncodingVisitor::convert_node(ExprID id) {
 
         Fluent grounded_fluent(fluent_def->name(), fluent_def->value_type(), grounded_params);
         int timestep = (current_timestep_ >= 0) ? current_timestep_ : 0;
-        return variable_factory_->get_fluent_variable(grounded_fluent, timestep);
+        return variable_factory_->get_fluent_variable(
+            grounded_fluent, pool.canonical_state_variable(id), timestep);
     }
 
     // ---- Function application ----

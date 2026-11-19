@@ -408,7 +408,10 @@ z3::expr R2EGroundedEncoder::create_effect_value_z3(const EffectExpression& eff_
 }
 
 std::string R2EGroundedEncoder::get_chain_variable_name(ExprID var_eid, int timestep, int action_index) const {
-    return problem_.pool().to_string(var_eid) + "_chain_t" + std::to_string(timestep) + "_action" + std::to_string(action_index);
+    // The id, as in the state variable's name: a UP name may hold a space, and
+    // n(a) and a 0-ary "n a" both render as (n a).
+    return problem_.pool().to_string(var_eid) + Z3VariableFactory::atom_tag(var_eid) +
+           "_chain_t" + std::to_string(timestep) + "_action" + std::to_string(action_index);
 }
 
 z3::expr R2EGroundedEncoder::get_chain_variable(ExprID var_eid, int timestep, int action_index) {
