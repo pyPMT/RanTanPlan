@@ -1,5 +1,6 @@
 """The command line's reporting: when there is no plan, the reason reaches
-stderr, even with --silent.
+stderr, even with --silent; in anytime mode, each improving plan is announced
+once.
 
 The command runs as `python -m rantanplan.cli` with the package under test on
 PYTHONPATH (the venv's `rantanplan` script may load another checkout).
@@ -14,7 +15,8 @@ import rantanplan
 
 PACKAGE_ROOT = Path(rantanplan.__file__).resolve().parents[1]
 
-# Seconds the command may take: these problems are refused before any search.
+# Seconds the command may take: these problems are refused before any search,
+# or solved at once.
 COMMAND_TIMEOUT = 120
 
 TEMPORAL = ("""(define (domain tiny-temporal)
@@ -38,6 +40,22 @@ ORDERED_COUNTERS = ("""(define (domain ordered-counters)
  (:init (= (value_x) 0) (= (value_y) 0))
  (:goal (and (= (value_x) 3) (= (value_y) 3)))
  (:constraints (always (<= (value_x) (value_y)))))""")
+
+# Two plans: expensive (cost 10), then prepare; finish (cost 2).
+TWO_PLANS = ("""(define (domain two-plans)
+ (:requirements :strips :action-costs)
+ (:predicates (prepared) (done))
+ (:functions (total-cost) - number)
+ (:action expensive :parameters ()
+  :effect (and (done) (increase (total-cost) 10)))
+ (:action prepare :parameters ()
+  :effect (and (prepared) (increase (total-cost) 1)))
+ (:action finish :parameters () :precondition (prepared)
+  :effect (and (done) (increase (total-cost) 1))))""",
+             """(define (problem two-plans) (:domain two-plans)
+ (:init (= (total-cost) 0))
+ (:goal (done))
+ (:metric minimize (total-cost)))""")
 
 
 def run_cli(directory, pddl, *options):
@@ -94,7 +112,24 @@ def test_bad_options_are_usage_errors():
                 f"{options}: {out.stderr}"
 
 
+def test_anytime_prints_each_improving_plan_once():
+    """The engine printed its own "Improving plan found" line beside the
+    command line's, so each improving plan was announced twice. Two plans,
+    two lines, and the final plan once; nothing with --silent."""
+    for options, expected in (([], 2), (["-v"], 2), (["--silent"], 0)):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = run_cli(Path(tmp), TWO_PLANS, "--mode", "anytime", "--strategy", "seq",
+                          *options)
+            assert out.returncode == 0, f"{options}: {out.stdout + out.stderr}"
+            lines = out.stdout.splitlines()
+            improving = [line for line in lines if line.startswith("Improving plan found")]
+            assert len(improving) == expected, f"{options}: {out.stdout}"
+            final = [line for line in lines if line.startswith("Plan found with")]
+            assert len(final) == min(expected, 1), f"{options}: {out.stdout}"
+
+
 CASES = [
     test_the_reason_for_no_plan_reaches_stderr,
     test_bad_options_are_usage_errors,
+    test_anytime_prints_each_improving_plan_once,
 ]

@@ -810,7 +810,8 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
                         except Exception as e:
                             self._log_error(f"Error mapping intermediate plan back: {e}")
                             continue
-                        self._log(f"Improving plan found ({len(plan.actions)} actions)")
+                        # Printing it is the caller's call (the CLI does);
+                        # the native log has its own "Improved plan" line.
                         yield PlanGenerationResult(
                             PlanGenerationResultStatus.INTERMEDIATE, plan, self.name)
                     elif kind == "final":
