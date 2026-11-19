@@ -7,19 +7,18 @@ A SAT/SMT-based automated planner with parallel action semantics. Combines a Pyt
 - **Four parallelism semantics**: Sequential, ∀-step (forall), ∃-step (exists), R2∃-step
 - **Multiple encoding strategies**: Grounded, chained, R2∃-step
 - **Search modes**: Satisficing, cost-optimal (Branch & Bound), anytime
-- **Core-guided lazy activation** (`cgb`): actions start dormant behind blocking assumptions; UNSAT cores drive activation and horizon growth
-- **Interference analysis**: Syntactic (eager/lazy) and semantic (eager/lazy)
-- **Custom Z3 propagators**: Lazy interference via cycle detection, decision heuristics
+- **Interference analysis**: Syntactic (eager/lazy) and semantic (eager/lazy; with the chained encoder)
+- **Custom Z3 propagators**: Lazy interference via mutexes and cycle detection, lazy frame axioms (for the strategies that use them)
 - **Numeric planning**: Full support for numeric fluents with SMT-based relaxed planning graph
 - **Bounded-integer action parameters & range variables**: finite-domain integer parameters (`Int[lb,ub]`) and integer-range quantifiers, compiled away before grounding (C++-native, no Python compiler)
 - **Native array fluents**: fixed-size array-valued fluents (Unified Planning's `ARRAY_FLUENTS` kind) compiled to ordinary scalar cells before solving — constant, action-parameter, and quantified indices are supported; state-dependent indices and object-parameterised arrays are not yet
 - **Native set fluents**: set-valued fluents (Unified Planning's `SET_FLUENTS` kind — `member`/`subseteq`/`disjoint`/`cardinality`/`add`/`remove`/`union`/`intersect`/`difference`, with full expression nesting) compiled to boolean membership cells before solving; cardinality lowers to a pseudo-boolean `COUNT`. User-type elements only (int and nested-set elements not yet)
-- **Declared state invariants**: PDDL `(:constraints (always φ))` asserted at every state
+- **Declared state invariants**: PDDL `(:constraints (always φ))` asserted at every state (sequential strategies)
 - **Symmetry breaking**: Object symmetry detection and breaking
-- **Preprocessing pipeline**: Integer-parameter instantiation, quantifier expansion, array/set lowering, reachability grounding, RPG-based action removal, CWA completion, invariant discovery, landmark analysis
+- **Preprocessing pipeline**: Integer-parameter instantiation, quantifier expansion, array/set lowering, reachability grounding, CWA completion, effect normalization, removal of fluents nothing reads, RPG-based action removal, invariant discovery, landmark analysis
 - **Unified Planning integration**: Plug-and-play with UP framework
 
-**Limitation**: Does not support PDDL actions that both delete and add the same fluent.
+An action with several effects on one fluent (for instance one that deletes and adds the same fact) follows Unified Planning's semantics: add after delete, increases add up, and two different assignments make the action inapplicable where both apply.
 
 ## Installation
 
@@ -49,6 +48,9 @@ package rather than a temporary isolated copy.
 ### Command Line
 
 ```bash
+# Default strategy (e-lin, ∃-step); the plan is written to plan.txt.1
+rantanplan -d domain.pddl -p problem.pddl
+
 # Sequential planning (satisficing by default)
 rantanplan -d domain.pddl -p problem.pddl --strategy seq
 
@@ -66,10 +68,13 @@ rantanplan -d domain.pddl -p problem.pddl --strategy r2e --output-plan solution.
 
 # Double-tail bidirectional search
 rantanplan -d domain.pddl -p problem.pddl --strategy flsc-dt
-
-# Core-guided lazy activation over exists-step encoding
-rantanplan -d domain.pddl -p problem.pddl --strategy cgb
 ```
+
+The command line writes each plan in IPC format to `plan.txt.1` (`.2`, … for
+the improving plans of the optimal and anytime modes); `--output-plan PATH`
+changes the base path. When the problem is one the planner does not handle,
+the status is `UNSUPPORTED_PROBLEM` and the reason is printed to stderr; a bad
+option is reported as `rantanplan: error: ...` with exit status 2.
 
 ### Declared state invariants
 
@@ -84,10 +89,11 @@ Declarations are trusted as given (PDDL-requirement semantics, no
 verification) and asserted at every state, initial and goal states
 included — a declaration inconsistent with the dynamics correctly makes
 the instance unsolvable. Only `always` constraints are supported
-(`sometime`-style constraints are rejected), and the `r2e` strategy
-rejects problems with invariants. Under parallel-step strategies the
-invariant is checked at step boundaries; `seq` gives exact PDDL 3
-semantics. Declaring known structure (e.g. an exactly-one invariant over
+(`sometime`-style constraints are rejected), and only the sequential
+strategies (`seq`, `seq-dt`) take problems with invariants: every other
+strategy, `r2e` included, reports `UNSUPPORTED_PROBLEM`, since a parallel
+step would be checked at its boundaries but not between its actions.
+Declaring known structure (e.g. an exactly-one invariant over
 numeric fluents) can speed up solving substantially.
 
 ### Search Modes
@@ -95,34 +101,37 @@ numeric fluents) can speed up solving substantially.
 | Mode | Description |
 |------|-------------|
 | `satisficing` | (default) Find first valid plan, return immediately |
-| `optimal` | Cost-optimal planning using Branch & Bound with abstract suffix. Returns `SOLVED_OPTIMALLY` when optimality is proven |
-| `anytime` | Continuously find improving plans, reporting each as it is found (each is also written to disk as `plan.txt.1`, `.2`, etc.) |
+| `optimal` | Cost-optimal planning using Branch & Bound with abstract suffix. Returns `SOLVED_OPTIMALLY` when optimality is proven; the proof covers plans of any length and can take much longer than finding the plans |
+| `anytime` | Continuously find improving plans, reporting each as it is found (the command line also writes each to disk as `plan.txt.1`, `.2`, etc.) |
+
+Final-value metrics are not optimised: the optimal and anytime modes report
+such problems as `UNSUPPORTED_PROBLEM`, and satisficing mode ignores the metric.
 
 ### Available Strategies
 
 | Strategy | Parallelism | Interference | Encoding | Notes |
 |----------|-------------|--------------|----------|-------|
 | `seq` | Sequential | N/A | Grounded | Classic planning |
-| `f` | ∀-step | Eager syntactic | Grounded | Basic parallel |
-| `f-p` | ∀-step | Eager + propagator | Grounded | Optimized |
+| `f` | ∀-step | Eager syntactic | Grounded | Basic parallel: mutex clauses up front, no propagator |
+| `f-p` | ∀-step | Eager + propagator | Grounded | Mutexes from a propagator |
 | `fl` | ∀-step | Lazy syntactic | Grounded | On-demand |
-| `fls` | ∀-step | Lazy semantic | Grounded | Advanced |
 | `flsc` | ∀-step | Lazy semantic | Chained | Best for ∀-step |
-| `fgs` | ∀-step | Eager semantic | Grounded | Experimental |
 | `fgsc` | ∀-step | Eager semantic | Chained | Experimental |
-| `e` | ∃-step | Eager syntactic | Grounded | Basic parallel |
+| `e` | ∃-step | Eager syntactic | Grounded | Basic parallel: step-order clauses up front (one per forbidden pair), no propagator |
+| `e-lin` | ∃-step | Eager syntactic | Grounded | **Default.** The pairs of `e` as Rintanen's linear chains |
+| `e-p` | ∃-step | Eager + propagator | Grounded | With cycle detection |
+| `e-fp` | ∃-step | Eager + propagator | Grounded | e-p + lazy frame-axiom propagator |
 | `el` | ∃-step | Lazy syntactic | Grounded | With cycle detection |
-| `els` | ∃-step | Lazy semantic | Grounded | Advanced |
 | `elsc` | ∃-step | Lazy semantic | Chained | Best for ∃-step |
-| `egs` | ∃-step | Eager semantic | Grounded | Experimental |
 | `egsc` | ∃-step | Eager semantic | Chained | Experimental |
 | `elsc-fp` | ∃-step | Lazy semantic | Chained | elsc + lazy frame-axiom propagator |
 | `r2e` | R2∃-step | ARPG-based order | R2E | Novel encoding |
-| `cgb` | ∃-step | Lazy semantic | Chained | Core-guided lazy activation |
 
-Strategy names encode components: **e**xists/**f**orall, **l**azy/ea**g**er, **s**emantic, **c**hain. Use `--list-strategies` for a full list with descriptions.
+Strategy names encode components: **e**xists/**f**orall, **l**azy/ea**g**er, **s**emantic, **c**hain; `-lin` linear chains, `-p` propagator, `-fp` frame-axiom propagator, `-dt` double-tail. Use `--list-strategies` for the full list of names.
 
-All strategies except the `-dt` variants and `cgb` support `--mode optimal` and `--mode anytime` for cost-optimal and anytime planning respectively.
+Semantic interference is only available with the chained encoder: the grounded encoder states each write to a fluent as its own equation, so two increases of one fluent in one step would count once.
+
+All strategies except the `-dt` variants support `--mode optimal` and `--mode anytime` for cost-optimal and anytime planning respectively.
 
 **Double-tail variants** (`seq-dt`, `f-dt`, `fl-dt`, `e-dt`, `el-dt`, etc.) use bidirectional (forward + backward) search for faster satisficing planning. Only compatible with `--mode satisficing`.
 
@@ -134,7 +143,8 @@ from unified_planning.shortcuts import *
 problem = Problem()
 # ... define problem ...
 
-# Unified Planning integration (auto-discovered)
+# Unified Planning integration (auto-discovered); writes plan files only
+# when the output_plan parameter is set
 with OneshotPlanner(name='rantanplan') as planner:
     result = planner.solve(problem)
     print(result.plan)
@@ -169,7 +179,7 @@ Python Frontend              C++ Backend (_rantanplan module)
                             └──────────────────────┘
 ```
 
-The Python frontend uses Unified Planning to parse PDDL, converts the problem to a flat plain-data IR, and calls the C++ backend in-process through a nanobind extension module (no subprocess, no serialization). Canonicalization that used to run in Python — quantifier removal, integer-parameter instantiation, CNF normalization — now happens in C++; the only optional Python-side compilation step is UP cross-product grounding (`--up-grounding`). The backend runs a preprocessing pipeline (integer-parameter instantiation, quantifier expansion, array and set lowering, reachability grounding, RPG-based action removal, symmetry detection), then encodes the problem as SMT and solves with Z3 using custom propagators.
+The Python frontend uses Unified Planning to parse PDDL, converts the problem to a flat plain-data IR, and calls the C++ backend in-process through a nanobind extension module (no subprocess, no serialization). Canonicalization that used to run in Python — quantifier removal, integer-parameter instantiation, CNF normalization — now happens in C++; the only optional Python-side compilation step is UP cross-product grounding (`--up-grounding`). The backend runs a preprocessing pipeline (integer-parameter instantiation, quantifier expansion, array and set lowering, reachability grounding, RPG-based action removal, symmetry detection), then encodes the problem as SMT and solves with Z3, with custom user propagators for the strategies that use them.
 
 ## Development
 
@@ -188,7 +198,7 @@ rm -rf build && pip install -e . --no-build-isolation
 pip install -e . --no-build-isolation --config-settings=cmake.build-type=Debug
 
 # Testing (suites live in tests/; test.py is a thin entry point)
-python test.py               # PDDL suite (all strategies/domains) + API-only suite
+python test.py               # PDDL suite (all strategies/domains, 8 jobs; -j N) + API-only suite
 python test.py --quick       # Fast PDDL subset + API-only suite
 python test.py --api-only    # Only the API-only feature tests (e.g. int parameters)
 python test.py -v            # Verbose output
