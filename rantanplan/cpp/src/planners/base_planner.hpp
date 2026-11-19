@@ -104,6 +104,10 @@ public:
     /// Whether the search ended due to timeout.
     bool timed_out() const { return timed_out_; }
 
+    /// Whether the last search proved that no plan of any length exists. A
+    /// step limit or a timeout proves nothing. Only branch-and-bound proves it.
+    bool unsolvability_proven() const { return unsolvability_proven_; }
+
     /// Set the arithmetic profile for Z3 solver tuning.
     void set_arithmetic_profile(ArithmeticProfile profile) { arithmetic_profile_ = profile; }
 
@@ -153,6 +157,7 @@ protected:
 
     bool solution_found_ = false;
     bool timed_out_ = false;
+    bool unsolvability_proven_ = false;
 
     /// Optional plan hook (set_intermediate_plan_callback). Concrete planners
     /// call notify_intermediate_plan() wherever they write plan.txt.N.

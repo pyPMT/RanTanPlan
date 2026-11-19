@@ -117,6 +117,7 @@ Plan BranchAndBoundPlanner::search() {
 
     solution_found_ = false;
     optimality_proven_ = false;
+    unsolvability_proven_ = false;
     timed_out_ = false;
     init_deadline();
 
@@ -243,6 +244,7 @@ Plan BranchAndBoundPlanner::search() {
             } else if (result == z3::unsat) {
                 if (std::isinf(upper_bound)) {
                     // Theorem 2: no continuation of any prefix reaches the goal.
+                    unsolvability_proven_ = true;
                     Logger::instance().info(
                         "\n*** UNSOLVABLE_PROVEN: no plan exists ***");
                     collect_statistics();

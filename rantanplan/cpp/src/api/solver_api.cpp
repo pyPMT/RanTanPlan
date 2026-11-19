@@ -379,6 +379,11 @@ ir::ResultIR solve(PreprocessedProblem& pipeline_result, const PlanCallback& on_
             }
             add_info(msg);
         }
+    } else if (planner->unsolvability_proven()) {
+        // Ahead of the timeout: the proof is complete whenever it came.
+        result.status = ir::SolveStatusIR::UNSOLVABLE_PROVEN;
+        add_info("Problem proven unsolvable: the search proved that no plan of any "
+                 "length exists.");
     } else if (planner->timed_out()) {
         result.status = ir::SolveStatusIR::TIMEOUT;
         if (config.is_info()) {

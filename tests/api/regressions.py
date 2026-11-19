@@ -2250,6 +2250,43 @@ def test_bb_sdac_actions_may_wait_for_a_cheaper_state():
             f"{strategy}: claimed optimal {[str(a) for a in r.plan.actions]}, but b ; a costs 2"
 
 
+def _spent_token_problem():
+    """p is a token: a spends it to make q, b spends it to make r. The goal
+    wants q and r, and no plan exists. The relaxation keeps p, so it reaches
+    both and preprocessing proves nothing."""
+    p, q, r = (Fluent(n, BoolType()) for n in ("p", "q", "r"))
+    problem = Problem("spent_token")
+    for f in (p, q, r):
+        problem.add_fluent(f, default_initial_value=False)
+    problem.set_initial_value(p(), True)
+    for name, made in (("a", q), ("b", r)):
+        act = InstantaneousAction(name)
+        act.add_precondition(p())
+        act.add_effect(p(), False)
+        act.add_effect(made(), True)
+        problem.add_action(act)
+    problem.add_goal(And(q(), r()))
+    return problem
+
+
+def test_bb_proof_that_no_plan_exists_is_unsolvable_proven():
+    """B&B's proof query, UNSAT with no plan found yet, proves that no plan of
+    any length exists (Theorem 2), but solve() reported it as a search that
+    ran out of steps, UNSOLVABLE_INCOMPLETELY. Satisficing search proves
+    nothing, and stays so."""
+    problem = _spent_token_problem()
+    for strategy in _registered("seq", "f", "e", "e-lin", "r2e"):
+        for how, r in (("optimal", solve(problem, optimal=True, strategy=strategy)),
+                       ("anytime", _solve_with(problem, strategy=strategy, mode="anytime"))):
+            assert r.status == PlanGenerationResultStatus.UNSOLVABLE_PROVEN, \
+                f"{how}, {strategy}: {r.status}"
+            assert any("no plan of any length" in m.message for m in r.log_messages), \
+                f"{how}, {strategy}: {r.log_messages}"
+        r = solve(problem, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.UNSOLVABLE_INCOMPLETELY, \
+            f"satisficing, {strategy}: {r.status}"
+
+
 def _split_instances_problem(move_to):
     """`copy` reads arr[ptr], an index the state decides, so term resolution
     splits it into one instance per value of ptr, each with the name and
@@ -2639,6 +2676,7 @@ CASES = [
     test_bb_abstract_actions_are_per_grounding,
     test_bb_loop_formulas_keep_external_support,
     test_bb_sdac_actions_may_wait_for_a_cheaper_state,
+    test_bb_proof_that_no_plan_exists_is_unsolvable_proven,
     test_split_instances_are_distinct_actions,
     test_a_product_with_an_unbounded_factor_is_not_pruned,
     test_a_derived_bound_near_int64_max_is_not_cast,
