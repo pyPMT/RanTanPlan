@@ -2467,6 +2467,85 @@ def test_a_number_beyond_64_bits_is_unsupported():
             f"{what}: {r.log_messages}"
 
 
+def _cleared_fluent_problem(name):
+    """`name` starts true and clear makes it false; the goal is not `name`.
+    Plan: [clear]."""
+    f = Fluent(name, BoolType())
+    p = Problem(f"cleared_{name}")
+    p.add_fluent(f, default_initial_value=False)
+    p.set_initial_value(f(), True)
+    clear = InstantaneousAction("clear")
+    clear.add_effect(f(), False)
+    p.add_action(clear)
+    p.add_goal(Not(f()))
+    return p
+
+
+def _kept_fluent_problem(name, numeric):
+    """`name` starts true, only drop clears it, and the goal keeps it. Beside
+    it, numeric: inc adds 1 to x, goal x >= 2 (plan [inc, inc]); else: act
+    sets y WHEN c, setc sets c, goal y (plan [setc, act])."""
+    f = Fluent(name, BoolType())
+    p = Problem(f"kept_{name}")
+    p.add_fluent(f, default_initial_value=False)
+    p.set_initial_value(f(), True)
+    drop = InstantaneousAction("drop")
+    drop.add_effect(f(), False)
+    p.add_action(drop)
+    if numeric:
+        x = Fluent("x", IntType())
+        p.add_fluent(x, default_initial_value=0)
+        inc = InstantaneousAction("inc")
+        inc.add_increase_effect(x(), 1)
+        p.add_action(inc)
+        p.add_goal(And(GE(x(), 2), f()))
+    else:
+        c, y = Fluent("c", BoolType()), Fluent("y", BoolType())
+        p.add_fluent(c, default_initial_value=False)
+        p.add_fluent(y, default_initial_value=False)
+        setc = InstantaneousAction("setc")
+        setc.add_effect(c(), True)
+        act = InstantaneousAction("act")
+        act.add_effect(y(), True, condition=c())
+        p.add_action(setc)
+        p.add_action(act)
+        p.add_goal(And(y(), f()))
+    return p
+
+
+def test_internal_names_are_not_planning_names():
+    """Z3 interns constants by name, and a state variable is named
+    <fluent>_<t>. The planners' and the frame module's own literals were
+    named the same way, so a fluent could be one of them:
+    - goal_at_<h>, the goal literal of the incremental planner (seq, e,
+      e-lin, ...): a fluent goal_at was assumed true at h, and the goal
+      not goal_at never held (UNSOLVABLE_INCOMPLETELY).
+    - link_at_<i>, the double-tail planner's link literal: the same with a
+      fluent link_at.
+    - fc_<n>_<t> and feq_<k>_<t>, the frame module's (-fp) reified condition
+      and equality bits: a fluent fc_<n> was tied to a condition, feq_<k> to
+      x keeping its value. The indices follow the module's layout, so a range
+      of names is tried.
+    They now have a '!' in their names, as B&B's literals do."""
+    for name, strategies in (("goal_at", ("seq", "e", "e-lin", "r2e", "elsc")),
+                             ("link_at", ("seq-dt", "e-dt", "elsc-dt"))):
+        for strategy in _registered(*strategies):
+            p = _cleared_fluent_problem(name)
+            r = solve(p, strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"{name}, {strategy}: {r.status}"
+            assert_valid(p, r.plan)
+    for k in range(8):
+        for name, numeric, strategies in ((f"feq_{k}", True, ("e-fp",)),
+                                          (f"fc_{k}", False, ("e-fp", "elsc-fp"))):
+            for strategy in _registered(*strategies):
+                p = _kept_fluent_problem(name, numeric)
+                r = solve(p, strategy=strategy)
+                assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                    f"{name}, {strategy}: {r.status}"
+                assert_valid(p, r.plan)
+
+
 def test_bad_options_are_usage_errors():
     """An option the planner cannot take is the caller's mistake: a
     UPUsageError when the engine is made, not a result status (the C++ side
@@ -2568,4 +2647,5 @@ CASES = [
     test_a_number_beyond_64_bits_is_unsupported,
     test_bad_options_are_usage_errors,
     test_a_negative_timeout_is_a_usage_error,
+    test_internal_names_are_not_planning_names,
 ]

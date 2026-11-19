@@ -93,7 +93,7 @@ void FrameAxiomModule::build_clause_shapes() {
         // Same redundancy the eager encode_frames skips, and for the same
         // reason — asked in the same words so the two cannot drift.  Worth
         // more here than there: a numeric shape also costs a reified
-        // feq_<shape>_<t> bit plus its posted biconditional per transition.
+        // feq!<shape>!<t> bit plus its posted biconditional per transition.
         // Under the chained encoder this drops EVERY numeric shape, leaving
         // the module purely boolean.
         if (grounded_->effects_determine_successor(eid)) continue;
@@ -195,11 +195,13 @@ void FrameAxiomModule::activate_transition_slots(int t) {
                   vf.get_action_variable(*literal_actions_[a], t));
 
     // One reified bit per distinct condition per timestep, shared by every
-    // explainer guarded by that condition.
+    // explainer guarded by that condition. Z3 interns constants by name, and
+    // state and action variables end in "_<t>": '!' keeps these bits apart
+    // (fc_<n>_<t> was the state variable of a 0-ary fluent named fc_<n>).
     for (uint32_t c = 0; c < num_condition_literals_; ++c) {
         const uint32_t literal = num_action_literals_ + c;
         const std::string name =
-            "fc_" + std::to_string(literal) + "_" + std::to_string(t);
+            "fc!" + std::to_string(literal) + "!" + std::to_string(t);
         z3::expr reified = ctx.bool_const(name.c_str());
         shared_->solver->add(
             reified == grounded_->convert_expr_id_to_z3(literal_conditions_[c], t));
@@ -214,7 +216,7 @@ void FrameAxiomModule::activate_transition_slots(int t) {
         z3::expr f_t  = grounded_->convert_expr_id_to_z3(fluent, t);
         z3::expr f_t1 = grounded_->convert_expr_id_to_z3(fluent, t + 1);
         const std::string name =
-            "feq_" + std::to_string(k) + "_" + std::to_string(t);
+            "feq!" + std::to_string(k) + "!" + std::to_string(t);
         z3::expr reified = ctx.bool_const(name.c_str());
         shared_->solver->add(reified == (f_t == f_t1));
         bind_slot(equality_bit_slot(k, t), reified);

@@ -73,9 +73,9 @@ void DoubleTailPlanner::add_timestep_constraints(int t) {
  *   - Link constraint: L(forward_depth, backward_start) forces state equivalence
  *
  * Link constraints with activation literals:
- * - Each iteration creates a new activation literal: link_at_i
- * - Formula includes: link_at_i => L(forward_depth, backward_start)
- * - Solver is called with assumption [link_at_i = true]
+ * - Each iteration creates a new activation literal: link_at!i
+ * - Formula includes: link_at!i => L(forward_depth, backward_start)
+ * - Solver is called with assumption [link_at!i = true]
  * - This allows incremental solving while testing different link positions
  */
 Plan DoubleTailPlanner::search() {
@@ -136,7 +136,9 @@ Plan DoubleTailPlanner::search() {
         }
 
         // Create link with activation literal: link_literal → L(forward_end, backward_start)
-        std::string link_var_name = "link_at_" + std::to_string(iteration);
+        // '!' keeps the name apart from every state and action variable
+        // (link_at_<i> was the state variable of a 0-ary fluent named link_at).
+        std::string link_var_name = "link_at!" + std::to_string(iteration);
         z3::expr link_literal = ctx_.bool_const(link_var_name.c_str());
         solver_.add(z3::implies(link_literal, create_link_constraints(forward_end, backward_start)));
 

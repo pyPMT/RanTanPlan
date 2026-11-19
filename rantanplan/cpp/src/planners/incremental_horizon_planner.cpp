@@ -84,7 +84,7 @@ Plan IncrementalHorizonPlanner::search() {
     //   if a plan of length k <= h exists, the solver represents it with actions
     //   at steps 0..k-1 and empty steps at k..h-1. Frame axioms propagate the
     //   goal state through the empty suffix so goal@h is satisfied. The single
-    //   literal goal_at_h therefore witnesses any plan length in [prev_h+1, h].
+    //   literal goal_at!h therefore witnesses any plan length in [prev_h+1, h].
     //
     // Plan length recovery after SAT:
     //   Scan forward from t=0 for the first step where all action variables are
@@ -116,7 +116,10 @@ Plan IncrementalHorizonPlanner::search() {
         // 2. Place ONE goal literal at the scheduled horizon h.
         //    Intermediate horizons in the batch do NOT get goal literals; the
         //    prefix-monotone + frame-axiom argument above covers them.
-        std::string goal_var_name = "goal_at_" + std::to_string(h);
+        // Z3 interns constants by name: '!' keeps this one apart from every
+        // state and action variable, whose names end in "_<t>" (goal_at_<h>
+        // was the state variable of a 0-ary fluent named goal_at).
+        std::string goal_var_name = "goal_at!" + std::to_string(h);
         z3::expr goal_literal = ctx_.bool_const(goal_var_name.c_str());
         solver_.add(z3::implies(goal_literal, encoder_.encode_goal(h)));
 

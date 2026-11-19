@@ -165,7 +165,7 @@ constant is created per horizon, permanently asserted behind an implication
 
 ```cpp
 // planners/incremental_horizon_planner.cpp
-std::string goal_var_name = "goal_at_" + std::to_string(h);
+std::string goal_var_name = "goal_at!" + std::to_string(h);
 z3::expr goal_literal = ctx_.bool_const(goal_var_name.c_str());
 solver_.add(z3::implies(goal_literal, encoder_.encode_goal(h)));
 

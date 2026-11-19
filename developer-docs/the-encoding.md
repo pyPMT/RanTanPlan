@@ -256,10 +256,10 @@ AtMost(at_a_0, at_b_0; 1)
 AtMost(at_a_1, at_b_1; 1)
 
 ; goal @ 1, gated behind the planner's assumption literal
-goal_at_1 → at_b_1
+goal_at!1 → at_b_1
 ```
 
-Z3, asked to satisfy this under the assumption `goal_at_1`, has exactly one
+Z3, asked to satisfy this under the assumption `goal_at!1`, has exactly one
 way: `at_b_1` must be true (goal), so `at_b` changed, so the frame axiom
 forces `move_a_b_0 ∨ move_b_a_0`; `move_b_a_0` requires the false `at_b_0`,
 so `move_a_b_0` is true. `extract_plan()` walks the timesteps, finds the

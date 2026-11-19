@@ -90,10 +90,10 @@ namespace rantanplan {
  *                             -> watched directly, nothing posted
  *   an effect condition       is a boolean-TYPED arbitrary FORMULA, e.g.
  *                             (and (>= (fuel t1) 3) (at t1 depot))
- *                             -> fresh bool fc_<literal>_<t>, and
+ *                             -> fresh bool fc!<literal>!<t>, and
  *                                fc == <the condition> posted to the solver
  *   "did the numeric fluent   is likewise a formula, over numeric terms
- *    keep its value"          -> fresh bool feq_<shape>_<t>, and
+ *    keep its value"          -> fresh bool feq!<shape>!<t>, and
  *                                feq == (f^t == f^{t+1}) posted
  *
  * So conditions and numeric equalities are handled IDENTICALLY — both reified,
@@ -148,8 +148,8 @@ namespace rantanplan {
  *
  *     slot  0..3   at(t1,depot)@0  at(t1,market)@0  on(c1,depot)@0  in(c1,t1)@0
  *     slot  4..8   drive_dm@0  drive_md@0  teleport@0  load_d@0  unload_m@0
- *     slot  9      fc_5_0        (reified has_charge(t1)@0)
- *     slot 10      feq_4_0       (reified fuel(t1)@0 == fuel(t1)@1)
+ *     slot  9      fc!5!0        (reified has_charge(t1)@0)
+ *     slot 10      feq!4!0       (reified fuel(t1)@0 == fuel(t1)@1)
  *     slot 11..    the same for timestep 1
  *
  *   so drive_md at timestep 0 is slot 0*11 + 4 + 1 = 5, and at timestep 1 it
@@ -435,8 +435,8 @@ private:
     ///        6  teleport@0                         -1
     ///        7  load_d@0                           -1
     ///        8  unload_m@0                         -1
-    ///        9  fc_5_0   (has_charge(t1)@0)       -1
-    ///       10  feq_4_0  (fuel@0 == fuel@1)       -1
+    ///        9  fc!5!0   (has_charge(t1)@0)       -1
+    ///       10  feq!4!0  (fuel@0 == fuel@1)       -1
     ///
     /// The tail block (timestep num_transitions_) exists with live BOOLEAN
     /// HEAD slots only — it is the "after" side of the last transition.  Its
