@@ -7,13 +7,14 @@ from unified_planning.engines.mixins.oneshot_planner import OptimalityGuarantee
 from unified_planning.engines.mixins.anytime_planner import AnytimePlannerMixin, AnytimeGuarantee
 from unified_planning.engines import PlanGenerationResultStatus, Engine, CompilationKind, ValidationResultStatus
 from unified_planning.engines.compilers import Grounder
-from unified_planning.exceptions import UPException
+from unified_planning.exceptions import UPException, UPUsageError
 from .converter import convert_problem
 from unified_planning.model import ProblemKind, Problem
 from unified_planning.plans import SequentialPlan, ActionInstance
 from unified_planning.shortcuts import get_environment
 from unified_planning.model.fluent import get_all_fluent_exp
 
+import math
 import queue
 import sys
 import threading
@@ -35,7 +36,7 @@ class _RantanPlanBase(Engine):
         Engine.__init__(self)
 
         self._verbosity = options.get('verbosity')
-        self._strategy = options.get('strategy', 'elsc')
+        self._strategy = options.get('strategy', 'e-lin')
         self._max_steps = options.get('max_steps')
         self._persist_clauses = options.get('persist_clauses', True)
         self._symmetries = options.get('symmetries', False)
@@ -52,6 +53,53 @@ class _RantanPlanBase(Engine):
         # Set per solve call when the caller passes output_stream (UP's
         # official log channel); None means stdout as usual.
         self._output_stream: Optional[IO[str]] = None
+        self._check_options()
+
+    # ── Options ──────────────────────────────────────────────────────────
+
+    _MODES = ("satisficing", "optimal", "anytime")
+    _HORIZON_SCHEDULES = ("linear", "arithmetic", "geometric", "doubling")
+    _VERBOSITIES = ("silent", "info", "verbose", "debug")
+
+    def _check_options(self) -> None:
+        """Raise UPUsageError on an option the planner cannot take. A bad
+        option is the caller's mistake, not the problem's, so it is not a
+        result status (the planner rejected these deep in the C++ side,
+        which surfaced as INTERNAL_ERROR)."""
+        if _rantanplan is not None and self._strategy not in _rantanplan.list_strategies():
+            raise UPUsageError(
+                f"unknown strategy '{self._strategy}'; the strategies are "
+                + ", ".join(_rantanplan.list_strategies()))
+        for name, value, allowed in (("mode", self._mode, self._MODES),
+                                     ("horizon_schedule", self._horizon_schedule,
+                                      self._HORIZON_SCHEDULES),
+                                     ("verbosity", self._verbosity, self._VERBOSITIES)):
+            if value is not None and value not in allowed:
+                raise UPUsageError(f"unknown {name} '{value}'; it is one of "
+                                   + ", ".join(allowed))
+        if self._max_steps is not None and (
+                isinstance(self._max_steps, bool) or not isinstance(self._max_steps, int)
+                or self._max_steps <= 0):
+            raise UPUsageError(
+                f"max_steps must be a positive integer, not {self._max_steps!r}")
+        # The double-tail strategies (the registry's <name>-dt) search by plan
+        # length, from both ends: no search by cost, and the linear schedule.
+        if self._strategy.endswith("-dt"):
+            if self._mode in ("optimal", "anytime"):
+                raise UPUsageError(
+                    f"mode '{self._mode}' is incompatible with the double-tail "
+                    f"strategy '{self._strategy}'; use one without -dt (e.g. "
+                    f"'fl' instead of 'fl-dt')")
+            if self._horizon_schedule not in (None, "linear"):
+                raise UPUsageError(
+                    f"horizon_schedule '{self._horizon_schedule}' is incompatible "
+                    f"with the double-tail strategy '{self._strategy}'; use one "
+                    f"without -dt, or the linear schedule")
+
+    @staticmethod
+    def _check_timeout(timeout: Optional[float]) -> None:
+        if timeout is not None and timeout < 0:
+            raise UPUsageError(f"timeout must be non-negative, not {timeout!r}")
 
     # ── Verbosity helpers ────────────────────────────────────────────────
 
@@ -182,7 +230,8 @@ class _RantanPlanBase(Engine):
         if self._output_plan is not None:
             command.extend(["--output-plan", self._output_plan])
         if timeout:
-            command.extend(["--timeout", str(int(timeout))])
+            # Whole seconds, rounded up: int() made 0.5 s a 0, no limit.
+            command.extend(["--timeout", str(math.ceil(timeout))])
 
         return command
 
@@ -486,11 +535,8 @@ class _RantanPlanBase(Engine):
                 final_plan = self._build_plan(result_ir.plan, compiled_problem,
                                               compilation_result)
             except Exception as e:
-                self._log_error(f"Error mapping plan back: {e}")
-                return PlanGenerationResult(
-                    PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                    log_messages=[LogMessage(level=LogLevel.ERROR, message=f"Error mapping plan back: {e}")]
-                )
+                return self._internal_error(
+                    RuntimeError(f"Error mapping plan back: {e}"))
         self._log(f"Status from planner: {status.name}")
 
         # Validate the plan if one was found
@@ -531,13 +577,35 @@ class _RantanPlanBase(Engine):
         if problem.kind <= supported:
             return None
         unsupported = problem.kind.features - supported.features
+        return self._refused(
+            "RantanPlan does not support these problem features"
+            + (f" in {self._mode} mode" if self._mode else "") + ": "
+            + ", ".join(sorted(unsupported)))
+
+    def _refused(self, reason: str) -> PlanGenerationResult:
+        """UNSUPPORTED_PROBLEM, with @p reason as an ERROR log message: the
+        problem asks for something the planner does not handle (a feature
+        outside supported_kind(), a converter refusal, or an
+        UnsupportedProblemError from the planner's passes or strategy)."""
         return PlanGenerationResult(
             PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, None, self.name,
-            log_messages=[LogMessage(
-                LogLevel.ERROR,
-                "RantanPlan does not support these problem features"
-                + (f" in {self._mode} mode" if self._mode else "") + ": "
-                + ", ".join(sorted(unsupported)))])
+            log_messages=[LogMessage(LogLevel.ERROR, reason)])
+
+    def _internal_error(self, error: Exception) -> PlanGenerationResult:
+        """INTERNAL_ERROR, with the exception as an ERROR log message."""
+        return PlanGenerationResult(
+            PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
+            log_messages=[LogMessage(LogLevel.ERROR, str(error))])
+
+    def _prepare_or_refuse(self, problem: Problem):
+        """_prepare_problem, or an UNSUPPORTED_PROBLEM result if the converter
+        or the wrapper's own checks refuse the problem (UPException), e.g. a
+        boolean fluent whose default is true. Returns (prepared, refusal),
+        exactly one of them None."""
+        try:
+            return self._prepare_problem(problem), None
+        except UPException as e:
+            return None, self._refused(str(e))
 
     def _solve_in_process(self, problem: Problem,
                           timeout: Optional[float] = None,
@@ -550,6 +618,7 @@ class _RantanPlanBase(Engine):
             raise UPException(
                 "The _rantanplan extension module is not built. Run "
                 "'pip install -e . --no-build-isolation' first.")
+        self._check_timeout(timeout)
 
         rejected = self._unsupported_result(problem)
         if rejected is not None:
@@ -564,23 +633,25 @@ class _RantanPlanBase(Engine):
                 output_stream.write(text + "\n")
             _rantanplan.set_log_sink(_sink)
         try:
-            compiled_problem, compilation_result, problem_ir = \
-                self._prepare_problem(problem)
+            prepared, refusal = self._prepare_or_refuse(problem)
+            if refusal is not None:
+                return refusal
+            compiled_problem, compilation_result, problem_ir = prepared
 
             args = self._build_args(timeout)
             self._log_verbose(f"Solving in-process: {' '.join(args)}")
 
+            # The reason for a refusal or an error travels as an ERROR log
+            # message in the result; the CLI prints it.
             try:
                 preprocessed = _rantanplan.preprocess(problem_ir, args)
                 result_ir = _rantanplan.solve(preprocessed)
                 return self._convert_result(
                     result_ir, compiled_problem, compilation_result, problem)
+            except _rantanplan.UnsupportedProblemError as e:
+                return self._refused(str(e))
             except Exception as e:
-                self._log_error(f"An error occurred: {e}")
-                return PlanGenerationResult(
-                    PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                    log_messages=[LogMessage(level=LogLevel.ERROR, message=str(e))]
-                )
+                return self._internal_error(e)
         finally:
             if output_stream is not None:
                 _rantanplan.set_log_sink(None)
@@ -611,9 +682,9 @@ class RantanPlanPlanner(_RantanPlanBase, OneshotPlannerMixin):
 class RantanPlanOptimalPlanner(_RantanPlanBase, OneshotPlannerMixin):
 
     def __init__(self, **options):
-        _RantanPlanBase.__init__(self, **options)
+        # Force optimal mode (before the option checks, which depend on it)
+        _RantanPlanBase.__init__(self, **dict(options, mode="optimal"))
         OneshotPlannerMixin.__init__(self)
-        self._mode = "optimal"  # Force optimal mode
 
     @staticmethod
     def supported_kind():
@@ -641,9 +712,9 @@ class RantanPlanOptimalPlanner(_RantanPlanBase, OneshotPlannerMixin):
 class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
 
     def __init__(self, **options):
-        _RantanPlanBase.__init__(self, **options)
+        # Force anytime mode (before the option checks, which depend on it)
+        _RantanPlanBase.__init__(self, **dict(options, mode="anytime"))
         AnytimePlannerMixin.__init__(self)
-        self._mode = "anytime"  # Force anytime mode
 
     @staticmethod
     def supported_kind():
@@ -678,6 +749,7 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
             raise UPException(
                 "The _rantanplan extension module is not built. Run "
                 "'pip install -e . --no-build-isolation' first.")
+        self._check_timeout(timeout)
 
         rejected = self._unsupported_result(problem)
         if rejected is not None:
@@ -686,8 +758,11 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
 
         self._output_stream = output_stream
         try:
-            compiled_problem, compilation_result, problem_ir = \
-                self._prepare_problem(problem)
+            prepared, refusal = self._prepare_or_refuse(problem)
+            if refusal is not None:
+                yield refusal
+                return
+            compiled_problem, compilation_result, problem_ir = prepared
 
             args = self._build_args(timeout)
             self._log_verbose(f"Solving anytime in-process: {' '.join(args)}")
@@ -735,7 +810,8 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
                         except Exception as e:
                             self._log_error(f"Error mapping intermediate plan back: {e}")
                             continue
-                        self._log(f"Improving plan found ({len(plan.actions)} actions)")
+                        # Printing it is the caller's call (the CLI does);
+                        # the native log has its own "Improved plan" line.
                         yield PlanGenerationResult(
                             PlanGenerationResultStatus.INTERMEDIATE, plan, self.name)
                     elif kind == "final":
@@ -745,11 +821,10 @@ class RantanPlanAnytimePlanner(_RantanPlanBase, AnytimePlannerMixin):
                         return
                     else:  # error
                         worker.join()
-                        self._log_error(f"An error occurred: {payload}")
-                        yield PlanGenerationResult(
-                            PlanGenerationResultStatus.INTERNAL_ERROR, None, self.name,
-                            log_messages=[LogMessage(level=LogLevel.ERROR,
-                                                     message=str(payload))])
+                        if isinstance(payload, _rantanplan.UnsupportedProblemError):
+                            yield self._refused(str(payload))
+                        else:
+                            yield self._internal_error(payload)
                         return
             finally:
                 # Runs on GeneratorExit (abandonment) and exceptions as well

@@ -20,8 +20,10 @@
 #include "../planners/propagators/modules/exists_cycle_module.hpp"
 #include "../planners/propagators/modules/forall_mutex_module.hpp"
 #include "../planners/propagators/modules/frame_axiom_module.hpp"
+#include "../config/config.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
+#include "../util/unsupported_problem_error.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -40,6 +42,14 @@ static bool is_none(InterferenceKind kind) {
 static bool is_semantic(InterferenceKind kind) {
     return kind == InterferenceKind::EagerSemantic ||
            kind == InterferenceKind::LazySemantic;
+}
+
+/// The modules whose manages_parallelism_constraints() is true: with one of
+/// them the planner never calls encode_parallelism.
+static bool manages_parallelism(PropagatorModuleKind kind) {
+    return kind == PropagatorModuleKind::ForallEager ||
+           kind == PropagatorModuleKind::ForallLazy ||
+           kind == PropagatorModuleKind::ExistsCycle;
 }
 
 void StrategyFactory::validate(const StrategySpec& spec,
@@ -80,6 +90,29 @@ void StrategyFactory::validate(const StrategySpec& spec,
             "(Forall/Exists semantics need interference for mutex constraints)");
     }
 
+    // The exists-step chains forbid the pairs of the step order unit by unit
+    // (InterferenceOracle::interference_units), which split the syntactic
+    // interference relation, and the order is built from the eager graph.
+    // encode_parallelism writes them, which the planner skips when a module
+    // manages parallelism.
+    if (spec.estep_mutexes == EstepMutexes::Chains) {
+        if (spec.semantics != SemanticsKind::Exists) {
+            throw std::invalid_argument(
+                "Exists-step chains require Exists semantics");
+        }
+        if (spec.interference != InterferenceKind::EagerSyntactic) {
+            throw std::invalid_argument(
+                "Exists-step chains require eager syntactic interference: "
+                "they split the syntactic interference relation by fluent, "
+                "and the step order is built from the eager graph");
+        }
+        if (std::any_of(spec.propagator.begin(), spec.propagator.end(), manages_parallelism)) {
+            throw std::invalid_argument(
+                "Exists-step chains are encoded up front, and a propagator "
+                "module that manages parallelism would replace them");
+        }
+    }
+
     if (spec.propagator.count(PropagatorModuleKind::FrameAxiom) &&
         uses_double_tail(spec)) {
         throw std::invalid_argument(
@@ -98,6 +131,31 @@ void StrategyFactory::validate(const StrategySpec& spec,
 }
 
 void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
+    if (uses_branch_and_bound(spec) &&
+        problem.has_metric() && problem.has_state_dependent_costs() &&
+        sdac_unsafe(spec)) {
+        Logger::instance().info(
+            "SDAC detected with exists-step semantics — downgrading to "
+            "forall semantics for sound cost evaluation.");
+        spec.semantics = SemanticsKind::Forall;
+        spec.estep_mutexes = EstepMutexes::Pairs;  // validate: chains are exists-step only
+        if (spec.propagator.count(PropagatorModuleKind::ExistsCycle)) {
+            spec.propagator.erase(PropagatorModuleKind::ExistsCycle);
+            spec.propagator.insert(PropagatorModuleKind::ForallLazy);
+        }
+    }
+
+    if (uses_branch_and_bound(spec) &&
+        problem.has_metric() && problem.has_state_dependent_costs()) {
+        Logger::instance().info(
+            "SDAC detected: abstract suffix uses RPG-derived cost lower bounds.");
+    }
+
+    check_supported(spec, problem, Config::instance().planner.strategy);
+}
+
+void StrategyFactory::check_supported(const StrategySpec& spec, const Problem& problem,
+                                      const std::string& name) {
     // Declared numeric bounds (bounded int/real fluents) hold in every state a
     // plan passes through. The Grounded encoder asserts them at every concrete
     // timestep (encode_state_constraints), and the R2E encoder on every chain
@@ -113,23 +171,28 @@ void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
             "f, seq or r2e.");
     }
 
-    if (uses_branch_and_bound(spec) &&
-        problem.has_metric() && problem.has_state_dependent_costs() &&
-        sdac_unsafe(spec)) {
-        Logger::instance().info(
-            "SDAC detected with exists-step semantics — downgrading to "
-            "forall semantics for sound cost evaluation.");
-        spec.semantics = SemanticsKind::Forall;
-        if (spec.propagator.count(PropagatorModuleKind::ExistsCycle)) {
-            spec.propagator.erase(PropagatorModuleKind::ExistsCycle);
-            spec.propagator.insert(PropagatorModuleKind::ForallLazy);
-        }
+    // Declared state invariants must hold in every state of the plan. Only
+    // sequential search, with the Grounded encoder, asserts them at each one:
+    if (problem.state_invariants().empty()) return;
+    // - The R2E encoder deliberately skips state constraints
+    //   (chain-substituted intermediate states).
+    if (spec.encoder == EncoderFamily::R2E) {
+        throw UnsupportedProblemError(
+            "Strategy '" + name + "' (R2E encoder) does not support declared "
+            "state invariants ((:constraints (always ...))). Use seq instead.");
     }
-
-    if (uses_branch_and_bound(spec) &&
-        problem.has_metric() && problem.has_state_dependent_costs()) {
-        Logger::instance().info(
-            "SDAC detected: abstract suffix uses RPG-derived cost lower bounds.");
+    // - Parallel semantics assert them between steps, but the plan runs a
+    //   step's actions one after another, through states in between that
+    //   nothing checks: on counters with (always (<= x y)), e and f put
+    //   inc_x and inc_y in one step and return x = 1 > y = 0 after inc_x.
+    if (spec.semantics != SemanticsKind::Sequential) {
+        const char* semantics =
+            spec.semantics == SemanticsKind::Forall ? "forall-step" : "exists-step";
+        throw UnsupportedProblemError(
+            "Strategy '" + name + "' (" + semantics + " semantics) does not "
+            "support declared state invariants ((:constraints (always ...))): "
+            "they are checked between steps, not between the actions of one "
+            "step. Use seq instead.");
     }
 }
 
@@ -181,7 +244,8 @@ static std::unique_ptr<ParallelismStrategy> create_parallelism(
                                                      interference.graph);
         case SemanticsKind::Exists:
             return std::make_unique<ExistsSemantics>(std::move(interference.oracle),
-                                                     interference.graph);
+                                                     interference.graph,
+                                                     spec.estep_mutexes);
     }
     throw std::invalid_argument("Unknown semantics kind");
 }
@@ -221,6 +285,10 @@ std::unique_ptr<PropagatorStrategy> StrategyFactory::create_propagator(
     const Problem& problem, BaseEncoder& encoder) {
 
     const auto& mods = spec.propagator;
+
+    // Without modules a propagator would only take a callback for every
+    // variable Z3 assigns, with nothing to act on.
+    if (mods.empty()) return nullptr;
 
     // Enable lazy frame mode in the encoder if frame axioms are active.
     //

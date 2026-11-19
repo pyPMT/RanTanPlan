@@ -42,7 +42,10 @@ QUICK_TEST_DIRS = [
 QUICK_STRATEGIES = [
     "seq",        # No parallelism module (baseline)
     "r2e",        # R2E encoder, no parallelism module
-    "f",          # ForallEager module (eager syntactic)
+    "f",          # No module: forall mutex clauses up front (eager syntactic)
+    "f-p",        # ForallEager module (eager syntactic)
+    "e",          # No module: exists step-order clauses up front (eager syntactic)
+    "e-lin",      # No module: exists step-order linear chains up front (eager syntactic)
     "flsc",       # ForallLazy module (lazy semantic, chained)
     "flsc-dt",    # ForallLazy module + DoubleTail planner
     "elsc",       # ExistsCycle module (lazy semantic, chained)
@@ -52,11 +55,34 @@ QUICK_STRATEGIES = [
 
 TIMEOUT = 60  # seconds per test
 
-## Strategies to test with --mode optimal (replaces the old -opt registry entries)
+# Optimal-mode tests check that the plan is valid, not that optimality was
+# proven: B&B returns its best plan, as SOLVED_SATISFICING, when the time runs
+# out. Since the optimality proof covers plans longer than the horizon, proving
+# takes far longer than finding the first plan, so a short limit keeps the
+# evidence the same. The optimality claims themselves are guarded by the
+# targeted tests in tests/api/regressions.py (test_bb_*).
+OPTIMAL_TIMEOUT = 20  # seconds per optimal-mode test: about 3x the slowest first
+                      # plan outside OPTIMAL_SLOW_FIRST_PLAN (delivery seq, 6.5 s idle)
+
+# Optimal-mode configurations whose FIRST plan takes too long for
+# OPTIMAL_TIMEOUT under the suite's parallel load; they keep TIMEOUT.
+# 2026-11-18, solving time to the first plan, single runs on an idle box:
+# factory-robot seq 16.1 s, elsc 10.0 s; logistics-strips-typed seq 5.3 s
+# (29 queries); at a 10 s limit each timed out under -j 8.
+OPTIMAL_SLOW_FIRST_PLAN = {
+    "factory-robot": {"seq", "elsc"},
+    "logistics-strips-typed": {"seq"},
+}
+
+## Strategies to test with --mode optimal (replaces the old -opt registry entries).
+## B&B is one planner; what varies is the encoder and the step semantics, so one
+## strategy per (encoder, semantics) pair, and e-lin, the default, for its
+## chains: the propagator and lazy-interference variants (f-p, e-p, fl, flsc,
+## el) add nothing B&B-specific.
 OPTIMAL_MODE_STRATEGIES = [
     "seq", "r2e",
-    "f", "f-p", "fl", "flsc",
-    "e", "el", "elsc",
+    "f",
+    "e", "e-lin", "elsc",
 ]
 
 QUICK_OPTIMAL_MODE_STRATEGIES = [
@@ -75,7 +101,7 @@ QUICK_OPTIMAL_MODE_STRATEGIES = [
 # only, so every other strategy still covers it.
 #
 # A skip must be justified by a measurement, not by "it was red". Timings below
-# are single runs on an unloaded box; under the suite's default -j 4 both tip
+# are single runs on an unloaded box; under the suite's -j 4 default of the time both tip
 # over well before their solo time, which is why they surfaced as flaky rather
 # than as consistent failures.
 SKIP_CONFIGS = {
@@ -191,7 +217,8 @@ def run_test(name, domain, problem, strategy, verbose=False, up_grounding=False,
 
         engine_name = 'rantanplan-optimal' if mode == 'optimal' else 'rantanplan'
         with OneshotPlanner(name=engine_name, params=params) as planner:
-            result = planner.solve(prob, timeout=TIMEOUT)
+            fast = mode == "optimal" and strategy not in OPTIMAL_SLOW_FIRST_PLAN.get(name, ())
+            result = planner.solve(prob, timeout=OPTIMAL_TIMEOUT if fast else TIMEOUT)
 
         # Corpus-wide invariant: one ground atom has exactly one ExprID.
         # Everything that groups by fluent id assumes it — the chained encoder's
@@ -279,7 +306,7 @@ def _run_parallel(work_items, total, jobs):
 # Entry point used by tests.cli
 # ---------------------------------------------------------------------------
 
-def run(quick=False, verbose=False, up_grounding=False, jobs=4):
+def run(quick=False, verbose=False, up_grounding=False, jobs=8):
     """Run the PDDL suite. Prints a section header and one line per test;
     returns (passed, failed, failures) where failures is [(label, detail)]."""
     all_strategies = get_strategies()

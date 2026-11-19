@@ -45,8 +45,8 @@ grounding, by two mechanisms:
   values as trailing parameters, which the Python plan mapping drops (it
   zips against the lifted UP signature). Inner terms resolve
   innermost-first, so `f(g(h(x)))` chains ghost equalities. Object fluents
-  are total under CWA (an uninitialised one is a hard error), so a ghost
-  never introduces undefinedness.
+  are total under CWA (an uninitialised one is refused as
+  `UNSUPPORTED_PROBLEM`), so a ghost never introduces undefinedness.
 
 - **Per-position instance splitting** (state-dependent indices, `a[ptr]` /
   `a[b[i]]`). An int-typed ghost has no grounder join to enumerate it, so
@@ -61,11 +61,15 @@ grounding, by two mechanisms:
 Davesa et al. Def. 9, stated once and cited by every lowering:
 
 1. *Statically decidable* ⊥ (constant indices): ⊥ propagates strictly
-   through every operator except OR and COUNT; a ⊥ *conditional* effect is
-   dropped (the action stays applicable — the guarded one-past-the-end
-   write); a ⊥ *unconditional* effect or a ⊥-collapsed precondition
-   discards the instance. Goals, invariants, and the initial state are
-   strict: ⊥ there is a hard modelling error.
+   through every operator except OR and COUNT; a *conditional* effect whose
+   condition is ⊥ is dropped (it never fires), and one whose target or
+   value is ⊥ is dropped with its negated condition joining the
+   precondition, so the action is inapplicable where the condition holds
+   (the instance is discarded if the condition always holds; a guarded
+   one-past-the-end write keeps its action, as its guard is false there);
+   a ⊥ *unconditional* effect or a ⊥-collapsed precondition discards the
+   instance. Goals, invariants, and the initial state are strict: ⊥ there
+   is a modelling error, refused as `UNSUPPORTED_PROBLEM`.
 2. *Runtime* definedness (state-dependent indices): re-stated as
    conditions via the split above — an out-of-bounds pointer state
    satisfies no in-range instance ("read of ⊥ ⇒ inapplicable" as an
@@ -77,8 +81,8 @@ Davesa et al. Def. 9, stated once and cited by every lowering:
    disjunction — `φ` becomes `⋁_o (t = o ∧ φ[t → o])`, the Exists-rewrite
    done mechanically (sound and exhaustive because object fluents are
    total). State-dependent indices in goals, and any nesting in
-   invariants/initial state, are rejected with a rewrite hint, since
-   nothing there can host a split.
+   invariants/initial state, are refused (`UNSUPPORTED_PROBLEM`) with a
+   rewrite hint, since nothing there can host a split.
 
 Two shapes are resolved by the pass but currently unreachable through the
 UP API, which refuses fluent-containing effect *targets*
@@ -102,7 +106,10 @@ compiles arrays into ordinary scalar fluents:
 - Each array fluent becomes **one scalar cell fluent per defined position**,
   minted in row-major order (`board` → `board[0]`, `board[1]`, `board[2]`);
   the array fluent schema itself is dropped. Positions listed as `undefined`
-  are never minted.
+  are never minted. A cell whose name a declared fluent or an earlier cell
+  already has (a fluent declared as `"a[0]"`, or a 2-D `cc_b` and a 1-D
+  `cc_b[0]`) is named `a[i]!k` instead, with the first free `k`, since
+  fluents are identified by name.
 - Each **constant-index access** `a[c]` — in a precondition, effect target,
   effect value, cost, goal, invariant, or initial-state entry — is rewritten
   to its cell (rules L1/L3). A cell of an array whose element type is bounded
@@ -120,11 +127,11 @@ know arrays existed.
 *inside an action* discards that ground instance — exactly as int-parameter
 instantiation discards an infeasible binding; after instantiation a literal
 `a[7]` and an `a[i]` folded to `i = 7` are indistinguishable. The same access
-in a goal or the initial state is a hard error (the model is ill-formed). An
-intra-action collision where two effects fold onto the *same* cell also
-discards the instance (the chained encoder keeps only the first write per
-cell); if *every* instance of a schema collides, that's an unconditionally
-broken model and a hard error.
+in a goal or the initial state is refused as `UNSUPPORTED_PROBLEM` (the
+model is ill-formed). Two effects of one action that fold onto the *same*
+cell are kept: a cell is an ordinary fluent, so `EffectNormalizationPass`
+combines the writes (see
+[`preprocessing-and-strategy.md`](preprocessing-and-strategy.md)).
 
 **Why this needs no downstream changes.** A cell is an ordinary scalar
 grounded fluent, so with constant indices the lowered problem is bit-for-bit

@@ -4,6 +4,7 @@
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
 #include "../util/stats.hpp"
+#include "../util/unsupported_problem_error.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -151,7 +152,7 @@ private:
         // After IntParameterInstantiation the bound is ground, but it may still
         // be constant arithmetic (e.g. `lc - 1` with lc substituted) — fold it.
         if (auto value = fold_const_int(id, pool_)) return *value;
-        throw std::invalid_argument(
+        throw UnsupportedProblemError(
             "Range variable '" + var_name + "' has a non-constant bound (" +
             pool_.to_string(id) + "); integer parameters must be instantiated first.");
     }

@@ -5,6 +5,7 @@
 #include "../problem/expr_walk.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
+#include "../util/unsupported_problem_error.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -110,7 +111,7 @@ public:
         ExprID value = asn.value_id();
         if (!(pool_.is_function_application(value) &&
               pool_.op(value) == ExprOperator::SET_CONSTANT)) {
-            throw std::runtime_error(
+            throw UnsupportedProblemError(
                 "Initial value of set fluent '" + f->name() +
                 "' is not a set constant (" + pool_.to_string(value) + ").");
         }
@@ -265,7 +266,7 @@ private:
             return;
         }
         if (ee.kind() != EffectExpression::Kind::ASSIGN)
-            throw std::runtime_error("Set fluent '" + f->name() +
+            throw UnsupportedProblemError("Set fluent '" + f->name() +
                                      "' has a non-assign (increase/decrease) effect in " + ctx);
         lower_set_effect(*f, ee.fluent_id(), ee.value_id(), cond, out, ctx);
     }
@@ -281,7 +282,7 @@ private:
             bool has_add = false, has_remove = false;
             for (const auto& op : chain) (op.second ? has_add : has_remove) = true;
             if (has_add && has_remove)
-                throw std::runtime_error(
+                throw UnsupportedProblemError(
                     "Mixed add/remove chain onto set fluent '" + f.name() +
                     "' is not supported in v1 (" + ctx + ").");
             for (const auto& [elem, is_add] : chain)

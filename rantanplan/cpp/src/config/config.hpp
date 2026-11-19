@@ -52,7 +52,7 @@ public:
     } rpg;
     
     struct Planner {
-        std::string strategy = "elsc";  ///< Strategy name (looked up in StrategyRegistry)
+        std::string strategy = "e-lin";  ///< Strategy name (looked up in StrategyRegistry)
         std::string mode = "satisficing";  ///< Search mode: satisficing, optimal, anytime
         /// Base path for plan files in IPC format (<path>.1, .2, ...). Empty =
         /// write none: the library writes files only when asked, and the

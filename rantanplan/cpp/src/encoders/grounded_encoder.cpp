@@ -4,6 +4,7 @@
 #include "../util/logger.hpp"
 #include "../config/config.hpp"
 #include <iostream>
+#include <cmath>
 #include <functional>
 
 namespace rantanplan {
@@ -430,7 +431,17 @@ z3::expr GroundedEncoder::encode_state_constraints(int t) {
     // over-approximations, so t+1 is sound for them.
     for (const auto& bound : state_constraints_.bounds) {
         z3::expr fluent = convert_expr_id_to_z3(bound.fluent_id, t + 1);
-        z3::expr val = fluent.is_int()
+        const bool integer = fluent.is_int();
+        // A bound that is not a finite double bounds nothing, and an integer
+        // fluent's values are int64 (the IR's), so a bound beyond that range
+        // is redundant: skip both rather than cast. (The cast overflowed: a
+        // bound of 2^63-1, rounded outward to the double 2^63, became
+        // INT64_MIN, and x <= INT64_MIN cut off every plan.)
+        if (!std::isfinite(bound.bound) ||
+            (integer && !(bound.bound >= -0x1p63 && bound.bound < 0x1p63))) {
+            continue;
+        }
+        z3::expr val = integer
             ? ctx_.int_val(static_cast<int64_t>(bound.bound))
             : variable_factory_.real_val(bound.bound);
         if (bound.is_lower) {

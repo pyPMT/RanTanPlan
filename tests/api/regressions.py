@@ -8,17 +8,22 @@ from fractions import Fraction
 
 from unified_planning.shortcuts import (
     Fluent, InstantaneousAction, Problem, ArrayType, BoolType, IntType, RealType,
-    UserType, Object, And, Count, Equals, GE, GT, Iff, Int, LE, LT, Not, Or, Plus, Times,
+    UserType, Object, Always, And, Count, Equals, GE, GT, Iff, Int, LE, LT, Not, Or, Plus,
+    Real, Times, AnytimePlanner, OneshotPlanner,
 )
+from unified_planning.model.metrics import MinimizeActionCosts
 from unified_planning.engines import PlanGenerationResultStatus
+from unified_planning.engines.results import LogLevel
+from unified_planning.exceptions import UPUsageError
 
 from rantanplan import _rantanplan
 from rantanplan.converter import convert_problem
 
 from ..harness import solve, assert_valid
 
-# Bounded types need the Grounded encoder: the default strategy (elsc) refuses
-# declared bounds, so the cases that declare them name a Grounded strategy.
+# Bounded types need an encoder that asserts declared bounds: the Chained one
+# refuses them. The default strategy (e-lin) is Grounded, but the cases that
+# declare them name a Grounded strategy, so they do not depend on the default.
 GROUNDED = "e"
 
 
@@ -545,6 +550,41 @@ def test_ground_atoms_have_exactly_one_expr_id():
         f"{aliased} ground state variable(s) have more than one ExprID"
 
 
+def test_an_aliased_atom_stops_preprocessing():
+    """Two ExprIDs for one ground atom stop preprocessing with an error, where
+    before they were counted (pool.aliased_state_variables) and passed on to
+    mis-group silently. The converter makes no alias (the test above), so the
+    IR is edited: the goal's object constant o, declared of type Sub, is
+    re-typed as its supertype Base. The goal's f(o) then differs only in a
+    type_id from the f(o) that grounding mark(o) makes."""
+    Base = UserType("Base")
+    Sub = UserType("Sub", Base)
+    o = Object("o", Sub)
+    f = Fluent("f", BoolType(), x=Base)
+    mark = InstantaneousAction("mark", y=Sub)
+    mark.add_effect(f(mark.parameter("y")), True)
+    p = Problem("aliased_atom")
+    p.add_fluent(f, default_initial_value=False)
+    p.add_object(o)
+    p.add_action(mark)
+    p.add_goal(f(o))
+    args = ["--strategy", "seq", "--verbosity", "silent"]
+    _rantanplan.preprocess(convert_problem(p), args)  # unedited: no alias
+    ir = convert_problem(p)
+    nodes = ir.nodes
+    const = next(n for n in nodes
+                 if n.kind == _rantanplan.ExprKind.CONSTANT and n.symbol == "o")
+    assert const.type_name == "Sub", const.type_name
+    const.type_name = "Base"
+    ir.nodes = nodes
+    try:
+        _rantanplan.preprocess(ir, args)
+    except RuntimeError as e:
+        assert "more than one ExprID" in str(e), str(e)
+    else:
+        raise AssertionError("preprocessing accepted a ground atom with two ExprIDs")
+
+
 def test_a_non_constant_amount_does_not_bound_its_fluent():
     """tighten_bounds_syntactically (bound_tightening.cpp) took an increase by
     an amount that is not a constant as never lowering its fluent, so a fluent
@@ -762,7 +802,12 @@ def _breaker_and_needer_problem(case):
         problem.set_initial_value(f(), True)
     problem.add_action(breaker)
     problem.add_action(needer)
+    written = {e.fluent.fluent() for e in breaker.effects}
     for f in (q, r, s):
+        if f in written:
+            # In value_read, write_q would be a copy of breaker, and the plan
+            # [needer, write_q] would never exercise the dependency.
+            continue
         writer = InstantaneousAction(f"write_{f.name}")
         writer.add_effect(f(), f not in initially_true)
         problem.add_action(writer)
@@ -777,7 +822,7 @@ def test_interference_sees_every_dependency():
     breaker-then-needer, which is invalid (see _breaker_and_needer_problem)."""
     from rantanplan import _rantanplan
     registered = set(_rantanplan.list_strategies())
-    for strategy in ("e", "f", "el", "fl", "e-dt", "f-dt"):
+    for strategy in ("e", "e-lin", "e-p", "f", "f-p", "el", "fl", "e-dt", "f-dt"):
         if strategy not in registered:
             continue
         for case in ("computed", "iff", "both_polarities", "value_read", "count"):
@@ -786,25 +831,34 @@ def test_interference_sees_every_dependency():
             assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
                 f"{strategy}/{case}: {r.status}"
             names = [a.action.name for a in r.plan.actions]
+            # The goal needs both: needer is the only writer of g, and breaker
+            # the only writer of the fluent the goal asks to change.
+            assert "breaker" in names and "needer" in names, \
+                f"{strategy}/{case}: {names}"
             if case == "count":
-                # UP's validator does not support count. The plan is valid if
-                # and only if needer runs while count(p, q) <= 1: before
-                # breaker (p still false), or after write_q (q made false).
-                p_true, q_true = False, True
-                for name in names:
-                    if name == "breaker":
-                        p_true = True
-                    elif name == "write_q":
-                        q_true = False
-                    elif name == "needer":
-                        assert p_true + q_true <= 1, f"{strategy}/{case}: {names}"
-                assert "needer" in names and "breaker" in names, \
+                # UP's validator does not support count, so the plan is simulated.
+                assert _count_case_plan_is_valid(problem, r.plan), \
                     f"{strategy}/{case}: {names}"
             else:
                 try:
                     assert_valid(problem, r.plan)
                 except AssertionError as e:
                     raise AssertionError(f"{strategy}/{case}: {names}: {e}")
+
+
+def _count_case_plan_is_valid(problem, plan):
+    """Run `plan` on _breaker_and_needer_problem("count"): every effect there
+    assigns a constant, needer's only precondition is count(p, q) <= 1, and the
+    goal is g and p."""
+    state = {f.name: False for f in problem.fluents}
+    state.update({k.fluent().name: v.bool_constant_value()
+                  for k, v in problem.explicit_initial_values.items()})
+    for ai in plan.actions:
+        if ai.action.name == "needer" and state["p"] + state["q"] > 1:
+            return False
+        for e in ai.action.effects:
+            state[e.fluent.fluent().name] = e.value.bool_constant_value()
+    return state["g"] and state["p"]
 
 
 def test_declared_bounds_on_the_chained_encoder_are_unsupported():
@@ -1934,7 +1988,7 @@ def test_exists_step_runs_the_affected_action_first():
     """Exists-step semantics orders each step so that an action runs before
     the actions that affect it, whatever their ids: use and spoil share the
     one step of the plan."""
-    for strategy in ("e", "elsc"):
+    for strategy in ("e", "e-lin", "e-p", "elsc"):
         for declared_first in ("use", "spoil"):
             problem = _one_way_pair_problem(declared_first)
             r = solve(problem, strategy=strategy)
@@ -1946,12 +2000,739 @@ def test_exists_step_runs_the_affected_action_first():
                 f"{case}: {[a.action.name for a in r.plan.actions]}"
 
 
+# The domains test_exists_step_encodings_agree solves besides the quick ones:
+# delivery, whose components are complete graphs, depots and drone, whose
+# components are small, and cave-diving and hiking, the two where the step
+# order forbids one-way pairs.
+EXISTS_STEP_DOMAINS = ("delivery", "depots", "drone",
+                       "cave-diving-sequential-optimal", "hiking-sequential-optimal")
+
+
+def test_exists_step_encodings_agree():
+    """e and e-lin forbid the same pairs of actions in a step, those of the
+    same step order: e with one clause for each pair, e-lin with Rintanen's
+    linear chains. So they find a valid plan at the same horizon, and e-lin
+    writes clauses exactly when a step forbids a pair. e-p allows every step
+    whose actions can run in some order, not only in the fixed one, so its
+    horizon is at most theirs."""
+    from pathlib import Path
+    from unified_planning.io import PDDLReader
+    from .. import pddl_suite
+    names = [Path(d).name for d in pddl_suite.QUICK_TEST_DIRS] + list(EXISTS_STEP_DOMAINS)
+    for name in names:
+        _, domain, problem_file = pddl_suite.find_instance(name)
+        problem = PDDLReader(force_up_pddl_reader=True).parse_problem(
+            str(domain), str(problem_file))
+        horizon = {}
+        for strategy in ("e", "e-lin", "e-p"):
+            case = f"{name}, {strategy}"
+            r = _solve_with(problem, strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"{case}: {r.status}"
+            try:
+                assert_valid(problem, r.plan)
+            except AssertionError as e:
+                raise AssertionError(f"{case}: {e}")
+            horizon[strategy] = _metric(r, "planner.solution_horizon")
+            # A plan at horizon 0 has no step, so no step's clauses are
+            # encoded or reported (hydropower).
+            if strategy == "e-lin" and horizon[strategy] > 0:
+                forbidden = _metric(r, "estep.forbidden_pairs_per_step")
+                clauses = _metric(r, "estep.clauses_per_step")
+                assert forbidden is not None and clauses is not None, \
+                    f"{case}: estep stats not reported"
+                assert (clauses > 0) == (forbidden > 0), \
+                    f"{case}: {clauses} clauses, {forbidden} forbidden pairs per step"
+        assert horizon["e"] == horizon["e-lin"], f"{name}: {horizon}"
+        assert horizon["e-p"] <= horizon["e-lin"], f"{name}: {horizon}"
+
+
+def _plan_cost(problem, plan):
+    """Total cost of a plan under the problem's MinimizeActionCosts metric
+    (costs may read static fluents, which fold through the initial state)."""
+    metric = problem.quality_metrics[0]
+    total = 0
+    for ai in plan.actions:
+        e = metric.get_action_cost(ai.action)
+        e = e.substitute(dict(zip(ai.action.parameters, ai.actual_parameters)))
+        total += e.substitute(problem.initial_values).simplify().constant_value()
+    return total
+
+
+def _assert_optimal(problem, strategies, expected_cost, why):
+    for strategy in strategies:
+        r = solve(problem, optimal=True, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_OPTIMALLY, \
+            f"{strategy}: expected SOLVED_OPTIMALLY, got {r.status}"
+        assert_valid(problem, r.plan)
+        cost = _plan_cost(problem, r.plan)
+        assert cost == expected_cost, \
+            f"{strategy}: claimed optimal at cost {cost}, but a plan of cost " \
+            f"{expected_cost} exists ({why}); plan: {[str(a) for a in r.plan.actions]}"
+
+
+def _longer_cheaper_plan_problem():
+    """`direct` reaches g in one step at cost 10; step(s1,s2), finish reaches
+    it in two steps at cost 2. B&B finds `direct` at horizon 1 and must not
+    stop there."""
+    Spot = UserType("Spot")
+    s1, s2 = Object("s1", Spot), Object("s2", Spot)
+    done = Fluent("done", BoolType(), x=Spot)
+    g = Fluent("g", BoolType())
+    step = InstantaneousAction("step", x=Spot, y=Spot)
+    x, y = step.parameters
+    step.add_precondition(done(x))
+    step.add_effect(done(y), True)
+    finish = InstantaneousAction("finish")
+    finish.add_precondition(done(s2))
+    finish.add_effect(g, True)
+    direct = InstantaneousAction("direct")
+    direct.add_effect(g, True)
+    p = Problem("bb_longer_cheaper_plan")
+    p.add_fluent(done, default_initial_value=False)
+    p.add_fluent(g, default_initial_value=False)
+    p.add_objects([s1, s2])
+    p.set_initial_value(done(s1), True)
+    for a in (step, finish, direct):
+        p.add_action(a)
+    p.add_goal(g)
+    p.add_quality_metric(MinimizeActionCosts({direct: Int(10), finish: Int(1), step: Int(1)}))
+    return p
+
+
+def test_bb_optimality_proof_covers_longer_plans():
+    """The bounded query that proves optimality assumed goal_at_h, i.e. it only
+    asked for plans that END at horizon h; the abstract suffix could then never
+    stand in for a longer, cheaper continuation, and the first UNSAT was taken
+    as a global optimality proof."""
+    _assert_optimal(_longer_cheaper_plan_problem(), ("seq", "f", "e", "elsc", "r2e"), 2,
+                    "step(s1,s2), finish")
+
+
+def _shared_schema_problem(variant):
+    """prep, a(p), finish (cost 3, three steps) vs direct (cost 10, one step).
+    'pre':  a(q) needs ok(q), which only `restore` (cost 100) provides.
+    'cost': twelve usable groundings of a, cost 1 each.
+    With one abstract variable per SCHEMA, using a(p) in the suffix also
+    imposes a(q)'s relaxed precondition ('pre') or charges every grounding's
+    cost ('cost'), so the suffix overstates the cheapest continuation."""
+    Obj = UserType("Obj")
+    names = ["p", "q"] if variant == "pre" else [f"o{i}" for i in range(12)]
+    objs = [Object(n, Obj) for n in names]
+    prepped, mid, g = (Fluent(n, BoolType()) for n in ("prepped", "mid", "g"))
+    flag = Fluent("flag", BoolType(), x=Obj)  # 'pre': ok(x); 'cost': used(x)
+    prep = InstantaneousAction("prep")
+    prep.add_effect(prepped, True)
+    a = InstantaneousAction("a", x=Obj)
+    x = a.parameter("x")
+    a.add_precondition(prepped)
+    a.add_effect(mid, True)
+    if variant == "pre":
+        a.add_precondition(flag(x))
+    else:
+        a.add_precondition(Not(flag(x)))
+        a.add_effect(flag(x), True)
+    finish = InstantaneousAction("finish")
+    finish.add_precondition(mid)
+    finish.add_effect(g, True)
+    direct = InstantaneousAction("direct")
+    direct.add_effect(g, True)
+    actions = [prep, a, finish, direct]
+    costs = {prep: Int(1), a: Int(1), finish: Int(1), direct: Int(10)}
+    if variant == "pre":
+        restore = InstantaneousAction("restore")
+        restore.add_effect(flag(objs[1]), True)
+        actions.append(restore)
+        costs[restore] = Int(100)
+    p = Problem(f"bb_shared_schema_{variant}")
+    for f in (prepped, mid, g, flag):
+        p.add_fluent(f, default_initial_value=False)
+    p.add_objects(objs)
+    if variant == "pre":
+        p.set_initial_value(flag(objs[0]), True)
+    for act in actions:
+        p.add_action(act)
+    p.add_goal(g)
+    p.add_quality_metric(MinimizeActionCosts(costs))
+    return p
+
+
+def test_bb_abstract_actions_are_per_grounding():
+    """Every grounding of a schema got one abstract Bool `abs_<schema>` (Z3
+    interns constants by name), so the suffix could not use one grounding
+    without the relaxed preconditions and the costs of all of them."""
+    for variant in ("pre", "cost"):
+        _assert_optimal(_shared_schema_problem(variant), ("seq", "f", "e", "elsc"), 3,
+                        "prep, a(...), finish")
+
+
+def _guarded_setter_problem():
+    """set1 needs (not b) and sets b: {mod_b, [not b]} is a strongly connected
+    component that nothing outside points into. Cheap: prep, set1 (cost 2,
+    two steps); direct costs 10 in one step."""
+    prepped, b = Fluent("prepped", BoolType()), Fluent("b", BoolType())
+    prep = InstantaneousAction("prep")
+    prep.add_effect(prepped, True)
+    set1 = InstantaneousAction("set1")
+    set1.add_precondition(prepped)
+    set1.add_precondition(Not(b))
+    set1.add_effect(b, True)
+    direct = InstantaneousAction("direct")
+    direct.add_effect(b, True)
+    p = Problem("bb_guarded_setter")
+    p.add_fluent(prepped, default_initial_value=False)
+    p.add_fluent(b, default_initial_value=False)
+    for a in (prep, set1, direct):
+        p.add_action(a)
+    p.add_goal(b)
+    p.add_quality_metric(MinimizeActionCosts({prep: Int(1), set1: Int(1), direct: Int(10)}))
+    return p
+
+
+def _counter_problem():
+    """inc (needs c < 5) twice costs 2; direct costs 10. Needs the SAME action
+    twice, so not even r2e can fit the cheap plan into horizon 1."""
+    c = Fluent("c", IntType(0, 5))
+    inc = InstantaneousAction("inc")
+    inc.add_precondition(LT(c, 5))
+    inc.add_increase_effect(c, 1)
+    direct = InstantaneousAction("direct")
+    direct.add_effect(c, 2)
+    p = Problem("bb_counter")
+    p.add_fluent(c, default_initial_value=0)
+    p.add_action(inc)
+    p.add_action(direct)
+    p.add_goal(GE(c, 2))
+    p.add_quality_metric(MinimizeActionCosts({direct: Int(10), inc: Int(1)}))
+    return p
+
+
+def test_bb_loop_formulas_keep_external_support():
+    """encode_loop_formulas() took the SCC's PREDECESSORS as its external
+    support; an SCC with none had all its mod_v forced false, so the suffix
+    could not touch those fluents at all, even through an action whose
+    precondition holds at state h."""
+    _assert_optimal(_guarded_setter_problem(), ("seq", "f", "e", "elsc"), 2, "prep, set1")
+    _assert_optimal(_counter_problem(), ("seq", "f", "e", "r2e"), 2, "inc, inc")
+
+
+def _sdac_wait_problem():
+    """cost(a) = price; b (cost 1) drops price from 10 to 1. Cheapest: b ; a
+    (cost 2). Under forall-step, axiom 6 forbids a at step 1 unless an action
+    at step 0 interferes with it, and interference ignores cost fluents."""
+    price = Fluent("price", IntType(1, 10))
+    g = Fluent("g", BoolType())
+    b = InstantaneousAction("b")
+    b.add_effect(price, 1)
+    a = InstantaneousAction("a")
+    a.add_effect(g, True)
+    p = Problem("bb_sdac_wait")
+    p.add_fluent(price, default_initial_value=10)
+    p.add_fluent(g, default_initial_value=False)
+    p.add_action(b)
+    p.add_action(a)
+    p.add_goal(g)
+    p.add_quality_metric(MinimizeActionCosts({b: Int(1), a: price}))
+    return p
+
+
+def test_bb_sdac_actions_may_wait_for_a_cheaper_state():
+    """State-dependent costs: moving an action earlier changes the state its
+    cost is read in, so axiom 6's front-loading normal form is not
+    cost-preserving under forall-step semantics."""
+    p = _sdac_wait_problem()
+    for strategy in ("seq", "f", "r2e"):
+        r = solve(p, optimal=True, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_OPTIMALLY, \
+            f"{strategy}: expected SOLVED_OPTIMALLY, got {r.status}"
+        assert_valid(p, r.plan)
+        assert [str(a) for a in r.plan.actions] == ["b", "a"], \
+            f"{strategy}: claimed optimal {[str(a) for a in r.plan.actions]}, but b ; a costs 2"
+
+
+def _spent_token_problem():
+    """p is a token: a spends it to make q, b spends it to make r. The goal
+    wants q and r, and no plan exists. The relaxation keeps p, so it reaches
+    both and preprocessing proves nothing."""
+    p, q, r = (Fluent(n, BoolType()) for n in ("p", "q", "r"))
+    problem = Problem("spent_token")
+    for f in (p, q, r):
+        problem.add_fluent(f, default_initial_value=False)
+    problem.set_initial_value(p(), True)
+    for name, made in (("a", q), ("b", r)):
+        act = InstantaneousAction(name)
+        act.add_precondition(p())
+        act.add_effect(p(), False)
+        act.add_effect(made(), True)
+        problem.add_action(act)
+    problem.add_goal(And(q(), r()))
+    return problem
+
+
+def test_bb_proof_that_no_plan_exists_is_unsolvable_proven():
+    """B&B's proof query, UNSAT with no plan found yet, proves that no plan of
+    any length exists (Theorem 2), but solve() reported it as a search that
+    ran out of steps, UNSOLVABLE_INCOMPLETELY. Satisficing search proves
+    nothing, and stays so."""
+    problem = _spent_token_problem()
+    for strategy in _registered("seq", "f", "e", "e-lin", "r2e"):
+        for how, r in (("optimal", solve(problem, optimal=True, strategy=strategy)),
+                       ("anytime", _solve_with(problem, strategy=strategy, mode="anytime"))):
+            assert r.status == PlanGenerationResultStatus.UNSOLVABLE_PROVEN, \
+                f"{how}, {strategy}: {r.status}"
+            assert any("no plan of any length" in m.message for m in r.log_messages), \
+                f"{how}, {strategy}: {r.log_messages}"
+        r = solve(problem, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.UNSOLVABLE_INCOMPLETELY, \
+            f"satisficing, {strategy}: {r.status}"
+
+
+def _split_instances_problem(move_to):
+    """`copy` reads arr[ptr], an index the state decides, so term resolution
+    splits it into one instance per value of ptr, each with the name and
+    parameters of copy:
+
+        copy     : x := arr[ptr] when flag; done := true
+        lower    : flag := false
+        move_ptr : ptr := move_to
+        init  arr = [5, 6, 7], ptr = 1 in [0, 3], flag;  goal  done
+
+    ptr takes two values, 1 and move_to, so two instances survive grounding,
+    with preconditions on ptr that exclude each other (with move_to = 3, the
+    instance outside the array needs flag false)."""
+    arr = Fluent("arr", ArrayType(3, IntType(0, 9)))
+    ptr = Fluent("ptr", IntType(0, 3))
+    x = Fluent("x", IntType(0, 9))
+    flag, done = Fluent("flag", BoolType()), Fluent("done", BoolType())
+    p = Problem(f"split_instances_{move_to}")
+    em = p.environment.expression_manager
+    p.add_fluent(arr, default_initial_value=0)
+    p.add_fluent(ptr, default_initial_value=0)
+    p.add_fluent(x, default_initial_value=0)
+    p.add_fluent(flag, default_initial_value=False)
+    p.add_fluent(done, default_initial_value=False)
+    p.set_initial_value(arr, [5, 6, 7])
+    p.set_initial_value(ptr(), 1)
+    p.set_initial_value(flag(), True)
+    copy = InstantaneousAction("copy")
+    copy.add_effect(x(), em.ArrayIndex(arr(), ptr()), condition=flag())
+    copy.add_effect(done(), True)
+    lower = InstantaneousAction("lower")
+    lower.add_effect(flag(), False)
+    move_ptr = InstantaneousAction("move_ptr")
+    move_ptr.add_effect(ptr(), move_to)
+    for a in (copy, lower, move_ptr):
+        p.add_action(a)
+    p.add_goal(done())
+    return p
+
+
+def test_split_instances_are_distinct_actions():
+    """Each split instance of an action is a ground action of its own, with
+    its own SMT variable. The variable was named after the action's name and
+    parameters, which the instances share, so they were one variable: taking
+    copy took every instance and conjoined their preconditions, and copy
+    could never run (UNSOLVABLE_INCOMPLETELY, where [copy] is a plan). UP's
+    validator does not take arrays, so the plan is replayed here."""
+    for strategy in _registered("seq", "e", "f", "r2e"):
+        for move_to in (0, 3):
+            case = f"{strategy}, move_to={move_to}"
+            r = solve(_split_instances_problem(move_to), strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"{case}: {r.status}"
+            names = [a.action.name for a in r.plan.actions]
+            ptr, flag, done = 1, True, False
+            for name in names:
+                if name == "copy":
+                    assert not flag or 0 <= ptr < 3, f"{case}: copy reads arr[{ptr}]: {names}"
+                    done = True
+                elif name == "lower":
+                    flag = False
+                elif name == "move_ptr":
+                    ptr = move_to
+            assert done, f"{case}: {names}"
+
+
+def _product_with_an_unbounded_factor_problem():
+    """x only decreases, so the grounder widens its lower bound to -inf; y is
+    0 or 3. fin needs x * y <= -5: dec_x, dec_x, set_y, fin."""
+    x, y = Fluent("x", RealType()), Fluent("y", RealType())
+    g = Fluent("g", BoolType())
+    p = Problem("product_with_an_unbounded_factor")
+    p.add_fluent(x, default_initial_value=0)
+    p.add_fluent(y, default_initial_value=0)
+    p.add_fluent(g, default_initial_value=False)
+    dec_x = InstantaneousAction("dec_x")
+    dec_x.add_decrease_effect(x(), 1)
+    set_y = InstantaneousAction("set_y")
+    set_y.add_effect(y(), 3)
+    fin = InstantaneousAction("fin")
+    fin.add_precondition(LE(Times(x(), y()), -5))
+    fin.add_effect(g(), True)
+    for a in (dec_x, set_y, fin):
+        p.add_action(a)
+    p.add_goal(g())
+    return p
+
+
+def test_a_product_with_an_unbounded_factor_is_not_pruned():
+    """Interval arithmetic took 0 * -inf as NaN: [-inf, 0] * [0, 3] was
+    [NaN, NaN], every comparison with NaN is false, and the grounder pruned
+    fin for good. The task came out UNSOLVABLE_PROVEN."""
+    for strategy in _registered("seq", "e", "e-lin"):
+        p = _product_with_an_unbounded_factor_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: {r.status}"
+        assert_valid(p, r.plan)
+
+
+def test_a_derived_bound_near_int64_max_is_not_cast():
+    """x := 2^63 - 1 fits in 64 bits, but the derived bound x <= 2^63 - 1,
+    rounded outward to the double 2^63, overflowed the cast to int64 and was
+    asserted as x <= INT64_MIN: no plan within the step limit, though
+    [set_x, check] is one. A bound beyond int64 on an integer fluent is now
+    skipped (its values are int64 anyway). r2e, which asserts no derived
+    bounds, solved it all along."""
+    top = 2 ** 63 - 1
+    for strategy in _registered("seq", "e", "f", "e-lin"):
+        x, g = Fluent("x", IntType()), Fluent("g", BoolType())
+        p = Problem("derived_bound_near_int64_max")
+        p.add_fluent(x, default_initial_value=0)
+        p.add_fluent(g, default_initial_value=False)
+        set_x = InstantaneousAction("set_x")
+        set_x.add_effect(x(), top)
+        check = InstantaneousAction("check")
+        check.add_precondition(GE(x(), top))
+        check.add_effect(g(), True)
+        p.add_action(set_x)
+        p.add_action(check)
+        p.add_goal(g())
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"{strategy}: {r.status}"
+        assert_valid(p, r.plan)
+
+
+# ---------------------------------------------------------------------------
+# Refusals: a problem the planner does not handle comes back as
+# UNSUPPORTED_PROBLEM, with the reason as an ERROR log message, never as an
+# exception out of solve() or as INTERNAL_ERROR.
+# ---------------------------------------------------------------------------
+
+def _refusal_reason(result):
+    return " ".join(m.message for m in result.log_messages or []
+                    if m.level == LogLevel.ERROR)
+
+
+def _ordered_counters_problem():
+    """inc_x and inc_y add 1 to x and to y; the goal is x = y = 3, and the
+    declared invariant `always x <= y` holds in every state of a valid plan,
+    so y must lead. (pddl/invariants-test/counters/problem-invariant.pddl.)"""
+    x, y = Fluent("value_x", IntType()), Fluent("value_y", IntType())
+    p = Problem("ordered_counters")
+    for f in (x, y):
+        p.add_fluent(f, default_initial_value=0)
+        inc = InstantaneousAction(f"inc_{f.name[-1]}")
+        inc.add_precondition(LE(f(), 10))
+        inc.add_increase_effect(f(), 1)
+        p.add_action(inc)
+    p.add_goal(And(Equals(x(), 3), Equals(y(), 3)))
+    p.add_trajectory_constraint(Always(LE(x(), y())))
+    return p
+
+
+def test_only_seq_keeps_declared_invariants():
+    """Declared invariants must hold in every state of the plan.
+    - r2e: the R2E encoder asserts no state constraints. It raised a plain
+      exception, reported as INTERNAL_ERROR.
+    - f, e, e-lin and elsc: parallel semantics assert them between steps
+      only. They put inc_x and inc_y in one step, and returned a plan whose
+      state after inc_x has x = 1 > y = 0, which UP's validator rejects.
+    All of them refuse the problem, naming seq; seq keeps the invariant."""
+    p = _ordered_counters_problem()
+    for strategy in _registered("r2e", "f", "e", "e-lin", "elsc"):
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, \
+            f"{strategy}: {r.status}"
+        assert r.plan is None, strategy
+        reason = _refusal_reason(r)
+        assert "declared state invariants" in reason and "Use seq" in reason, \
+            f"{strategy}: {reason}"
+    r = solve(p, strategy="seq")
+    assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
+    assert_valid(p, r.plan)
+
+
+def test_a_converter_refusal_is_unsupported_problem():
+    """The converter refuses a boolean fluent whose default is true (it would
+    invert the closed-world assumption). Its UPException escaped solve()."""
+    b = Fluent("b", BoolType())
+    p = Problem("bool_default_true")
+    p.add_fluent(b, default_initial_value=True)
+    flip = InstantaneousAction("flip")
+    flip.add_effect(b(), False)
+    p.add_action(flip)
+    p.add_goal(Not(b()))
+    r = solve(p)
+    assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, r.status
+    assert "default_initial_value=True" in _refusal_reason(r), r.log_messages
+
+
+def test_a_number_beyond_64_bits_is_unsupported():
+    """The IR holds integers, and the numerator and denominator of reals, in
+    64 bits; a larger one made the binding raise a TypeError out of solve()."""
+    big = 10 ** 30
+    for what in ("int", "numerator", "denominator", "bound"):
+        value = {"int": Int(big), "numerator": Real(Fraction(big, 7)),
+                 "denominator": Real(Fraction(1, big)), "bound": Int(1)}[what]
+        x = Fluent("x", IntType(0, big) if what == "bound"
+                   else IntType() if what == "int" else RealType())
+        p = Problem(f"beyond_64_bits_{what}")
+        p.add_fluent(x, default_initial_value=0)
+        set_x = InstantaneousAction("set_x")
+        set_x.add_effect(x(), value)
+        p.add_action(set_x)
+        p.add_goal(Equals(x(), value))
+        try:
+            r = solve(p)
+        except Exception as e:
+            raise AssertionError(f"{what}: {type(e).__name__}: {e}")
+        assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, \
+            f"{what}: {r.status}"
+        assert "does not fit in 64 bits" in _refusal_reason(r), \
+            f"{what}: {r.log_messages}"
+
+
+def _cleared_fluent_problem(name):
+    """`name` starts true and clear makes it false; the goal is not `name`.
+    Plan: [clear]."""
+    f = Fluent(name, BoolType())
+    p = Problem(f"cleared_{name}")
+    p.add_fluent(f, default_initial_value=False)
+    p.set_initial_value(f(), True)
+    clear = InstantaneousAction("clear")
+    clear.add_effect(f(), False)
+    p.add_action(clear)
+    p.add_goal(Not(f()))
+    return p
+
+
+def _kept_fluent_problem(name, numeric):
+    """`name` starts true, only drop clears it, and the goal keeps it. Beside
+    it, numeric: inc adds 1 to x, goal x >= 2 (plan [inc, inc]); else: act
+    sets y WHEN c, setc sets c, goal y (plan [setc, act])."""
+    f = Fluent(name, BoolType())
+    p = Problem(f"kept_{name}")
+    p.add_fluent(f, default_initial_value=False)
+    p.set_initial_value(f(), True)
+    drop = InstantaneousAction("drop")
+    drop.add_effect(f(), False)
+    p.add_action(drop)
+    if numeric:
+        x = Fluent("x", IntType())
+        p.add_fluent(x, default_initial_value=0)
+        inc = InstantaneousAction("inc")
+        inc.add_increase_effect(x(), 1)
+        p.add_action(inc)
+        p.add_goal(And(GE(x(), 2), f()))
+    else:
+        c, y = Fluent("c", BoolType()), Fluent("y", BoolType())
+        p.add_fluent(c, default_initial_value=False)
+        p.add_fluent(y, default_initial_value=False)
+        setc = InstantaneousAction("setc")
+        setc.add_effect(c(), True)
+        act = InstantaneousAction("act")
+        act.add_effect(y(), True, condition=c())
+        p.add_action(setc)
+        p.add_action(act)
+        p.add_goal(And(y(), f()))
+    return p
+
+
+def test_internal_names_are_not_planning_names():
+    """Z3 interns constants by name, and a state variable is named
+    <fluent>_<t>. The planners' and the frame module's own literals were
+    named the same way, so a fluent could be one of them:
+    - goal_at_<h>, the goal literal of the incremental planner (seq, e,
+      e-lin, ...): a fluent goal_at was assumed true at h, and the goal
+      not goal_at never held (UNSOLVABLE_INCOMPLETELY).
+    - link_at_<i>, the double-tail planner's link literal: the same with a
+      fluent link_at.
+    - fc_<n>_<t> and feq_<k>_<t>, the frame module's (-fp) reified condition
+      and equality bits: a fluent fc_<n> was tied to a condition, feq_<k> to
+      x keeping its value. The indices follow the module's layout, so a range
+      of names is tried.
+    They now have a '!' in their names, as B&B's literals do."""
+    for name, strategies in (("goal_at", ("seq", "e", "e-lin", "r2e", "elsc")),
+                             ("link_at", ("seq-dt", "e-dt", "elsc-dt"))):
+        for strategy in _registered(*strategies):
+            p = _cleared_fluent_problem(name)
+            r = solve(p, strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"{name}, {strategy}: {r.status}"
+            assert_valid(p, r.plan)
+    for k in range(8):
+        for name, numeric, strategies in ((f"feq_{k}", True, ("e-fp",)),
+                                          (f"fc_{k}", False, ("e-fp", "elsc-fp"))):
+            for strategy in _registered(*strategies):
+                p = _kept_fluent_problem(name, numeric)
+                r = solve(p, strategy=strategy)
+                assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                    f"{name}, {strategy}: {r.status}"
+                assert_valid(p, r.plan)
+
+
+def _render_alike_problem(numeric):
+    """at(pkg, loc) and at_pkg(loc), both at_pkg_loc through the '_' joiner.
+    at(pkg, loc) starts true and take clears it; put makes at_pkg(loc) true,
+    or, numeric, adds 1 to it (an integer in [0, 5]). The goal wants both
+    done: plan [put, take]."""
+    T, L = UserType("T"), UserType("L")
+    pkg, loc = Object("pkg", T), Object("loc", L)
+    at = Fluent("at", BoolType(), p=T, l=L)
+    at_pkg = Fluent("at_pkg", IntType(0, 5) if numeric else BoolType(), l=L)
+    p = Problem("render_alike")
+    p.add_fluent(at, default_initial_value=False)
+    p.add_fluent(at_pkg, default_initial_value=0 if numeric else False)
+    p.add_objects([pkg, loc])
+    p.set_initial_value(at(pkg, loc), True)
+    put = InstantaneousAction("put", l=L)
+    if numeric:
+        put.add_increase_effect(at_pkg(put.parameter("l")), 1)
+    else:
+        put.add_effect(at_pkg(put.parameter("l")), True)
+    take = InstantaneousAction("take", q=T, l=L)
+    take.add_effect(at(take.parameter("q"), take.parameter("l")), False)
+    p.add_action(put)
+    p.add_action(take)
+    p.add_goal(And(GE(at_pkg(loc), 1) if numeric else at_pkg(loc), Not(at(pkg, loc))))
+    return p
+
+
+def _atom_named_like_an_action_problem(k, n):
+    """go(o<i>) visits o<i>, and the goal visits all n. The 0-ary go_o<k>
+    starts false, only set_flag sets it, and the goal keeps it false: go(o<k>)
+    and go_o<k> render alike."""
+    O = UserType("O")
+    objs = [Object(f"o{i}", O) for i in range(n)]
+    visited = Fluent("visited", BoolType(), o=O)
+    flag = Fluent(f"go_o{k}", BoolType())
+    p = Problem(f"atom_named_like_an_action_{k}")
+    p.add_fluent(visited, default_initial_value=False)
+    p.add_fluent(flag, default_initial_value=False)
+    p.add_objects(objs)
+    go = InstantaneousAction("go", o=O)
+    go.add_effect(visited(go.parameter("o")), True)
+    set_flag = InstantaneousAction("set_flag")
+    set_flag.add_effect(flag(), True)
+    p.add_action(go)
+    p.add_action(set_flag)
+    p.add_goal(And(*[visited(o) for o in objs], Not(flag())))
+    return p
+
+
+def _spaced_name_problem():
+    """A UP name may hold a space: n(a) and the 0-ary "n a" both render as
+    (n a). w and u each add 1 to n(a) and 5 to "n a"; the goal wants 2 and
+    10: any two of them."""
+    O = UserType("O")
+    a = Object("a", O)
+    n = Fluent("n", IntType(), o=O)
+    m = Fluent("n a", IntType())
+    p = Problem("spaced_name")
+    p.add_fluent(n, default_initial_value=0)
+    p.add_fluent(m, default_initial_value=0)
+    p.add_object(a)
+    for name in ("w", "u"):
+        act = InstantaneousAction(name)
+        act.add_increase_effect(n(a), 1)
+        act.add_increase_effect(m(), 5)
+        p.add_action(act)
+    p.add_goal(And(Equals(n(a), 2), Equals(m(), 10)))
+    return p
+
+
+def test_atoms_that_render_alike_have_their_own_variables():
+    """Z3 interns constants by name, and a state variable was named
+    <fluent>_<args>_<t>: at(pkg, loc) and at_pkg(loc) were one variable,
+    at_pkg_loc_<t>. Two Bools (take clearing one cleared the other) came out
+    UNSOLVABLE_INCOMPLETELY; a Bool and an Int were one constant of two sorts,
+    an INTERNAL_ERROR. The name now carries the atom's id, after an '@'.
+    - Not after a '!', which is an action's: go_o<k>!<id>_<t> was the action
+      go(o<k>) when the atom's id was the action's (some k below).
+    - The Chained encoder's zeta and R2E's chain variables were named after
+      the atom's rendering, which a UP name with a space shares (n(a) and
+      "n a"); they carry the id too."""
+    for numeric in (False, True):
+        strategies = ("seq", "e", "e-lin", "f", "r2e", "e-dt") + (() if numeric else ("elsc",))
+        for strategy in _registered(*strategies):
+            p = _render_alike_problem(numeric)
+            r = solve(p, strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"numeric={numeric}, {strategy}: {r.status}"
+            assert_valid(p, r.plan)
+    n = 12
+    for k in range(n):
+        p = _atom_named_like_an_action_problem(k, n)
+        r = solve(p, strategy="e")
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"go_o{k}: {r.status}"
+        assert_valid(p, r.plan)
+    for strategy in _registered("r2e", "elsc", "flsc"):
+        p = _spaced_name_problem()
+        r = solve(p, strategy=strategy)
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+            f"spaced name, {strategy}: {r.status}"
+        assert_valid(p, r.plan)
+
+
+def test_bad_options_are_usage_errors():
+    """An option the planner cannot take is the caller's mistake: a
+    UPUsageError when the engine is made, not a result status (the C++ side
+    rejected these, reported as INTERNAL_ERROR; max_steps=0 was accepted).
+    So is a double-tail strategy with a search by cost or a schedule other
+    than linear, also through the engines that force their mode."""
+    dt = [s for s in _rantanplan.list_strategies() if s.endswith("-dt")]
+    assert dt, "no double-tail strategy registered"
+    cases = [("rantanplan", params) for params in (
+        {"strategy": "bogus"}, {"mode": "fast"}, {"max_steps": 0}, {"max_steps": -1},
+        {"horizon_schedule": "random"}, {"verbosity": "loud"},
+    )]
+    for strategy in dt:
+        cases += [("rantanplan", {"strategy": strategy, "mode": "optimal"}),
+                  ("rantanplan", {"strategy": strategy, "mode": "anytime"}),
+                  ("rantanplan", {"strategy": strategy, "horizon_schedule": "doubling"}),
+                  ("rantanplan-optimal", {"strategy": strategy}),
+                  ("rantanplan-anytime", {"strategy": strategy})]
+    for name, params in cases:
+        factory = AnytimePlanner if name == "rantanplan-anytime" else OneshotPlanner
+        try:
+            with factory(name=name, params=dict({"verbosity": "silent"}, **params)):
+                pass
+        except UPUsageError:
+            continue
+        raise AssertionError(f"{name} {params}: no UPUsageError")
+
+
+def test_a_negative_timeout_is_a_usage_error():
+    p = _ordered_counters_problem()
+    with OneshotPlanner(name="rantanplan", params={"verbosity": "silent"}) as planner:
+        try:
+            planner.solve(p, timeout=-1)
+        except UPUsageError as e:
+            assert "timeout" in str(e), str(e)
+        else:
+            raise AssertionError("a negative timeout was accepted")
+
+
 CASES = [
     test_conditional_effect_guard_not_pruned,
     test_chained_encoder_composes_every_write_to_one_fluent,
     test_duplicate_writes_do_not_fabricate_interference,
     test_effect_rhs_read_is_not_hidden_from_interference,
     test_ground_atoms_have_exactly_one_expr_id,
+    test_an_aliased_atom_stops_preprocessing,
     test_goal_relevance_numeric_value_chaining,
     test_goal_relevance_numeric_rhs_chaining,
     test_boolean_assign_from_fluent,
@@ -1994,4 +2775,20 @@ CASES = [
     test_derived_bound_reaches_the_solver_as_its_exact_double,
     test_conservation_constant_is_exact,
     test_exists_step_runs_the_affected_action_first,
+    test_exists_step_encodings_agree,
+    test_bb_optimality_proof_covers_longer_plans,
+    test_bb_abstract_actions_are_per_grounding,
+    test_bb_loop_formulas_keep_external_support,
+    test_bb_sdac_actions_may_wait_for_a_cheaper_state,
+    test_bb_proof_that_no_plan_exists_is_unsolvable_proven,
+    test_split_instances_are_distinct_actions,
+    test_a_product_with_an_unbounded_factor_is_not_pruned,
+    test_a_derived_bound_near_int64_max_is_not_cast,
+    test_only_seq_keeps_declared_invariants,
+    test_a_converter_refusal_is_unsupported_problem,
+    test_a_number_beyond_64_bits_is_unsupported,
+    test_bad_options_are_usage_errors,
+    test_a_negative_timeout_is_a_usage_error,
+    test_internal_names_are_not_planning_names,
+    test_atoms_that_render_alike_have_their_own_variables,
 ]

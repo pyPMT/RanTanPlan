@@ -23,7 +23,7 @@ class Fluent;
  * naming and creation.
  *
  * Key features:
- * - Fluent applications become individual variables (e.g., "located_plane1_city0_5")
+ * - Fluent applications become individual variables (e.g., "located_plane1_city0@42_5")
  * - Proper type support for Boolean, Integer, Real, and Object fluents
  * - Uses Z3VariableFactory for consistent variable creation and naming
  * - Supports temporal encoding through timestep parameters

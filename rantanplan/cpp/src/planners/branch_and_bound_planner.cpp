@@ -46,7 +46,7 @@ BranchAndBoundPlanner::BranchAndBoundPlanner(
 }
 
 void BranchAndBoundPlanner::add_timestep_constraints(int timestep) {
-    BasePlanner::add_timestep_constraints(solver_, encoder_, *propagator_strategy_, timestep);
+    BasePlanner::add_timestep_constraints(solver_, encoder_, propagator_strategy_.get(), timestep);
 }
 
 /// Extract the numeric cost value from a Z3 model. Handles Z3's decimal string
@@ -86,19 +86,19 @@ double BranchAndBoundPlanner::extract_cost_from_model(
 //
 //   Permanent constraints (added once after initialize):
 //     - mod_v equivalences (Eq. 4B) — horizon-independent
-//     - Loop formulas (Eq. 5) — horizon-independent, cached
 //
 //   Horizon-scoped constraints (inside push/pop per horizon):
 //     - Axiom 6 (Eq. 6) — no arbitrary deferral, per step
 //     - Axiom 7 step (Eq. 7) — full concrete prefix, per step
 //     - Relaxed preconditions (Eq. 4A) — evaluated at state h
 //     - Abstract goal (Eq. 3) — evaluated at state h
+//     - Loop formulas (Eq. 5) — evaluated at state h (SCCs cached)
 //     - Cost bound and goal implications from the inner B&B loop
 //
 // Compared to the naive approach of push/pop around ALL suffix constraints,
-// this avoids re-adding the permanent mod_v equivalences and loop formulas
-// each horizon. The decomposed AbstractSuffixEncoder API also allows the
-// planner to control exactly which constraints are permanent vs scoped.
+// this avoids re-adding the permanent mod_v equivalences each horizon. The
+// decomposed AbstractSuffixEncoder API also allows the planner to control
+// exactly which constraints are permanent vs scoped.
 // ============================================================================
 
 Plan BranchAndBoundPlanner::search() {
@@ -108,7 +108,7 @@ Plan BranchAndBoundPlanner::search() {
     int start_timestep = std::max(0, config.planner.start_timestep);
     schedule_ = HorizonSchedule::from_string(config.planner.horizon_schedule);
 
-    std::string search_msg = "B&B search with propagator: " + propagator_strategy_->get_name();
+    std::string search_msg = "B&B search with propagator: " + get_propagator_strategy_name();
     if (start_timestep > 0) {
         search_msg += " from timestep " + std::to_string(start_timestep);
     }
@@ -117,17 +117,17 @@ Plan BranchAndBoundPlanner::search() {
 
     solution_found_ = false;
     optimality_proven_ = false;
+    unsolvability_proven_ = false;
     timed_out_ = false;
     init_deadline();
 
     // Initialize
     solver_.add(encoder_.encode_initial_state());
-    propagator_strategy_->register_timestep_variables(0);
+    register_propagator_variables(0);
     abstract_.initialize();
 
     // Permanent abstract constraints (add once, like encode_actions/frames)
     solver_.add(abstract_.encode_mod_v_equivalences());
-    solver_.add(abstract_.encode_loop_formulas());
 
     Plan best_plan;
     double upper_bound = std::numeric_limits<double>::infinity();
@@ -161,7 +161,7 @@ Plan BranchAndBoundPlanner::search() {
         filled_up_to = h;
 
         // 2. Push scope for horizon-dependent constraints. Permanent constraints
-        //    (mod_v equivalences, loop formulas) remain outside and are not re-added.
+        //    (mod_v equivalences) remain outside and are not re-added.
         solver_.push();
 
         // Add axioms for all steps up to h (inside scope — they get popped
@@ -176,15 +176,28 @@ Plan BranchAndBoundPlanner::search() {
 
         solver_.add(abstract_.encode_relaxed_preconditions(h));
         solver_.add(abstract_.encode_abstract_goal(h));
+        solver_.add(abstract_.encode_loop_formulas(h));
 
         // 4. Build total cost expression and goal for this horizon
         z3::expr total_cost = abstract_.build_total_cost(h);
 
-        std::string goal_name = "goal_at_" + std::to_string(h);
+        std::string goal_name = "goal_at!" + std::to_string(h);
         z3::expr goal_lit = ctx_.bool_const(goal_name.c_str());
         solver_.add(z3::implies(goal_lit, encoder_.encode_goal(h)));
+        std::string no_abs_name = "no_abs!" + std::to_string(h);
+        z3::expr no_abs_lit = ctx_.bool_const(no_abs_name.c_str());
+        solver_.add(z3::implies(no_abs_lit, abstract_.encode_no_abstract()));
 
-        // 5. Inner B&B loop at this horizon
+        // 5. Inner B&B loop at this horizon. Two kinds of query:
+        //   concrete {goal_lit, no_abs_lit, cost_lt}: a cheaper plan that ends
+        //     exactly at h. SAT -> new upper bound.
+        //   proof {cost_lt}: any plan of any length, its steps beyond h stood in
+        //     for by the abstract suffix (Eq. 3 relaxes the goal, so goal_lit
+        //     must NOT be assumed). UNSAT -> nothing cheaper exists anywhere;
+        //     SAT -> only abstract continuations remain: next horizon.
+        // Assuming goal_lit in the proof query restricted it to plans ending at
+        // h, and its UNSAT was then mistaken for global optimality.
+        bool proof_query = false;
         bool advance_horizon = false;
         while (!advance_horizon) {
             // Apply Z3 timeout for the inner loop check too
@@ -194,7 +207,7 @@ Plan BranchAndBoundPlanner::search() {
             }
 
             // Create cost bound assumption
-            std::string cost_name = "cost_lt_" + std::to_string(cost_bound_counter++);
+            std::string cost_name = "cost_lt!" + std::to_string(cost_bound_counter++);
             z3::expr cost_bound_lit = ctx_.bool_const(cost_name.c_str());
             bool have_bound = !std::isinf(upper_bound);
             if (have_bound) {
@@ -203,7 +216,10 @@ Plan BranchAndBoundPlanner::search() {
             }
 
             z3::expr_vector assumptions(ctx_);
-            assumptions.push_back(goal_lit);
+            if (!proof_query) {
+                assumptions.push_back(goal_lit);
+                assumptions.push_back(no_abs_lit);
+            }
             if (have_bound) {
                 assumptions.push_back(cost_bound_lit);
             }
@@ -223,16 +239,17 @@ Plan BranchAndBoundPlanner::search() {
                 {"mem",   std::to_string(static_cast<int>(current_memory)) + "MB"}
             });
 
-            if (result == z3::unsat) {
+            if (result == z3::unsat && !proof_query) {
+                proof_query = true;  // no cheaper plan ends at h: ask about longer ones
+            } else if (result == z3::unsat) {
                 if (std::isinf(upper_bound)) {
-                    if (h == 0) {
-                        Logger::instance().info(
-                            "\n*** UNSOLVABLE_PROVEN: no plan exists ***");
-                        collect_statistics();
-                        propagator_strategy_->cleanup();
-                        return Plan();
-                    }
-                    advance_horizon = true;
+                    // Theorem 2: no continuation of any prefix reaches the goal.
+                    unsolvability_proven_ = true;
+                    Logger::instance().info(
+                        "\n*** UNSOLVABLE_PROVEN: no plan exists ***");
+                    collect_statistics();
+                    cleanup_propagator();
+                    return Plan();
                 } else {
                     // GLOBALLY OPTIMAL
                     optimality_proven_ = true;
@@ -245,7 +262,7 @@ Plan BranchAndBoundPlanner::search() {
                         ", cost=" + std::to_string(upper_bound) +
                         " (total time: " + std::to_string(total_time) + "s) ***");
                     collect_statistics();
-                    propagator_strategy_->cleanup();
+                    cleanup_propagator();
                     return best_plan;
                 }
             } else if (result == z3::sat) {
@@ -267,6 +284,7 @@ Plan BranchAndBoundPlanner::search() {
                                             config.planner.strategy, config.planner.mode, elapsed);
                     }
                     notify_intermediate_plan(best_plan);
+                    proof_query = false;
 
                     Logger::instance().info(
                         "  Improved plan: cost=" + std::to_string(upper_bound) +
@@ -321,7 +339,7 @@ Plan BranchAndBoundPlanner::search() {
     }
 
     collect_statistics();
-    propagator_strategy_->cleanup();
+    cleanup_propagator();
     return best_plan;
 }
 

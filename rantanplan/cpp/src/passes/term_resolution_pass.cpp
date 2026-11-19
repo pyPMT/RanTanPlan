@@ -5,6 +5,7 @@
 #include "../problem/problem.hpp"
 #include "../util/logger.hpp"
 #include "../util/scoped_timer.hpp"
+#include "../util/unsupported_problem_error.hpp"
 
 #include <deque>
 #include <optional>
@@ -138,7 +139,7 @@ public:
             if (!term) return expr;
             const Type* vt = value_type_of(*term);
             if (!vt || !vt->is_object())
-                throw std::invalid_argument(
+                throw UnsupportedProblemError(
                     "Nested fluent term '" + pool_.to_string(*term) + "' in " +
                     ctx + " is not object-valued; only object-valued nested "
                     "terms can be expanded there.");
@@ -263,7 +264,7 @@ private:
 
         const Type* vt = value_type_of(term);
         if (!vt || !vt->is_object())
-            throw std::invalid_argument(
+            throw UnsupportedProblemError(
                 "Nested fluent term '" + pool_.to_string(term) + "' in " +
                 ctx_ + " is not object-valued; only object-valued nested "
                 "terms are supported (int-valued inner terms are the "
@@ -496,7 +497,7 @@ void reject_nested_outside_actions(const Problem& problem) {
     const ExprPool& pool = problem.pool();
     auto reject_nested = [&](ExprID id, const std::string& where) {
         if (expr_has_nested_term(pool, id))
-            throw std::invalid_argument(
+            throw UnsupportedProblemError(
                 "Nested fluent term in " + where + " is not supported: only "
                 "action expressions can host a ghost parameter, and only "
                 "goals get the value-universe expansion. Rewrite with an "
@@ -505,7 +506,7 @@ void reject_nested_outside_actions(const Problem& problem) {
     };
     auto reject_index = [&](ExprID id, const std::string& where) {
         if (expr_has_state_dep_index(pool, id))
-            throw std::invalid_argument(
+            throw UnsupportedProblemError(
                 "State-dependent array index in " + where + " is not "
                 "supported: only action expressions can host the per-position "
                 "split (goals/invariants/initial state are strict-⊥ — see "

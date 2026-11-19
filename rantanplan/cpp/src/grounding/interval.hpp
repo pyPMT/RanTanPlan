@@ -35,14 +35,19 @@ inline double add(double a, double b, double toward) {
     return step_if(err != 0 && (err < 0) == (toward < 0), s, toward);
 }
 inline double mul(double a, double b, double toward) {
+    // 0 times an infinite bound is 0: the bound stands for finite values, and
+    // 0 * inf would be NaN, which every comparison then calls false.
+    if (a == 0 || b == 0) return 0.0;
     const double p = a * b;
     if (!std::isfinite(p)) return not_finite(p, a, b, toward);
-    if (a == 0 || b == 0) return p;
     if (std::fabs(p) < tiny) return std::nextafter(p, toward);
     const double err = std::fma(a, b, -p);  // a * b == p + err
     return step_if(err != 0 && (err < 0) == (toward < 0), p, toward);
 }
 inline double div(double a, double b, double toward) {
+    // An infinite bound over an infinite bound can be anything: the bound
+    // itself (inf / inf would be NaN).
+    if (std::isinf(a) && std::isinf(b)) return toward;
     const double q = a / b;
     if (!std::isfinite(q)) return not_finite(q, a, b, toward);
     if (a == 0 || std::isinf(b)) return q;

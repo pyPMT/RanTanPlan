@@ -35,7 +35,7 @@ void IncrementalHorizonPlanner::debug_output_constraints() {
 }
 
 void IncrementalHorizonPlanner::add_timestep_constraints(int timestep) {
-    BasePlanner::add_timestep_constraints(solver_, encoder_, *propagator_strategy_, timestep);
+    BasePlanner::add_timestep_constraints(solver_, encoder_, propagator_strategy_.get(), timestep);
 }
 
 Plan IncrementalHorizonPlanner::search() {
@@ -47,7 +47,7 @@ Plan IncrementalHorizonPlanner::search() {
     // Initialise the horizon schedule from config.
     schedule_ = HorizonSchedule::from_string(config.planner.horizon_schedule);
 
-    std::string search_msg = "Starting search with propagator: " + propagator_strategy_->get_name();
+    std::string search_msg = "Starting search with propagator: " + get_propagator_strategy_name();
     if (start_timestep > 0) {
         search_msg += " from timestep " + std::to_string(start_timestep);
     }
@@ -63,7 +63,7 @@ Plan IncrementalHorizonPlanner::search() {
 
     // Add initial state constraints (invariant across all horizons).
     solver_.add(encoder_.encode_initial_state());
-    propagator_strategy_->register_timestep_variables(0);
+    register_propagator_variables(0);
 
     // Pre-fill all transitions for [0, start_timestep - 1] so the first SAT call
     // begins from the RPG lower bound without redundant checks.
@@ -84,7 +84,7 @@ Plan IncrementalHorizonPlanner::search() {
     //   if a plan of length k <= h exists, the solver represents it with actions
     //   at steps 0..k-1 and empty steps at k..h-1. Frame axioms propagate the
     //   goal state through the empty suffix so goal@h is satisfied. The single
-    //   literal goal_at_h therefore witnesses any plan length in [prev_h+1, h].
+    //   literal goal_at!h therefore witnesses any plan length in [prev_h+1, h].
     //
     // Plan length recovery after SAT:
     //   Scan forward from t=0 for the first step where all action variables are
@@ -116,7 +116,10 @@ Plan IncrementalHorizonPlanner::search() {
         // 2. Place ONE goal literal at the scheduled horizon h.
         //    Intermediate horizons in the batch do NOT get goal literals; the
         //    prefix-monotone + frame-axiom argument above covers them.
-        std::string goal_var_name = "goal_at_" + std::to_string(h);
+        // Z3 interns constants by name: '!' keeps this one apart from every
+        // state and action variable, whose names end in "_<t>" (goal_at_<h>
+        // was the state variable of a 0-ary fluent named goal_at).
+        std::string goal_var_name = "goal_at!" + std::to_string(h);
         z3::expr goal_literal = ctx_.bool_const(goal_var_name.c_str());
         solver_.add(z3::implies(goal_literal, encoder_.encode_goal(h)));
 
@@ -170,12 +173,12 @@ Plan IncrementalHorizonPlanner::search() {
                 stats.set("planner.plan_length",      static_cast<double>(plan.length()));
                 stats.set("planner.solution_horizon", static_cast<double>(h));
                 collect_statistics();
-                propagator_strategy_->cleanup();
+                cleanup_propagator();
                 return plan;
             } catch (const std::exception& e) {
                 Logger::instance().error("ERROR during plan extraction: " + std::string(e.what()));
                 collect_statistics();
-                propagator_strategy_->cleanup();
+                cleanup_propagator();
                 return Plan();
             }
 
@@ -199,7 +202,7 @@ Plan IncrementalHorizonPlanner::search() {
     }
 
     collect_statistics();
-    propagator_strategy_->cleanup();
+    cleanup_propagator();
     return Plan();
 }
 

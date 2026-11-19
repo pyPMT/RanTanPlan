@@ -19,7 +19,6 @@ AbstractSuffixEncoder::AbstractSuffixEncoder(
     SemanticsKind semantics)
     : problem_(problem), ctx_(ctx), encoder_(encoder),
       interference_(interference), semantics_(semantics),
-      cached_loop_formulas_(ctx.bool_val(true)),
       epc_index_(nullptr) {
 
     // Access epc_index from the concrete encoder (all encoders derive from GroundedEncoder)
@@ -33,17 +32,23 @@ void AbstractSuffixEncoder::initialize() {
     const auto& actions = problem_.actions();
     const auto& fluents = problem_.grounded_fluents();
 
-    // One abstract Bool per action
+    // One abstract Bool per GROUND action. z3 interns constants by name, so the
+    // name must be unique per grounding: action.name() is the schema name, and
+    // "abs_" + name() made all groundings of a schema share one variable (one
+    // grounding could not be used without every grounding's preconditions and
+    // costs). '!' never occurs in planning identifiers, so neither these names
+    // nor mod!<i> can collide with state variables ("<name>_<args>@<id>_<t>")
+    // or action variables ("<name>_<args>!<id>_<t>", one '!' and then a "_").
     action_abs_.reserve(actions.size());
     for (const auto& action : actions) {
-        std::string name = "abs_" + action.name();
+        std::string name = "abs!" + std::to_string(action.id()) + "!" + action.label();
         action_abs_.push_back(ctx_.bool_const(name.c_str()));
     }
 
     // One mod_v Bool per grounded fluent
     mod_vars_.reserve(fluents.size());
     for (size_t i = 0; i < fluents.size(); ++i) {
-        std::string name = "mod_" + std::to_string(i);
+        std::string name = "mod!" + std::to_string(i);
         mod_vars_.push_back(ctx_.bool_const(name.c_str()));
         fluent_to_mod_index_[fluents[i]] = i;
     }
@@ -125,7 +130,7 @@ z3::expr AbstractSuffixEncoder::encode_mod_v_equivalences() {
 }
 
 // ============================================================================
-// Permanent: Loop Formulas (Eq. 5)
+// Horizon-scoped: Loop Formulas (Eq. 5)
 //
 // Prevent circular support among abstract actions. Without these, the abstract
 // suffix could contain a cycle where action A's precondition is "justified" by
@@ -139,15 +144,18 @@ z3::expr AbstractSuffixEncoder::encode_mod_v_equivalences() {
 //      Edges capture "action a affects fluent v AND requires precondition phi"
 //      and "precondition phi references fluent v".
 //   2. Compute SCCs using Tarjan's algorithm (via existing Graph class).
-//   3. For each non-trivial SCC: require that if any mod_v in the SCC is true,
-//      there must be external support (a mod_v outside the SCC with an edge in).
-//      If no external support exists, all mod_v nodes in the SCC must be false.
+//   3. For each non-trivial SCC L: if any mod_v in L is true, some action that
+//      modifies a fluent of L is in the suffix with every precondition holding
+//      at state n or mentioning a fluent outside L that the suffix modifies
+//      (encode_loop_formulas(n)).
 //
-// The result is cached since it depends only on action structure, not horizon.
+// The SCCs depend only on action structure and are cached; the formulas refer
+// to state n, so they are rebuilt per horizon.
 // ============================================================================
 
-z3::expr AbstractSuffixEncoder::encode_loop_formulas() {
-    if (loop_formulas_built_) return cached_loop_formulas_;
+void AbstractSuffixEncoder::build_loop_sccs() {
+    if (loop_sccs_built_) return;
+    loop_sccs_built_ = true;
 
     // Build dependency graph for loop formula detection.
     // Nodes: mod_v variables (indices 0..num_fluents-1)
@@ -222,70 +230,66 @@ z3::expr AbstractSuffixEncoder::encode_loop_formulas() {
         }
     }
 
-    auto sccs = graph.compute_strongly_connected_components();
-
-    z3::expr_vector loop_constraints(ctx_);
-
-    for (const auto& scc : sccs) {
+    for (const auto& scc : graph.compute_strongly_connected_components()) {
         // Skip trivial SCCs (size 1, no self-loop)
-        if (scc.size() <= 1) {
-            if (scc.size() == 1 && !graph.has_edge(scc[0], scc[0])) {
-                continue;
-            }
-        }
-
-        std::unordered_set<int> scc_set(scc.begin(), scc.end());
-
-        // Build OR of all nodes in SCC (as z3 expressions)
-        z3::expr_vector scc_exprs(ctx_);
+        if (scc.size() == 1 && !graph.has_edge(scc[0], scc[0])) continue;
+        std::vector<size_t> mods;
         for (int node : scc) {
-            if (static_cast<size_t>(node) < num_fluents) {
-                scc_exprs.push_back(mod_vars_[node]);
-            }
-            // Precondition atoms are not z3 variables in the abstract suffix;
-            // they participate in the dependency graph but the loop formula
-            // constraint only applies to mod_v variables.
+            if (static_cast<size_t>(node) < num_fluents) mods.push_back(node);
         }
-
-        if (scc_exprs.empty()) continue;
-
-        // Find R(L): nodes outside SCC with edges into SCC
-        z3::expr_vector external_support(ctx_);
-        for (int node : scc) {
-            // Check all potential predecessors
-            for (size_t pred = 0; pred < total_nodes; ++pred) {
-                if (scc_set.count(pred)) continue;  // skip SCC-internal
-                if (graph.has_edge(pred, node)) {
-                    if (pred < num_fluents) {
-                        external_support.push_back(mod_vars_[pred]);
-                    }
-                    // External precondition atoms: they represent concrete
-                    // state conditions that can provide external support.
-                    // Treat them as always satisfiable (grounded in the
-                    // concrete prefix) by adding unconditional support.
-                    external_support.push_back(ctx_.bool_val(true));
-                }
-            }
-        }
-
-        if (external_support.empty()) {
-            // No external support — SCC nodes must all be false
-            for (unsigned i = 0; i < scc_exprs.size(); ++i) {
-                loop_constraints.push_back(!scc_exprs[i]);
-            }
-        } else {
-            // (OR scc_nodes) => (OR external_support)
-            loop_constraints.push_back(
-                z3::implies(z3::mk_or(scc_exprs), z3::mk_or(external_support)));
-        }
+        if (!mods.empty()) loop_sccs_.push_back(std::move(mods));
     }
+}
 
-    cached_loop_formulas_ = loop_constraints.empty()
-        ? ctx_.bool_val(true)
-        : z3::mk_and(loop_constraints);
-    loop_formulas_built_ = true;
-
-    return cached_loop_formulas_;
+z3::expr AbstractSuffixEncoder::encode_loop_formulas(int n) {
+    // External support of a loop L (Lin & Zhao): the first suffix action that
+    // modifies a fluent of L sees a state that differs from state n only in
+    // fluents OUTSIDE L, so each of its preconditions phi holds at n or
+    // mentions some w not in L with mod_w. (The former version took the SCC's
+    // predecessors -- nodes that DEPEND on L -- as support: vacuous when there
+    // were any, and when there were none it forced every mod_v of L false,
+    // excluding real continuations.)
+    build_loop_sccs();
+    if (!epc_index_) return ctx_.bool_val(true);
+    const auto& actions = problem_.actions();
+    const auto& fluents = problem_.grounded_fluents();
+    z3::expr_vector loop_constraints(ctx_);
+    for (const auto& scc : loop_sccs_) {
+        std::unordered_set<size_t> in_loop(scc.begin(), scc.end());
+        z3::expr_vector loop_mods(ctx_), supports(ctx_);
+        std::unordered_set<int> seen;
+        for (size_t v : scc) {
+            loop_mods.push_back(mod_vars_[v]);
+            auto it = epc_index_->find(fluents[v]);
+            if (it == epc_index_->end()) continue;
+            for (const auto& [action_ptr, _] : it->second) {
+                int aid = action_ptr->id();
+                if (!seen.insert(aid).second) continue;
+                const Action& action = actions[aid];
+                z3::expr_vector support(ctx_);
+                support.push_back(action_abs_[aid]);
+                if (action.has_precondition()) {
+                    for (ExprID phi : get_precondition_conjuncts(action.precondition_id())) {
+                        z3::expr_vector disj(ctx_);
+                        disj.push_back(encoder_.convert_expr_id_to_z3(phi, n));
+                        FluentCollector collector(problem_);
+                        collector.collect_from_id(phi);
+                        for (ExprID fid : collector.get_fluents()) {
+                            auto mit = fluent_to_mod_index_.find(fid);
+                            if (mit != fluent_to_mod_index_.end() && !in_loop.count(mit->second)) {
+                                disj.push_back(mod_vars_[mit->second]);
+                            }
+                        }
+                        support.push_back(z3::mk_or(disj));
+                    }
+                }
+                supports.push_back(z3::mk_and(support));
+            }
+        }
+        loop_constraints.push_back(z3::implies(z3::mk_or(loop_mods),
+            supports.empty() ? ctx_.bool_val(false) : z3::mk_or(supports)));
+    }
+    return loop_constraints.empty() ? ctx_.bool_val(true) : z3::mk_and(loop_constraints);
 }
 
 // ============================================================================
@@ -309,6 +313,17 @@ z3::expr AbstractSuffixEncoder::encode_loop_formulas() {
 z3::expr AbstractSuffixEncoder::encode_axiom_6(int i) {
     // For each action a, at step i > 0:
     // a_i => (a_{i-1} OR (OR_{phi in pre_a} NOT phi_{i-1}) OR (OR_{a' in M_a} a'_{i-1}))
+    // With state-dependent costs, moving an action to an earlier step changes
+    // the state its cost is read in, so the front-loading normal form behind
+    // this axiom is not cost-preserving; M_a below is built from precondition/
+    // effect interference, which ignores cost fluents. Under sequential
+    // semantics (also r2e) M_a is every other action, which any plan without
+    // empty steps satisfies.
+    if (semantics_ != SemanticsKind::Sequential &&
+        problem_.has_metric() && problem_.has_state_dependent_costs()) {
+        return ctx_.bool_val(true);
+    }
+
     z3::expr_vector all_constraints(ctx_);
     const auto& actions = problem_.actions();
     auto& vf = encoder_.get_variable_factory();
@@ -493,6 +508,12 @@ bool AbstractSuffixEncoder::is_concrete_solution(const z3::model& model) const {
         if (val.is_true()) return false;
     }
     return true;
+}
+
+z3::expr AbstractSuffixEncoder::encode_no_abstract() const {
+    z3::expr_vector none(ctx_);
+    for (const auto& a_abs : action_abs_) none.push_back(!a_abs);
+    return none.empty() ? ctx_.bool_val(true) : z3::mk_and(none);
 }
 
 // ============================================================================

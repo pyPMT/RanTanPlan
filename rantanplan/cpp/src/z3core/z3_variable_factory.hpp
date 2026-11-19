@@ -29,8 +29,9 @@ class Problem;  // forward declaration
  * - Timestep-aware variable management
  *
  * CONTRACT (static atom identity): a ground fluent *is* its interned ExprID,
- * and its Z3 state variable is keyed by rendered name × timestep — so which
- * cell an access touches is decided at compile time, never by the model.
+ * and its Z3 state variable is keyed by rendered name × timestep, the name
+ * carrying that ExprID — so which cell an access touches is decided at
+ * compile time, never by the model.
  * Everything structured (arrays, sets) is lowered to ground scalar cells
  * before grounding to preserve this; a feature that wants model-dependent
  * cell selection (symbolic indices) must introduce explicit read/write
@@ -41,10 +42,10 @@ private:
     z3::context& ctx_;
     
     // Storage for SMT variables - outer vector is indexed by timestep
-    // state_vars_[0]["at_airplane1_city1"] -> z3::expr(bool variable for fluent at timestep 0)
+    // state_vars_[0]["at_airplane1_city1@42_0"] -> z3::expr(bool variable for atom 42 at timestep 0)
     std::vector<std::unordered_map<std::string, std::shared_ptr<z3::expr>>> state_vars_;
     
-    // action_vars_[0]["move_airplane1_city1_city2"] -> z3::expr(bool variable for action at timestep 0)
+    // action_vars_[0]["move_airplane1_city1_city2!7_0"] -> z3::expr(bool variable for action 7 at timestep 0)
     std::vector<std::unordered_map<std::string, std::shared_ptr<z3::expr>>> action_vars_;
     
     // Reverse mappings from variable names to fluents/actions and timesteps
@@ -71,16 +72,25 @@ public:
     z3::expr create_symbol_variable(const std::string& name, const Type* type);
     
     // High-level variable management with caching
-    const z3::expr& get_fluent_variable(const Fluent& fluent, int timestep);
+    // `fluent` is the ground fluent, `atom` its STATE_VARIABLE ExprID.
+    const z3::expr& get_fluent_variable(const Fluent& fluent, ExprID atom, int timestep);
     const z3::expr& get_action_variable(const Action& action, int timestep);
 
     // Const versions for read-only access (will lookup existing variables)
-    const z3::expr& get_fluent_variable(const Fluent& fluent, int timestep) const;
+    const z3::expr& get_fluent_variable(const Fluent& fluent, ExprID atom, int timestep) const;
     const z3::expr& get_action_variable(const Action& action, int timestep) const;
     
+    // The mark before the atom's id in a state variable's name,
+    // "<fluent>_<args>" ATOM_ID_MARK "<id>_<t>". Not an action's '!' (see
+    // get_fluent_var_name).
+    static constexpr const char* ATOM_ID_MARK = "@";
+    /// ATOM_ID_MARK and the atom's id: what every name derived from an atom
+    /// carries to stay its own.
+    static std::string atom_tag(ExprID atom);
+
     // Variable naming methods
-    std::string get_fluent_var_name(const Fluent& fluent) const;
-    std::string get_fluent_var_name(const Fluent& fluent, int timestep) const;
+    std::string get_fluent_var_name(const Fluent& fluent, ExprID atom) const;
+    std::string get_fluent_var_name(const Fluent& fluent, ExprID atom, int timestep) const;
     std::string get_action_var_name(const Action& action) const;
     std::string get_action_var_name(const Action& action, int timestep) const;
     

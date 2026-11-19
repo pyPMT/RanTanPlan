@@ -98,10 +98,10 @@ private:
     long long decide_calls_ = 0;
     double callback_ms_ = 0.0;
 
-    /// Whether callback timing is worth its two clock reads.  A propagator
-    /// with no modules (seq, seq-dt) still receives every fixed() callback,
-    /// but has no module work to attribute, so timing it would only measure
-    /// the measurement.
+    /// Whether callback timing is worth its two clock reads: only when there
+    /// is module work to attribute.  A strategy without modules attaches no
+    /// propagator at all (StrategyFactory::create_propagator), so this holds
+    /// for every propagator built today; it stays as the guard.
     bool timing_enabled() const { return !modules_.empty(); }
 
     /// Update the shared action trail when an action variable is fixed to true.

@@ -17,7 +17,7 @@ def main():
                         help="Show planner output / failure tracebacks")
     parser.add_argument("--up-grounding", action="store_true",
                         help="Use UP cross-product grounding instead of C++ grounding")
-    parser.add_argument("-j", "--jobs", type=int, default=4,
+    parser.add_argument("-j", "--jobs", type=int, default=8,
                         help="Number of parallel jobs for the PDDL suite (1 = sequential)")
     parser.add_argument("--pddl-only", action="store_true",
                         help="Run only the PDDL suite")

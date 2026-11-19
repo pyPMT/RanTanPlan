@@ -12,8 +12,9 @@ from unified_planning.shortcuts import (
 
 from ..harness import solve, assert_valid
 
-# Bounded types need the Grounded encoder: the default strategy (elsc) refuses
-# declared bounds, so the cases that declare them name a Grounded strategy.
+# Bounded types need an encoder that asserts declared bounds: the Chained one
+# refuses them. The default strategy (e-lin) is Grounded, but the cases that
+# declare them name a Grounded strategy, so they do not depend on the default.
 GROUNDED = "e"
 
 

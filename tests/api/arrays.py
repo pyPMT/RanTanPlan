@@ -14,8 +14,8 @@ UP *can* validate:
     a hand-written array-free equivalent with the same action signatures and
     conditional effects, validated exactly like tests/api/range_variables.py.
 
-Error cases assert the ill-formed model is rejected (a hard C++ error surfaces
-as INTERNAL_ERROR, or an unsatisfiable bound as UNSOLVABLE_PROVEN). The 2x2
+Error cases assert the model is refused: UNSUPPORTED_PROBLEM, with the reason as
+an ERROR log message (an unsatisfiable bound is UNSOLVABLE_PROVEN). The 2x2
 sliding-puzzle integration test replays the plan through a tiny domain-specific
 simulator (the paper's running example). See docs/native-arrays-plan.md.
 """
@@ -26,14 +26,15 @@ from unified_planning.shortcuts import (
 from unified_planning.engines import (
     CompilationKind, ValidationResultStatus, PlanGenerationResultStatus,
 )
-from unified_planning.exceptions import UPException
+from unified_planning.engines.results import LogLevel
 from unified_planning.plans import SequentialPlan, ActionInstance
 from unified_planning.model.int_variable import IntVariable
 
 from ..harness import solve
 
-# Bounded types need the Grounded encoder: the default strategy (elsc) refuses
-# declared bounds, so the cases that declare them name a Grounded strategy.
+# Bounded types need an encoder that asserts declared bounds: the Chained one
+# refuses them. The default strategy (e-lin) is Grounded, but the cases that
+# declare them name a Grounded strategy, so they do not depend on the default.
 GROUNDED = "e"
 
 _ENV_EM = None
@@ -94,15 +95,14 @@ def _ref_check(p_native, p_ref, strategy=None):
 
 
 def _assert_rejected(build):
-    """The model is ill-formed: solving raises, or returns no plan with a
-    non-SOLVED status."""
-    try:
-        r = solve(build())
-    except UPException:
-        return
-    assert r.plan is None, "expected no plan for an ill-formed array model"
-    assert r.status not in (PlanGenerationResultStatus.SOLVED_SATISFICING,
-                            PlanGenerationResultStatus.SOLVED_OPTIMALLY), r.status
+    """The planner refuses the model: UNSUPPORTED_PROBLEM and no plan, with
+    the reason as an ERROR log message (it was INTERNAL_ERROR, from a plain
+    C++ exception, or a UPException raised out of solve())."""
+    r = solve(build())
+    assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, r.status
+    assert r.plan is None, "expected no plan for a refused array model"
+    assert any(m.level == LogLevel.ERROR for m in r.log_messages or []), \
+        "the refusal carries no reason"
 
 
 # ═══════════════════════ base semantics (AR oracle) ══════════════════════════
@@ -862,6 +862,126 @@ def test_guarded_undefined_effect_never_applicable_when_condition_static():
                             PlanGenerationResultStatus.UNSOLVABLE_INCOMPLETELY), (side, r.status)
 
 
+def _guarded_nested_index(ptr0, with_lower):
+    """copy's conditional effect reads a[ptr], with ptr a fluent, so term
+    resolution splits copy by ptr's value: one instance per position, each
+    needing ptr there, and one for ptr out of bounds, whose effect is undefined.
+
+        a : array[2] of int[0,9] = [5, 6];  ptr : int[0,3] = ptr0
+        flag (init true), done (init false)
+        copy       : x := a[ptr]  WHEN flag;  done := true
+        lower      : flag := false                        (with_lower)
+        goal : done
+    """
+    em = _em()
+    a = Fluent("gni_a", ArrayType(2, IntType(0, 9)))
+    x = Fluent("gni_x", IntType(0, 9))
+    ptr = Fluent("gni_ptr", IntType(0, 3))
+    flag = Fluent("gni_flag", BoolType())
+    done = Fluent("gni_done", BoolType())
+    p = Problem("gni")
+    p.add_fluent(a, default_initial_value=0)
+    p.add_fluent(x, default_initial_value=0)
+    p.add_fluent(ptr, default_initial_value=ptr0)
+    p.add_fluent(flag, default_initial_value=False)
+    p.add_fluent(done, default_initial_value=False)
+    p.set_initial_value(a, [5, 6])
+    p.set_initial_value(flag(), True)
+    copy = InstantaneousAction("copy")
+    copy.add_effect(x(), em.ArrayIndex(a(), ptr()), condition=flag())
+    copy.add_effect(done(), True)
+    p.add_action(copy)
+    if with_lower:
+        lower = InstantaneousAction("lower")
+        lower.add_effect(flag(), False)
+        p.add_action(lower)
+    p.add_goal(done())
+    return p
+
+
+def test_guarded_nested_index():
+    """The guarded-undefined rule (an undefined target or value drops the
+    effect and puts not C into the precondition) on a nested index, where it
+    reaches the split's out-of-bounds instance (term resolution): with
+    ptr = 2, copy needs flag false, so `lower` comes first, and without `lower`
+    nothing reaches the goal; with ptr = 1 the effect is defined and [copy] is
+    the plan."""
+    for case in ("out_of_bounds", "no_lower", "in_bounds"):
+        ptr0 = 1 if case == "in_bounds" else 2
+        r = solve(_guarded_nested_index(ptr0, with_lower=case != "no_lower"),
+                  strategy=GROUNDED)
+        if case == "no_lower":
+            assert r.status == PlanGenerationResultStatus.UNSOLVABLE_PROVEN, (case, r.status)
+            continue
+        assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, (case, r.status)
+        names = [ai.action.name for ai in r.plan.actions]
+        if case == "in_bounds":
+            assert names == ["copy"], (case, names)
+        else:
+            assert "lower" in names and "copy" in names, (case, names)
+            assert names.index("lower") < names.index("copy"), (case, names)
+
+
+def _cell_name_collision_problem(case):
+    """A cell's readable name is already taken.
+
+        int, bool:  cc_a : array[2] of int[0,9] = [5, 6], and a scalar fluent
+                    named "cc_a[0]" (int[0,9] = 0, or bool = false)
+                    w : "cc_a[0]" := 1 (true)
+                    s : PRE cc_a[0] = 5 and "cc_a[0]" = 1 (true);  done := true
+        cells:      cc_b : array[2][2] = [[1, 2], [3, 4]] and a 1-D array
+                    named "cc_b[0]" = [7, 8]; both have a cell "cc_b[0][0]"
+                    s : PRE cc_b[0][0] = 1 and "cc_b[0]"[0] = 7;  done := true
+        goal : done
+    """
+    em = _em()
+    done = Fluent(f"cc_{case}_done", BoolType())
+    p = Problem(f"cell_name_collision_{case}")
+    p.add_fluent(done, default_initial_value=False)
+    s = InstantaneousAction("s")
+    s.add_effect(done(), True)
+    if case == "cells":
+        b2 = Fluent("cc_b", ArrayType(2, ArrayType(2, IntType(0, 9))))
+        b1 = Fluent("cc_b[0]", ArrayType(2, IntType(0, 9)))
+        p.add_fluent(b2, default_initial_value=0)
+        p.add_fluent(b1, default_initial_value=0)
+        p.set_initial_value(b2, [[1, 2], [3, 4]])
+        p.set_initial_value(b1, [7, 8])
+        s.add_precondition(Equals(em.ArrayIndex(em.ArrayIndex(b2(), Int(0)), Int(0)), 1))
+        s.add_precondition(Equals(em.ArrayIndex(b1(), Int(0)), 7))
+    else:
+        a = Fluent("cc_a", ArrayType(2, IntType(0, 9)))
+        x = Fluent("cc_a[0]", IntType(0, 9) if case == "int" else BoolType())
+        p.add_fluent(a, default_initial_value=0)
+        p.add_fluent(x, default_initial_value=0 if case == "int" else False)
+        p.set_initial_value(a, [5, 6])
+        w = InstantaneousAction("w")
+        w.add_effect(x(), 1 if case == "int" else True)
+        p.add_action(w)
+        s.add_precondition(Equals(em.ArrayIndex(a(), Int(0)), 5))
+        s.add_precondition(Equals(x(), 1) if case == "int" else x())
+    p.add_action(s)
+    p.add_goal(done())
+    return p
+
+
+def test_cells_do_not_take_a_declared_name():
+    """Cells were named a[i] whatever else had that name, and fluents are
+    identified by name, so a cell and a fluent (or two cells) of one name were
+    merged: with one type, the task came out UNSOLVABLE_PROVEN (s needs the
+    two values to differ); with two, preprocessing stopped on one atom with
+    two ExprIDs, INTERNAL_ERROR. A taken name now gets a suffix, a[i]!k. The
+    plan is checked against UP's array-free compilation."""
+    for strategy in ("seq", "e", "e-lin"):
+        for case in ("int", "bool", "cells"):
+            p = _cell_name_collision_problem(case)
+            r = solve(p, strategy=strategy)
+            assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, \
+                f"{strategy}/{case}: {r.status}"
+            p_ar = _ar_compile(p)
+            _assert_valid(p_ar, _map_plan(p_ar, r.plan), f"{strategy}/{p.name}")
+
+
 def test_state_invariant_with_cell_read():
     """A declared state invariant containing a cell read is lowered and
     enforced: the action violating it cannot be used."""
@@ -880,7 +1000,7 @@ def test_state_invariant_with_cell_read():
     p.add_action(bad)
     p.add_trajectory_constraint(Always(LE(em.ArrayIndex(a(), Int(1)), Int(5))))
     p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 1))
-    r = solve(p, strategy=GROUNDED)
+    r = solve(p, strategy="seq")  # the strategy that keeps declared invariants
     assert r.status == PlanGenerationResultStatus.SOLVED_SATISFICING, r.status
     assert [ai.action.name for ai in r.plan.actions] == ["good"], \
         f"invariant not enforced: {r.plan}"
@@ -1208,7 +1328,17 @@ def test_same_cell_conflicting_assignments_never_apply():
         p.add_action(bad)
         p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 1))
         return p
-    _assert_rejected(build)
+    _assert_never_applicable_removed(build(), 1)
+
+
+def _assert_never_applicable_removed(problem, removed):
+    """EffectNormalizationPass removed `removed` ground actions as never
+    applicable, and the goal is then unreachable. (_assert_rejected would also
+    take a hard error, the behaviour these cases had before the pass.)"""
+    r = solve(problem)
+    assert r.status == PlanGenerationResultStatus.UNSOLVABLE_PROVEN, r.status
+    stat = (r.metrics or {}).get("effect_normalization.actions_removed_never_applicable")
+    assert stat is not None and float(stat) == removed, stat
 
 
 def test_whole_array_equality_rejected():
@@ -1251,7 +1381,7 @@ def test_all_instances_conflicting_never_apply():
         p.add_action(bad)
         p.add_goal(Equals(em.ArrayIndex(a(), Int(0)), 1))
         return p
-    _assert_rejected(build)
+    _assert_never_applicable_removed(build(), 4)
 
 
 def test_oob_initial_state_assignment_dropped():
@@ -1314,8 +1444,9 @@ def test_fluent_index_in_goal_rejected():
     p.add_goal(Equals(em.ArrayIndex(a(), f()), Int(2)))  # fluent as index
     r = solve(p)
     assert r.plan is None, "a state-dependent goal index must not solve"
-    assert r.status == PlanGenerationResultStatus.INTERNAL_ERROR, \
-        f"expected the C++ rejection to surface as INTERNAL_ERROR, got {r.status}"
+    assert r.status == PlanGenerationResultStatus.UNSUPPORTED_PROBLEM, r.status
+    assert any("State-dependent array index in a goal" in m.message
+               for m in r.log_messages or []), r.log_messages
 
 
 def test_up_grounding_flag_rejected():
@@ -1337,7 +1468,7 @@ def test_up_grounding_flag_rejected():
     try:
         _rantanplan.preprocess(ir, ["--strategy", "seq", "--verbosity", "silent",
                                     "--up-grounding"])
-    except Exception as e:
+    except _rantanplan.UnsupportedProblemError as e:
         assert "native grounding" in str(e), str(e)
         return
     raise AssertionError("preprocess accepted an array problem with --up-grounding")
@@ -1423,6 +1554,8 @@ CASES = [
     test_guarded_oob_permissive_survives,
     test_guarded_undefined_effect_blocks_where_condition_holds,
     test_guarded_undefined_effect_never_applicable_when_condition_static,
+    test_guarded_nested_index,
+    test_cells_do_not_take_a_declared_name,
     test_state_invariant_with_cell_read,
     test_action_cost_with_cell_read,
     test_same_cell_collision_instance_dependent,

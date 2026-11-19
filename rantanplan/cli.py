@@ -17,6 +17,7 @@ from unified_planning.engines.results import LogLevel
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
+        prog="rantanplan",
         description="RantanPlan - A planning-as-SMT planner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -47,7 +48,37 @@ Use --list-strategies to see available strategies and their descriptions.
         version=f"RantanPlan {metadata.version('rantanplan')}"
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    check_planner_arguments(parser, args)
+    return args
+
+
+def _non_negative_int(text):
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be non-negative, not {value}")
+    return value
+
+
+def _positive_int(text):
+    value = int(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"must be positive, not {value}")
+    return value
+
+
+def check_planner_arguments(parser, args):
+    """Reject a strategy this build does not register, through parser.error
+    like argparse's own checks ("rantanplan: error: ..." on stderr, exit
+    status 2): a bad option is the user's mistake, not the problem's."""
+    try:
+        from rantanplan import _rantanplan
+    except ImportError:
+        return  # solve_problem reports the missing module
+    strategies = _rantanplan.list_strategies()
+    if args.strategy not in strategies:
+        parser.error(f"argument --strategy: unknown strategy '{args.strategy}' "
+                     f"(choose from {', '.join(strategies)})")
 
 
 def add_planner_arguments(parser):
@@ -57,8 +88,8 @@ def add_planner_arguments(parser):
     instead of reading PDDL files.
     """
     # Strategy selection
-    parser.add_argument("--strategy", type=str, default="elsc",
-                       help="Planning strategy to use (default: elsc)")
+    parser.add_argument("--strategy", type=str, default="e-lin",
+                       help="Planning strategy to use (default: e-lin)")
     parser.add_argument("--mode",
                        choices=["satisficing", "optimal", "anytime"],
                        default=None,
@@ -67,9 +98,9 @@ def add_planner_arguments(parser):
                             "anytime (keep improving, report intermediate plans)")
 
     # Optional global parameters
-    parser.add_argument("--timeout", type=int, default=None,
+    parser.add_argument("--timeout", type=_non_negative_int, default=None,
                        help="Timeout in seconds (default: None)")
-    parser.add_argument("--max-steps", type=int,
+    parser.add_argument("--max-steps", type=_positive_int,
                        help="Maximum planning steps")
     parser.add_argument("--output-plan", type=str, default="plan.txt",
                        help="Base path for plan output in IPC format (files written as <path>.1, .2, etc.; "
@@ -130,7 +161,7 @@ def _build_planner_params(args) -> Dict[str, object]:
         'strategy': args.strategy,
     }
 
-    if args.max_steps:
+    if args.max_steps is not None:
         planner_params['max_steps'] = args.max_steps
     if args.stats_file:
         planner_params['stats_file'] = args.stats_file
@@ -174,6 +205,7 @@ def solve_problem(problem, args):
     try:
         from unified_planning.shortcuts import OneshotPlanner, AnytimePlanner
         from unified_planning.engines import PlanGenerationResultStatus
+        from unified_planning.exceptions import UPUsageError
         import rantanplan
     except ImportError as e:
         print(f"Error: Failed to import dependencies: {e}")
@@ -188,8 +220,15 @@ def solve_problem(problem, args):
     try:
         PlannerClass: Any = OneshotPlanner
 
+        # skip_checks: Unified Planning's own check of the problem kind, made
+        # when an engine is picked by name, only warns ("We cannot establish
+        # whether rantanplan can solve this problem!"). The engine checks the
+        # kind itself, for its search mode, and refuses with
+        # UNSUPPORTED_PROBLEM and the features it lacks, which
+        # report_result prints.
         if args.mode == "anytime":
             with AnytimePlanner(name='rantanplan-anytime', params=planner_params) as planner:
+                planner.skip_checks = True
                 last_result = None
                 for result in planner.get_solutions(problem, timeout=args.timeout):
                     if result.status == PlanGenerationResultStatus.INTERMEDIATE:
@@ -199,13 +238,19 @@ def solve_problem(problem, args):
                 return last_result
         elif args.mode == "optimal":
             with PlannerClass(name='rantanplan-optimal', params=planner_params) as planner:
+                planner.skip_checks = True
                 result = planner.solve(problem, timeout=args.timeout)
                 return result
         else:
             # satisficing (default)
             with PlannerClass(name='rantanplan', params=planner_params) as planner:
+                planner.skip_checks = True
                 result = planner.solve(problem, timeout=args.timeout)
                 return result
+    except UPUsageError as e:
+        # An option the engine refuses (the parser checks most of them).
+        print(f"rantanplan: error: {e}", file=sys.stderr)
+        sys.exit(2)
     except Exception as e:
         print(f"Error during planning: {e}")
         return None
@@ -214,13 +259,25 @@ def solve_problem(problem, args):
 
 def report_result(result, args) -> int:
     """Print the status and the plan (unless --silent), and return the exit
-    code: 0 if there is a plan, 1 otherwise."""
+    code: 0 if there is a plan, 1 otherwise.
+
+    Without a plan, the result's ERROR log messages (why the problem was
+    refused, or the internal error) go to stderr as "Error: ...", even with
+    --silent, and its WARNING messages as "Warning: ...", unless --silent.
+    The "Status:" and "No plan found" lines stay as they are: scripts read
+    them."""
     if not result:
         return 1
 
     # Print result (unless --silent)
     if not args.silent:
         print(f"Status: {result.status}")
+    if not result.plan:
+        for message in result.log_messages or []:
+            if message.level == LogLevel.ERROR:
+                print(f"Error: {message.message}", file=sys.stderr)
+            elif message.level == LogLevel.WARNING and not args.silent:
+                print(f"Warning: {message.message}", file=sys.stderr)
     if result.plan and hasattr(result.plan, 'actions'):
         if not args.silent:
             print(f"Plan found with {len(result.plan.actions)} actions")

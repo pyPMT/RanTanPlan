@@ -104,6 +104,10 @@ public:
     /// Whether the search ended due to timeout.
     bool timed_out() const { return timed_out_; }
 
+    /// Whether the last search proved that no plan of any length exists. A
+    /// step limit or a timeout proves nothing. Only branch-and-bound proves it.
+    bool unsolvability_proven() const { return unsolvability_proven_; }
+
     /// Set the arithmetic profile for Z3 solver tuning.
     void set_arithmetic_profile(ArithmeticProfile profile) { arithmetic_profile_ = profile; }
 
@@ -120,10 +124,10 @@ public:
         on_intermediate_plan_ = std::move(callback);
     }
 
-    /// Set the propagator strategy for this planner.
+    /// Set the propagator strategy for this planner (null: no propagator).
     void set_propagator_strategy(std::unique_ptr<PropagatorStrategy> propagator);
 
-    /// Get the name of the current propagator strategy.
+    /// Get the name of the current propagator strategy ("none" without one).
     std::string get_propagator_strategy_name() const;
 
     /// Access to the underlying Z3 solver.
@@ -144,7 +148,7 @@ protected:
     BaseEncoder& encoder_;
     z3::context& ctx_;
     z3::solver solver_;
-    std::unique_ptr<PropagatorStrategy> propagator_strategy_;
+    std::unique_ptr<PropagatorStrategy> propagator_strategy_;  ///< null without modules
 
     /// Horizon schedule; concrete planners initialise this from Config in their constructor.
     HorizonSchedule schedule_;
@@ -153,6 +157,7 @@ protected:
 
     bool solution_found_ = false;
     bool timed_out_ = false;
+    bool unsolvability_proven_ = false;
 
     /// Optional plan hook (set_intermediate_plan_callback). Concrete planners
     /// call notify_intermediate_plan() wherever they write plan.txt.N.
@@ -188,11 +193,18 @@ protected:
     /// Uses get_solver() to access the derived class's solver.
     void collect_statistics();
 
+    /// Register the variables of `timestep` with the propagator, if there is one.
+    void register_propagator_variables(int timestep);
+
+    /// Report the propagator's statistics, if there is one.
+    void cleanup_propagator();
+
     /// Add standard timestep constraints: actions, frames, symmetries, parallelism,
-    /// and propagator variable registration. Optionally includes prefix-monotone
-    /// constraints (omitted by DoubleTailPlanner).
+    /// and propagator variable registration (`propagator` may be null).
+    /// Optionally includes prefix-monotone constraints (omitted by
+    /// DoubleTailPlanner).
     static void add_timestep_constraints(z3::solver& solver, BaseEncoder& encoder,
-                                         PropagatorStrategy& propagator, int timestep,
+                                         PropagatorStrategy* propagator, int timestep,
                                          bool prefix_monotone = true);
 };
 

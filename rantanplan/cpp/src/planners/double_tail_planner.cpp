@@ -32,7 +32,7 @@ z3::expr DoubleTailPlanner::create_link_constraints(int forward_t, int backward_
 
 void DoubleTailPlanner::add_timestep_constraints(int t) {
     // DoubleTail omits prefix_monotone (not compatible with bidirectional search)
-    BasePlanner::add_timestep_constraints(solver_, encoder_, *propagator_strategy_, t,
+    BasePlanner::add_timestep_constraints(solver_, encoder_, propagator_strategy_.get(), t,
                                           /*prefix_monotone=*/false);
 }
 
@@ -73,16 +73,16 @@ void DoubleTailPlanner::add_timestep_constraints(int t) {
  *   - Link constraint: L(forward_depth, backward_start) forces state equivalence
  *
  * Link constraints with activation literals:
- * - Each iteration creates a new activation literal: link_at_i
- * - Formula includes: link_at_i => L(forward_depth, backward_start)
- * - Solver is called with assumption [link_at_i = true]
+ * - Each iteration creates a new activation literal: link_at!i
+ * - Formula includes: link_at!i => L(forward_depth, backward_start)
+ * - Solver is called with assumption [link_at!i = true]
  * - This allows incremental solving while testing different link positions
  */
 Plan DoubleTailPlanner::search() {
     auto& config = Config::instance();
     auto& stats = Stats::instance();
 
-    std::string search_msg = "Starting double-tail search with propagator: " + propagator_strategy_->get_name();
+    std::string search_msg = "Starting double-tail search with propagator: " + get_propagator_strategy_name();
     search_msg += ", max horizon: " + std::to_string(max_horizon_);
     search_msg += ", timeout: " + format_timeout_string();
     Logger::instance().info(search_msg);
@@ -93,10 +93,10 @@ Plan DoubleTailPlanner::search() {
 
     // Add invariant constraints: initial state at t=0, goal state at t=max_horizon_
     solver_.add(encoder_.encode_initial_state());
-    propagator_strategy_->register_timestep_variables(0);
+    register_propagator_variables(0);
 
     solver_.add(encoder_.encode_goal(max_horizon_));
-    propagator_strategy_->register_timestep_variables(max_horizon_);
+    register_propagator_variables(max_horizon_);
 
     double total_time = 0.0;
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -136,7 +136,9 @@ Plan DoubleTailPlanner::search() {
         }
 
         // Create link with activation literal: link_literal → L(forward_end, backward_start)
-        std::string link_var_name = "link_at_" + std::to_string(iteration);
+        // '!' keeps the name apart from every state and action variable
+        // (link_at_<i> was the state variable of a 0-ary fluent named link_at).
+        std::string link_var_name = "link_at!" + std::to_string(iteration);
         z3::expr link_literal = ctx_.bool_const(link_var_name.c_str());
         solver_.add(z3::implies(link_literal, create_link_constraints(forward_end, backward_start)));
 
@@ -189,7 +191,7 @@ Plan DoubleTailPlanner::search() {
                 stats.set("planner.plan_length", 0.0);
                 stats.set("planner.solution_timestep", 0.0);
                 collect_statistics();
-                propagator_strategy_->cleanup();
+                cleanup_propagator();
                 return Plan();
             }
 
@@ -206,12 +208,12 @@ Plan DoubleTailPlanner::search() {
                 stats.set("planner.plan_length", static_cast<double>(plan.length()));
                 stats.set("planner.solution_timestep", static_cast<double>(iteration));
                 collect_statistics();
-                propagator_strategy_->cleanup();
+                cleanup_propagator();
                 return plan;
             } catch (const std::exception& e) {
                 Logger::instance().error("ERROR during plan extraction: " + std::string(e.what()));
                 collect_statistics();
-                propagator_strategy_->cleanup();
+                cleanup_propagator();
                 return Plan();
             }
         } else if (result == z3::unsat) {
@@ -227,7 +229,7 @@ Plan DoubleTailPlanner::search() {
         Logger::instance().info("\n*** NO PLAN FOUND within " + std::to_string(max_horizon_) + " iterations ***");
     }
     collect_statistics();
-    propagator_strategy_->cleanup();
+    cleanup_propagator();
     return Plan();
 }
 

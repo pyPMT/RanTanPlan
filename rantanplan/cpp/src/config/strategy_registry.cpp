@@ -23,18 +23,23 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
                        "Sequential encoding (baseline)"}},
 
         // Forall variants
-        {"f",         {{E::Grounded, S::Forall,     I::EagerSyntactic,  {M::ForallEager},         K::Sequential},
-                       "Forall-step, eager syntactic interference"}},
+        {"f",         {{E::Grounded, S::Forall,     I::EagerSyntactic,  {},                       K::Sequential},
+                       "Forall-step, eager syntactic interference, mutex clauses up front"}},
         {"f-p",       {{E::Grounded, S::Forall,     I::EagerSyntactic,  {M::ForallEager},         K::Sequential},
-                       "Forall-step with forall propagator"}},
+                       "Forall-step, eager syntactic interference, mutex propagator"}},
         {"fl",        {{E::Grounded, S::Forall,     I::LazySyntactic,   {M::ForallLazy},          K::Sequential},
                        "Forall-step, lazy syntactic interference"}},
         {"flsc",      {{E::Chained,  S::Forall,     I::LazySemantic,    {M::ForallLazy},          K::Sequential},
                        "Forall-step, lazy semantic interference, chained encoder"}},
 
         // Exists variants
-        {"e",         {{E::Grounded, S::Exists,     I::EagerSyntactic,  {M::ExistsCycle},         K::Sequential},
-                       "Exists-step, eager syntactic interference"}},
+        {"e",         {{E::Grounded, S::Exists,     I::EagerSyntactic,  {},                       K::Sequential},
+                       "Exists-step, eager syntactic interference, step-order clauses up front"}},
+        {"e-lin",     {{E::Grounded, S::Exists,     I::EagerSyntactic,  {},                       K::Sequential,
+                        EstepMutexes::Chains},
+                       "Exists-step, eager syntactic interference, Rintanen's linear step-order chains up front"}},
+        {"e-p",       {{E::Grounded, S::Exists,     I::EagerSyntactic,  {M::ExistsCycle},         K::Sequential},
+                       "Exists-step, eager syntactic interference, cycle propagator"}},
         {"el",        {{E::Grounded, S::Exists,     I::LazySyntactic,   {M::ExistsCycle},         K::Sequential},
                        "Exists-step, lazy syntactic interference"}},
         {"elsc",      {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::Sequential},
@@ -55,23 +60,23 @@ const std::map<std::string, StrategyEntry>& StrategyRegistry::get_registry() {
                        "Sequential encoding, double-tail planner"}},
 
         // Double-tail forall
-        {"f-dt",      {{E::Grounded, S::Forall,     I::EagerSyntactic,  {M::ForallEager},         K::DoubleTail},
-                       "Forall-step, eager syntactic interference, double-tail"}},
+        {"f-dt",      {{E::Grounded, S::Forall,     I::EagerSyntactic,  {},                       K::DoubleTail},
+                       "Forall-step, eager syntactic interference, mutex clauses up front, double-tail"}},
         {"fl-dt",     {{E::Grounded, S::Forall,     I::LazySyntactic,   {M::ForallLazy},          K::DoubleTail},
                        "Forall-step, lazy syntactic interference, double-tail"}},
         {"flsc-dt",   {{E::Chained,  S::Forall,     I::LazySemantic,    {M::ForallLazy},          K::DoubleTail},
                        "Forall-step, lazy semantic interference, chained encoder, double-tail"}},
 
         // Double-tail exists
-        {"e-dt",      {{E::Grounded, S::Exists,     I::EagerSyntactic,  {M::ExistsCycle},         K::DoubleTail},
-                       "Exists-step, eager syntactic interference, double-tail"}},
+        {"e-dt",      {{E::Grounded, S::Exists,     I::EagerSyntactic,  {},                       K::DoubleTail},
+                       "Exists-step, eager syntactic interference, step-order clauses up front, double-tail"}},
         {"el-dt",     {{E::Grounded, S::Exists,     I::LazySyntactic,   {M::ExistsCycle},         K::DoubleTail},
                        "Exists-step, lazy syntactic interference, double-tail"}},
         {"elsc-dt",   {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle},         K::DoubleTail},
                        "Exists-step, lazy semantic interference, chained encoder, double-tail"}},
 
-        // Frame propagator variants (each mirrors its non-fp counterpart, with
-        // eager frame axioms replaced by the lazy frame propagator module).
+        // Frame propagator variants (e-fp mirrors e-p and elsc-fp mirrors elsc,
+        // with eager frame axioms replaced by the lazy frame propagator module).
         {"e-fp",      {{E::Grounded, S::Exists,     I::EagerSyntactic,  {M::ExistsCycle, M::FrameAxiom}, K::Sequential},
                        "Exists-step, eager syntactic interference, frame propagator"}},
         {"elsc-fp",   {{E::Chained,  S::Exists,     I::LazySemantic,    {M::ExistsCycle, M::FrameAxiom}, K::Sequential},

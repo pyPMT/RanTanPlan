@@ -54,7 +54,8 @@ classDiagram
 ```
 
 Why split it at all: a consumer that needs neighbour lists or the whole
-graph (the ∀-step encoding, the eager forall-mutex propagator module)
+graph (the ∀-step encoding, the ∃-step step order, the eager forall-mutex
+propagator module)
 *cannot function* against a lazy analyzer — there's no graph to hand back.
 An earlier version of this code had one interface with graph methods that
 *threw at runtime* on lazy implementations, guarded by a runtime `is_lazy()`
@@ -73,6 +74,11 @@ matrix of eager/lazy crossed with syntactic/semantic:
 |---|---|---|
 | **Eager** | `EagerInterferenceAnalysis` — builds the full graph once, using fast fluent-set-intersection checks | `EagerSemanticInterferenceAnalysis` — builds the full graph once, using Z3-checked precision |
 | **Lazy** | `LazyInterferenceAnalysis` — queries pairs on demand, syntactic checks | `SemanticInterferenceAnalysis` — queries pairs on demand, Z3-checked |
+
+The semantic column is only accepted with the Chained encoder
+(`StrategyFactory::validate`): semantic interference lets two writes of one
+fluent share a step and takes them to compose, which the Grounded encoder
+does not do (see [`encoders-and-planners.md`](encoders-and-planners.md)).
 
 **Syntactic** interference is a sound *overapproximation*: it intersects
 precondition/effect fluent sets (positive/negative boolean, numeric,
@@ -123,10 +129,12 @@ and reports no real interference. The difference has the most bite under ∀-ste
 blocks co-scheduling outright with no escape valve: syntactic interference
 would permanently forbid `refuel_a` and `refuel_b` from ever sharing a
 timestep, while semantic interference lets them run together freely. (Under
-∃-step the gap is narrower — a merely-commuting pair like this one already
-admits *some* execution order, so the cycle-detection propagator wouldn't
-block it either way; semantic precision matters most there for pairs where
-no order is obviously safe on paper but Z3 can still prove one is.) This is
+∃-step the gap is narrower in general — a pair that interferes in one
+direction only still admits an execution order — but not for this pair:
+syntactically, each refuel writes `fuel(truck1)` and so interferes with the
+other, a two-way pair that no order can serve, so the ∃-step strategies
+keep the two apart as well. Semantic precision matters there for exactly
+such pairs, which Z3 can still prove commute.) This is
 the concrete payoff of paying Z3's per-query cost — more parallelism, hence
 shorter plans, on exactly the pairs where the cheap check is too coarse.
 
@@ -206,23 +214,25 @@ callback being registered if any one of them needs it.
 ## Try it
 
 The syntactic/semantic tradeoff, quantified — run the same instance under
-eager syntactic (`f`) and eager semantic (`fgs`) interference and compare
-the graph stats:
+eager syntactic (`f`) and eager semantic (`fgsc`, on the Chained encoder)
+interference and compare the graph stats. Both graphs are built before the
+search, and the stats file is written also when the time runs out (`f`
+takes minutes on this instance), so a short `--timeout` is enough:
 
 ```bash
 rantanplan -d pddl/small-test/zenotravel/domain.pddl \
            -p pddl/small-test/zenotravel/instances/pfile13.pddl \
-           --strategy f   --stats-file /tmp/stats_f.txt
+           --strategy f    --timeout 30 --stats-file /tmp/stats_f.txt
 rantanplan -d pddl/small-test/zenotravel/domain.pddl \
            -p pddl/small-test/zenotravel/instances/pfile13.pddl \
-           --strategy fgs --stats-file /tmp/stats_fgs.txt
-grep interference /tmp/stats_f.txt /tmp/stats_fgs.txt
+           --strategy fgsc --timeout 30 --stats-file /tmp/stats_fgsc.txt
+grep interference /tmp/stats_f.txt /tmp/stats_fgsc.txt
 ```
 
-On the same 531 ground actions, syntactic builds **85,032** interference
-edges in **~27 ms**; semantic asks Z3 about every pair and builds
-**21,852** edges in **~22 s** — roughly 800× the build cost for a graph
-four times sparser. Every edge that disappeared is a pair like the
+On the same 567 ground actions, syntactic builds **72,972** interference
+edges in **~48 ms**; semantic asks Z3 about every pair and builds
+**23,604** edges in **~5.5 s** — over 100× the build cost for a graph
+three times sparser. Every edge that disappeared is a pair like the
 `refuel_a`/`refuel_b` example above: syntactically overlapping, semantically
 commuting — and each one is a mutex clause ∀-step no longer has to emit,
 which is the whole bet the semantic strategies make.
@@ -239,10 +249,20 @@ frame axioms lazily from the propagator instead of the encoding, for the
 `std::set<PropagatorModuleKind>` — strategies can combine modules (e.g.
 `elsc-fp` uses `{ExistsCycle, FrameAxiom}` together).
 
+The set can also be empty: `seq`, `seq-dt`, `r2e`, and the eager baselines
+`e`, `e-lin`, `f` and their `-dt` variants carry no module, and
+`StrategyFactory::create_propagator` then returns null, so no user
+propagator is attached at all (a propagator would only take a `fixed()`
+callback for every assignment, with nothing to act on, and registering the
+action variables also steers Z3's search). `--log-file` still attaches one,
+for the logging module. Without a module that manages parallelism, the
+planner asserts the parallelism clauses of `encode_parallelism` up front
+instead (see [`the-encoding.md`](the-encoding.md)).
+
 The `-fp` family adds `FrameAxiom` to an existing strategy and changes
 nothing else, so each one pairs with a baseline for ablation: `e-fp` with
-`e` (eager syntactic interference), `els-fp` with `els` (lazy semantic), and
-`elsc-fp` with `elsc` (lazy semantic, chained encoder). `StrategyFactory`
+`e-p` (eager syntactic interference, `ExistsCycle`) and `elsc-fp` with
+`elsc` (lazy semantic, chained encoder). `StrategyFactory`
 calls `encoder.set_lazy_frames(true)` whenever `FrameAxiom` is present, which
 makes `GroundedEncoder::encode_frames()` return `true` and hands all frame
 reasoning to the module.
@@ -260,14 +280,13 @@ dispatcher-level numbers first:
 | `propagator.push_calls`, `.pop_calls`, `.pop_scopes` | backtracking traffic through the module trails |
 | `propagator.callback_ms` | wall-clock inside all propagator callbacks |
 | `propagator.callback_time_fraction` | that time over `planner.solve_time` |
-
-The two timing keys are **absent** for a strategy with no modules (`seq`,
-`seq-dt`). Those still receive every `fixed()` callback — hundreds of
-millions of them on a large instance — but have no module work to attribute,
-so the clock reads are skipped rather than spent measuring the measurement.
-Absent, not zero: an unmeasured propagator must not read as one that spent no
-time.
 | `propagator.registered_vars` | distinct variables watched |
+
+A strategy with no modules attaches no propagator, so none of these keys
+appear in its stats. The two timing keys are also skipped by a propagator
+with an empty module set (`PropagatorStrategy::timing_enabled()`), which
+the factory no longer builds: absent, not zero, as an unmeasured propagator
+must not read as one that spent no time.
 
 `FrameAxiomModule::cleanup()` adds the frame-specific view:
 

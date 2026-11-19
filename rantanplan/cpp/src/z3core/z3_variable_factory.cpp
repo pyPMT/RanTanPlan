@@ -61,8 +61,8 @@ z3::expr Z3VariableFactory::create_symbol_variable(const std::string& name, cons
     }
 }
 
-const z3::expr& Z3VariableFactory::get_fluent_variable(const Fluent& fluent, int timestep) {
-    std::string var_name = get_fluent_var_name(fluent, timestep);
+const z3::expr& Z3VariableFactory::get_fluent_variable(const Fluent& fluent, ExprID atom, int timestep) {
+    std::string var_name = get_fluent_var_name(fluent, atom, timestep);
 
     // Ensure we have enough timesteps allocated
     ensure_timestep_capacity(timestep);
@@ -103,17 +103,26 @@ const z3::expr& Z3VariableFactory::get_action_variable(const Action& action, int
     return *(it->second);
 }
 
-std::string Z3VariableFactory::get_fluent_var_name(const Fluent& fluent) const {
+std::string Z3VariableFactory::atom_tag(ExprID atom) {
+    return ATOM_ID_MARK + std::to_string(atom.id);
+}
+
+std::string Z3VariableFactory::get_fluent_var_name(const Fluent& fluent, ExprID atom) const {
     std::string name = fluent.name();
     // Add parameter values from the fluent's embedded parameters
     for (const auto& param : fluent.parameters()) {
         name += "_" + param.name();
     }
-    return name;
+    // Z3 interns constants by name, and the '_' joiner makes two atoms one
+    // name (at_pkg(loc) and at(pkg, loc) are both at_pkg_loc): the atom's
+    // ExprID keeps one variable per ground atom, as the id does for actions.
+    // Its mark is not an action's '!': with one mark, the 0-ary go_o5 with
+    // id 5 would be the action go(o5) with id 5.
+    return name + atom_tag(atom);
 }
 
-std::string Z3VariableFactory::get_fluent_var_name(const Fluent& fluent, int timestep) const {
-    return get_fluent_var_name(fluent) + "_" + std::to_string(timestep);
+std::string Z3VariableFactory::get_fluent_var_name(const Fluent& fluent, ExprID atom, int timestep) const {
+    return get_fluent_var_name(fluent, atom) + "_" + std::to_string(timestep);
 }
 
 std::string Z3VariableFactory::get_action_var_name(const Action& action) const {
@@ -122,7 +131,11 @@ std::string Z3VariableFactory::get_action_var_name(const Action& action) const {
     for (const auto& param : action.parameters()) {
         name += "_" + param.name();
     }
-    return name;
+    // Z3 interns constants by name, and the instances TermResolutionPass
+    // splits an action into share its name and parameters: the id, the
+    // action's place in Problem::actions(), keeps one variable per ground
+    // action. '!' never occurs in planning identifiers.
+    return name + "!" + std::to_string(action.id());
 }
 
 std::string Z3VariableFactory::get_action_var_name(const Action& action, int timestep) const {
@@ -187,8 +200,8 @@ bool Z3VariableFactory::is_action_variable(const z3::expr& var) const {
 }
 
 // Const versions for read-only access
-const z3::expr& Z3VariableFactory::get_fluent_variable(const Fluent& fluent, int timestep) const {
-    std::string var_name = get_fluent_var_name(fluent, timestep);
+const z3::expr& Z3VariableFactory::get_fluent_variable(const Fluent& fluent, ExprID atom, int timestep) const {
+    std::string var_name = get_fluent_var_name(fluent, atom, timestep);
 
     if (timestep >= static_cast<int>(state_vars_.size())) {
         throw std::runtime_error("Timestep " + std::to_string(timestep) + " not allocated yet");

@@ -32,6 +32,7 @@
 #include "config/strategy_registry.hpp"
 #include "util/logger.hpp"
 #include "util/stats.hpp"
+#include "util/unsupported_problem_error.hpp"
 
 #include "z3++.h"
 
@@ -223,6 +224,11 @@ std::string z3_version() {
 
 NB_MODULE(_rantanplan, m) {
     m.doc() = "In-process RantanPlan solver (C++ core via nanobind)";
+
+    // A problem the planner does not handle: the wrapper reports it as
+    // UNSUPPORTED_PROBLEM, where any other exception is an internal error.
+    // A ValueError, as the std::invalid_argument it derives from was.
+    nb::exception<UnsupportedProblemError>(m, "UnsupportedProblemError", PyExc_ValueError);
 
     // ── Problem IR ──────────────────────────────────────────────────────
     nb::enum_<ir::ExprKindIR>(m, "ExprKind")

@@ -5,6 +5,7 @@
 #include "../problem/expr_enums.hpp"
 #include "../problem/expr_walk.hpp"
 #include "../util/logger.hpp"
+#include "../util/unsupported_problem_error.hpp"
 
 #include <map>
 #include <optional>
@@ -12,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace rantanplan {
@@ -57,7 +59,7 @@ public:
             AccessResult r = resolve_access(eid, cell, context);
             if (r == AccessResult::OutOfBounds) {
                 if (discard_on_oob) { out_discard = true; return eid; }
-                throw std::runtime_error(
+                throw UnsupportedProblemError(
                     "Array access out of bounds or on an undefined position in " +
                     context + " (" + pool_.to_string(eid) + ")");
             }
@@ -71,7 +73,7 @@ public:
             if (pool_.is_fluent_symbol(head)) {
                 const Fluent* f = problem_.find_fluent(pool_.payload_string(head));
                 if (f && f->is_array()) {
-                    throw std::runtime_error(
+                    throw UnsupportedProblemError(
                         "Whole-array operation on array fluent '" + f->name() +
                         "' is not supported (only per-cell constant-index access "
                         "is lowered); appeared in " + context);
@@ -128,7 +130,7 @@ public:
             if (pool_.is_fluent_symbol(head)) {
                 const Fluent* f = problem_.find_fluent(pool_.payload_string(head));
                 if (f && f->is_array())
-                    throw std::runtime_error(
+                    throw UnsupportedProblemError(
                         "Whole-array operation on array fluent '" + f->name() +
                         "' is not supported (only per-cell constant-index access "
                         "is lowered); appeared in " + context);
@@ -175,10 +177,14 @@ private:
     ExprPool& pool_;
     std::vector<Fluent> cell_fluents_;
     std::unordered_map<int, ArrayInfo> arrays_;           // array fluent id -> info
+    // Names a new cell may not take: the declared fluents' and the cells'
+    // minted so far (mint_cell).
+    std::unordered_set<std::string> taken_names_;
 
     /// Mint one scalar cell fluent + state variable per defined array position,
     /// in fluent-declaration order and row-major position order.
     void mint_cells() {
+        for (const Fluent& f : problem_.fluents()) taken_names_.insert(f.name());
         for (const Fluent& f : problem_.fluents()) {
             if (!f.is_array()) continue;
 
@@ -223,8 +229,19 @@ private:
 
     ExprID mint_cell(const Fluent& array_fluent, const std::vector<int64_t>& coord,
                      const Type* elem_type, int elem_type_id) {
-        std::string cell_name = array_fluent.name();
-        for (int64_t c : coord) cell_name += "[" + std::to_string(c) + "]";
+        // The readable name a[i][j], unless a declared fluent or another
+        // array's cell already has it (a scalar fluent may be called "a[0]",
+        // and the cells of a 2-D a and of a 1-D "a[0]" are both "a[0][0]"):
+        // fluents are identified by name, so the two would be merged into one
+        // (or, of different types, break the encoding). Then a[i][j]!k, with
+        // the first k that is free; '!' never occurs in planning identifiers.
+        std::string readable = array_fluent.name();
+        for (int64_t c : coord) readable += "[" + std::to_string(c) + "]";
+        std::string cell_name = readable;
+        for (int k = 1; taken_names_.count(cell_name); ++k) {
+            cell_name = readable + "!" + std::to_string(k);
+        }
+        taken_names_.insert(cell_name);
 
         // A cell is a scalar fluent of the leaf element type, keeping the array
         // fluent's object parameters (empty for a nullary array).
@@ -271,13 +288,13 @@ private:
         const ArrayInfo& info = it->second;
 
         if (coords.size() < info.sizes.size()) {
-            throw std::runtime_error(
+            throw UnsupportedProblemError(
                 "Partial indexing of array fluent '" + base->name() +
                 "' (whole-row/slice access) is not supported; appeared in " +
                 context);
         }
         if (coords.size() > info.sizes.size()) {
-            throw std::runtime_error(
+            throw UnsupportedProblemError(
                 "Array fluent '" + base->name() + "' has " +
                 std::to_string(info.sizes.size()) + " dimension(s) but was "
                 "accessed with " + std::to_string(coords.size()) +
@@ -319,7 +336,7 @@ private:
             ExprID idx = pool_.argument(eid, 1);
             auto c = fold_const_int(idx, pool_);
             if (!c) {
-                throw std::runtime_error(
+                throw UnsupportedProblemError(
                     "Array index did not fold to a constant in " + context +
                     " (" + pool_.to_string(idx) +
                     "); symbolic indices are not supported in Phase 1.");
