@@ -108,13 +108,22 @@ commute?). The lazy `SemanticInterferenceAnalysis` caches per-pair results; the
 eager `EagerSemanticInterferenceAnalysis` builds the whole graph then discards
 the predicate's Z3 state. **Change the semantic check in the predicate, not in
 either wrapper.** One subtlety worth flagging, because it was a real soundness
-bug: `check2` compares the *parallel happening* σ_h against a serialization, and
-σ_h must be the **function of compositions** (Bofill et al. 2016, Def 5) — compose
-only the per-variable assignments, so a variable an effect merely *reads* (a
-velocity fluent in `x += v·3`) stays at its pre-state value — *not* the
-composition of whole-state functions, which would let one action's write flow into
-the other's read and under-report interference on velocity/rate-style numeric
-domains. See `docs/specs/exists-step-semantic-interference-soundness.md`.
+bug twice over: `check2` asks whether a1 can change the value that the term of
+an assignment of a2 to x has, with x replaced by a fresh constant ξ, i.e. at
+*every* value of x and not only at the one a1's precondition allows. The
+published check (Bofill et al. 2016, Def 7) compared the pair's happening with
+one serialization, and a precondition can hide a dependence at that one value:
+with a1 = ⟨z = 0, y += 1⟩ and two writers of `z := z·(1+y)+1`, every pair passes
+and the step of the three reaches z = 3 where the happening says 2. On terms
+whose dependence on the other variables does not change with x (every linear
+term, every term that does not mention x) the two checks agree. The happening
+itself is the **function of compositions** (Def 5): the writes to one variable
+compose, so a term reads that variable as left by the writers before it, while a
+variable an effect merely *reads* (a velocity fluent in `x += v·3`) stays at its
+pre-state value. The Chained encoder's chain writes exactly that (each write
+reads its own fluent at the value the chain has reached), and simple commutation
+is tested on each action's whole assignment to x, guards included. See
+`docs/specs/exists-step-semantic-interference-soundness.md`.
 
 **Example: where syntactic and semantic disagree.** Take two actions that
 both increase the same numeric fluent: `refuel_a` does

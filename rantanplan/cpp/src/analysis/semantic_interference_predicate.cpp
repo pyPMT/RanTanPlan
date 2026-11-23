@@ -123,8 +123,8 @@ z3::expr SemanticInterferencePredicate::apply_action_effects_substitution(
         //
         // The delta expressions and the guards are still converted at pseudo-
         // timestep -1, so they read the PRE-state while the accumulation is
-        // sequential — which is exactly PDDL 2.1, and matches both
-        // happening_value() here and the chain in ChainedGroundedEncoder.
+        // sequential — which is exactly PDDL 2.1 for the writes of ONE action.
+        // The result is that action's assignment to the fluent, as one term.
         // Mutual exclusivity of the guards is no longer required.
         //
         // ASSIGN ignores the base and overrides; INCREASE/DECREASE add to it. So
@@ -175,14 +175,24 @@ bool SemanticInterferencePredicate::check1(const Action& a1, const Action& a2) c
     z3::check_result result = z3_solver_->check();
     z3_solver_->pop();
 
-    return (result == z3::sat);
+    return result != z3::unsat;  // an undecided check counts as interference
 }
 
 InterferenceSource SemanticInterferencePredicate::check2_source(const Action& a1,
                                                                const Action& a2) const {
-    // Condition 2 of Def 3.9:
-    //   2a. not simply commuting            → unconditional interference
-    //   2b. simply commuting but happening ≠ sequential → state-dependent
+    // Condition 2, corrected: a1 and a2 are not simply commuting, or a1 can change
+    // the value that the term of an assignment of a2 to x has, for SOME value of x.
+    // x is replaced by a fresh constant ξ, which no precondition constrains.
+    //
+    // The published condition (Bofill et al. 2016, Def 7) compared the pair's
+    // happening with one serialization, i.e. the term at the single value x has
+    // after a1. In a step the term of a2 is read after the other writes to x as
+    // well, and a precondition of a1 can hide a dependence at that one value:
+    // with a1 = <z = 0, y := y+1> and two writers of z := z(1+y)+1, each pair
+    // passes the published check and the step of the three reaches z = 3 where
+    // the happening says 2. With ξ, a1 affects both writers. On terms whose
+    // dependence on the other variables does not change with x (every linear
+    // term, every term free of x) the two conditions coincide.
     if (!are_simply_commuting(a1, a2)) {
         return InterferenceSource::CHECK2_UNCOMM;
     }
@@ -190,39 +200,30 @@ InterferenceSource SemanticInterferencePredicate::check2_source(const Action& a1
     z3::expr a1_pre = convert_precondition_to_z3(a1);
     z3::expr a2_pre = convert_precondition_to_z3(a2);
 
-    // Every fluent touched by either action.
-    std::unordered_set<ExprID> affected_var_eids;
-    for (const Effect& effect : a1.effects()) {
-        affected_var_eids.insert(effect.effect_expression().fluent_id());
-    }
+    std::unordered_set<ExprID> written_by_a2;
     for (const Effect& effect : a2.effects()) {
-        affected_var_eids.insert(effect.effect_expression().fluent_id());
+        written_by_a2.insert(effect.effect_expression().fluent_id());
     }
 
-    for (ExprID var_eid : affected_var_eids) {
-        // Happening x·σ_h ("function of compositions"): per-variable parallel
-        // composition, read-only variables kept at their pre-state.
-        z3::expr var_after_happening = happening_value(var_eid, a1, a2);
-
-        // Sequential x·σ_a2·σ_a1 ("composition of functions"): a2 then a1.
+    for (ExprID var_eid : written_by_a2) {
         z3::expr var_z3 = grounded_visitor_->convert_from_pool(var_eid, -1);
-        z3::expr var_after_sequential = var_z3;
-        var_after_sequential = apply_action_effects_substitution(a2, var_after_sequential);
-        var_after_sequential = apply_action_effects_substitution(a1, var_after_sequential);
+        z3::expr_vector from(*z3_context_), to(*z3_context_);
+        from.push_back(var_z3);
+        to.push_back(z3_context_->constant("rtp!xi", var_z3.get_sort()));
 
-        if (z3::eq(var_after_happening, var_after_sequential)) {
-            continue;
+        // a2's assignment to x as one term, read at x = ξ; then the same after a1.
+        z3::expr term = apply_action_effects_substitution(a2, var_z3).substitute(from, to);
+        z3::expr term_after_a1 = apply_action_effects_substitution(a1, term);
+        if (z3::eq(term, term_after_a1)) {
+            continue;  // a1 writes nothing that the term reads
         }
 
-        z3::expr non_commutativity = a1_pre && a2_pre &&
-                                     (var_after_happening != var_after_sequential);
-
         z3_solver_->push();
-        z3_solver_->add(non_commutativity);
+        z3_solver_->add(a1_pre && a2_pre && term != term_after_a1);
         z3::check_result result = z3_solver_->check();
         z3_solver_->pop();
 
-        if (result == z3::sat) {
+        if (result != z3::unsat) {  // an undecided check counts as interference
             return InterferenceSource::CHECK2_HAPPEN;
         }
     }
@@ -230,55 +231,17 @@ InterferenceSource SemanticInterferencePredicate::check2_source(const Action& a1
     return InterferenceSource::NONE;
 }
 
-z3::expr SemanticInterferencePredicate::happening_value(ExprID var_eid,
-                                                        const Action& a1,
-                                                        const Action& a2) const {
-    // Function of compositions (Def 5 of Bofill et al. 2016): the value of var_eid
-    // after the *parallel* happening of {a1, a2}. Compose ONLY the assignments to
-    // var_eid, so any other variable an assignment reads (e.g. a velocity fluent)
-    // stays at its pre-state value — unlike apply_action_effects_substitution
-    // (composition of functions), which would let one action's write flow into the
-    // other's read. Actions are simply commuting here, so the order is irrelevant.
-    // Conditional effects compose as ite chains over the running value, which
-    // needs no exclusivity assumption — this function always did that correctly,
-    // and apply_action_effects_substitution now matches it.
-    z3::expr value = grounded_visitor_->convert_from_pool(var_eid, -1);
-    for (const Action* act : {&a2, &a1}) {
-        for (const Effect& effect : act->effects()) {
-            const EffectExpression& ee = effect.effect_expression();
-            if (ee.fluent_id() != var_eid) continue;
-            z3::expr new_value = convert_effect_to_z3(ee, value);
-            if (ee.is_conditional()) {
-                z3::expr condition = grounded_visitor_->convert_from_pool(ee.condition_id(), -1);
-                value = z3::ite(condition, new_value, value);
-            } else {
-                value = new_value;
-            }
-        }
-    }
-    return value;
-}
-
 bool SemanticInterferencePredicate::are_simply_commuting(const Action& a1,
                                                          const Action& a2) const {
-    // Simply commuting (Def 3.5): for every variable assigned by BOTH actions, the
+    // Simply commuting (Def 4): for every variable assigned by BOTH actions, the
     // two assignments commute.
     //
-    // A fluent may be written more than once by ONE action — a reflexive
-    // grounding of move(?from,?to), or the two arms of a clip-to-capacity idiom
-    // — so group the writes per fluent and test every cross pair. Testing pairs
-    // is sufficient: writing a1's composed effect on the fluent as
-    // F1 = f1_k ∘ … ∘ f1_1 and a2's as F2 = f2_m ∘ … ∘ f2_1, every adjacent swap
-    // in F2∘F1 = f2_m…f2_1 f1_k…f1_1 is licensed by one pairwise result, and
-    // bubbling every f2 past every f1 yields F1∘F2. So all pairs commuting
-    // implies the compositions commute, in both orders — which is what
-    // check2_source relies on when it compares the happening against a single
-    // serialization.
-    //
-    // It is conservative where the composition would have cancelled:
-    // {increase f 1, decrease f 1} is the identity and does commute with
-    // {assign f 5}, though neither individual pair does. That costs
-    // parallelism, not soundness.
+    // Each action's assignment to x is taken as ONE term: its writes to x
+    // composed as apply_action_effects_substitution does (several writes per
+    // fluent — a reflexive grounding of move(?from,?to), the two arms of a
+    // clip-to-capacity idiom — and conditional writes as ite terms). Testing the
+    // two terms is Def 3 itself, guards included, so it also covers a guard that
+    // reads x, which a test on the bare effects would not see.
     //
     // ONLY fluents written by BOTH actions are examined, and that is load-bearing.
     // This function used to return false on sight of a duplicate, before it had
@@ -291,42 +254,28 @@ bool SemanticInterferencePredicate::are_simply_commuting(const Action& a1,
     // formed 2-cycles, and Graph::topological_sort has no cycle detection, so it
     // silently emitted a non-topological order — an invalid plan out of a sound
     // model.
-    std::unordered_map<ExprID, std::vector<const EffectExpression*>> a1_effects;
-    std::unordered_map<ExprID, std::vector<const EffectExpression*>> a2_effects;
-
+    std::unordered_set<ExprID> written_by_a1;
     for (const Effect& effect : a1.effects()) {
-        a1_effects[effect.effect_expression().fluent_id()]
-            .push_back(&effect.effect_expression());
-    }
-    for (const Effect& effect : a2.effects()) {
-        a2_effects[effect.effect_expression().fluent_id()]
-            .push_back(&effect.effect_expression());
+        written_by_a1.insert(effect.effect_expression().fluent_id());
     }
 
-    for (const auto& [var_eid, a1_writes] : a1_effects) {
-        auto a2_it = a2_effects.find(var_eid);
-        if (a2_it == a2_effects.end()) continue;  // not shared: irrelevant here
-        for (const EffectExpression* e1 : a1_writes) {
-            for (const EffectExpression* e2 : a2_it->second) {
-                if (!assignments_commute(*e1, *e2, var_eid)) {
-                    return false;
-                }
-            }
+    std::unordered_set<ExprID> checked;
+    for (const Effect& effect : a2.effects()) {
+        ExprID var_eid = effect.effect_expression().fluent_id();
+        if (!written_by_a1.count(var_eid) || !checked.insert(var_eid).second) continue;
+        z3::expr var_z3 = grounded_visitor_->convert_from_pool(var_eid, -1);
+        if (!terms_commute(apply_action_effects_substitution(a1, var_z3),
+                           apply_action_effects_substitution(a2, var_z3), var_z3)) {
+            return false;
         }
     }
 
     return true;
 }
 
-bool SemanticInterferencePredicate::assignments_commute(const EffectExpression& eff1,
-                                                        const EffectExpression& eff2,
-                                                        ExprID var_eid) const {
-    // Def 3.3: two assignments to x commute iff T ⊨ (exp2{x→exp1} = exp1{x→exp2}).
-    z3::expr var_z3 = grounded_visitor_->convert_from_pool(var_eid, -1);
-
-    z3::expr exp1 = convert_effect_to_z3(eff1, var_z3);
-    z3::expr exp2 = convert_effect_to_z3(eff2, var_z3);
-
+bool SemanticInterferencePredicate::terms_commute(const z3::expr& exp1, const z3::expr& exp2,
+                                                  const z3::expr& var_z3) const {
+    // Def 3: two assignments to x commute iff T ⊨ (exp2{x→exp1} = exp1{x→exp2}).
     z3::expr_vector from_vec(*z3_context_);
     z3::expr_vector to_vec1(*z3_context_);
     z3::expr_vector to_vec2(*z3_context_);
@@ -335,13 +284,12 @@ bool SemanticInterferencePredicate::assignments_commute(const EffectExpression& 
     to_vec1.push_back(exp1);
     to_vec2.push_back(exp2);
 
-    z3::expr exp2_substituted = exp2.substitute(from_vec, to_vec1);  // exp2{x→exp1}
-    z3::expr exp1_substituted = exp1.substitute(from_vec, to_vec2);  // exp1{x→exp2}
-
-    z3::expr non_commute = (exp2_substituted != exp1_substituted);
+    z3::expr exp2_substituted = z3::expr(exp2).substitute(from_vec, to_vec1);  // exp2{x→exp1}
+    z3::expr exp1_substituted = z3::expr(exp1).substitute(from_vec, to_vec2);  // exp1{x→exp2}
+    if (z3::eq(exp2_substituted, exp1_substituted)) return true;
 
     z3_solver_->push();
-    z3_solver_->add(non_commute);
+    z3_solver_->add(exp2_substituted != exp1_substituted);
     z3::check_result result = z3_solver_->check();
     z3_solver_->pop();
 

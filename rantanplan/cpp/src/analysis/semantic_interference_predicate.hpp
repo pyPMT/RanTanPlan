@@ -18,8 +18,11 @@ namespace rantanplan {
 ///                              prevent b's execution (state-dependent).
 ///   CHECK2_UNCOMM:             not simply commuting — assignments don't commute
 ///                              (state-independent).
-///   CHECK2_HAPPEN:             simply commuting but the parallel happening σ_h
-///                              differs from a serialization (state-dependent).
+///   CHECK2_HAPPEN:             simply commuting, but a can change the value
+///                              that the term of an assignment of b has, for
+///                              some value of the variable that it sets
+///                              (state-dependent; the corrected condition 2,
+///                              see check2_source).
 ///
 /// A fifth source, CONFLICTING_COND_EFFECTS, used to fire when one action had
 /// two conditional effects on a fluent whose guards could both hold. It was a
@@ -117,8 +120,7 @@ private:
     bool check1(const Action& a1, const Action& a2) const;
     InterferenceSource check2_source(const Action& a1, const Action& a2) const;
     bool are_simply_commuting(const Action& a1, const Action& a2) const;
-    bool assignments_commute(const EffectExpression& eff1, const EffectExpression& eff2, ExprID var_eid) const;
-    z3::expr happening_value(ExprID var_eid, const Action& a1, const Action& a2) const;
+    bool terms_commute(const z3::expr& exp1, const z3::expr& exp2, const z3::expr& var_z3) const;
     z3::expr convert_effect_to_z3(const EffectExpression& effect, const z3::expr& base_var_z3) const;
 };
 

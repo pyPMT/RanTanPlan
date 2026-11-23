@@ -1,4 +1,5 @@
 #include "chained_grounded_encoder.hpp"
+#include "../problem/visitors/fluent_collector.hpp"
 #include "../util/stats.hpp"
 #include <iostream>
 #include <algorithm>
@@ -31,6 +32,28 @@ void ChainedGroundedEncoder::build_variable_modifiers_index() {
         for (const Effect& effect : action.effects()) {
             variable_modifiers_[effect.effect_expression().fluent_id()]
                 .emplace_back(&action, &effect);
+        }
+    }
+
+    // Writes whose guard or value reads the fluent they write. Only their
+    // terms need the running value of the fluent (see encode_chained_effects);
+    // every other term is converted exactly as before. A Boolean fluent with
+    // such a write is chained too: only the chain lets that read see the value
+    // left by the writers before it in the step. Every other Boolean keeps its
+    // implications and frame axiom, which say the same as the chain for writes
+    // whose guards and values do not read the fluent.
+    self_reading_effects_.clear();
+    self_reading_bools_.clear();
+    for (const auto& [eid, writes] : variable_modifiers_) {
+        for (const auto& [action, effect] : writes) {
+            const EffectExpression& ee = effect->effect_expression();
+            FluentCollector collector(problem_);
+            collector.collect_from_id(ee.value_id());
+            if (effect->is_conditional()) collector.collect_from_id(ee.condition_id());
+            if (collector.get_fluents().count(eid)) {
+                self_reading_effects_.insert(&ee);
+                if (problem_.is_bool_type(eid)) self_reading_bools_.insert(eid);
+            }
         }
     }
 
@@ -121,6 +144,7 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
         const Type* var_type = problem_.type_for_id(var_eid);
 
         z3::expr chain_prev = convert_expr_id_to_z3(var_eid, t);   // ζ_0 = n^t
+        z3::expr action_base = chain_prev;
 
         // Walk the writes in order. Two writes by the SAME action share one
         // action variable, so they either both apply or both pass through —
@@ -129,6 +153,14 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
             const Action* action = writes[i].first;
             const Effect* full_effect = writes[i].second;
             z3::expr action_var = variable_factory_.get_action_variable(*action, t);
+
+            // The value the variable has when this action's turn comes: the
+            // terms of an action read it there (function of compositions,
+            // Bofill et al. 2016, Def 5), and every other variable at t. All
+            // the writes of one action read the same value, the action's own
+            // pre-state. Without this a term that mentions its own variable
+            // read n^t, and the chain depended on the order of the writers.
+            if (i == 0 || writes[i - 1].first != action) action_base = chain_prev;
 
             const bool is_last = (i + 1 == writes.size());
             z3::expr chain_next =
@@ -139,12 +171,12 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
                               var_type);
 
             // Equation (8): Apply effect conditionally based on action execution.
-            // The effect VALUE is converted at timestep t (the pre-state) while
-            // the operator is applied to the running chain value, so additive
-            // deltas accumulate while their expressions read the pre-state —
-            // which is what PDDL 2.1 specifies.
-            z3::expr effect_applied =
-                apply_effect_to_expression(full_effect->effect_expression(), chain_prev, t);
+            // The effect VALUE is converted at timestep t (the pre-state), but for
+            // the fluent itself, which it reads at action_base, while the
+            // operator is applied to the running chain value, so additive
+            // deltas accumulate while their expressions read the pre-state.
+            z3::expr effect_applied = apply_effect_to_expression(
+                full_effect->effect_expression(), chain_prev, action_base, t);
 
             // Unconditional:  action^t          -> next = eff(prev), else next = prev
             // Conditional:   (action^t AND c^t) -> next = eff(prev), else next = prev
@@ -153,7 +185,9 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
             z3::expr apply_effect = action_var;
             if (full_effect->is_conditional()) {
                 apply_effect = action_var &&
-                    convert_expr_id_to_z3(full_effect->effect_expression().condition_id(), t);
+                    read_at(full_effect->effect_expression(),
+                            convert_expr_id_to_z3(full_effect->effect_expression().condition_id(), t),
+                            action_base, t);
             }
             constraints.push_back(z3::ite(apply_effect,
                                           chain_next == effect_applied,
@@ -172,12 +206,28 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
     return z3::mk_and(constraints);
 }
 
-z3::expr ChainedGroundedEncoder::apply_effect_to_expression(
-    const EffectExpression& effect, const z3::expr& base_expr, int timestep) const {
-
-    // Convert the effect value to Z3 - cast away const for this method
+z3::expr ChainedGroundedEncoder::read_at(const EffectExpression& effect, const z3::expr& expr,
+                                         const z3::expr& fluent_value, int timestep) const {
+    if (!self_reading_effects_.count(&effect)) return expr;
     auto* non_const_this = const_cast<ChainedGroundedEncoder*>(this);
-    z3::expr value_z3 = non_const_this->convert_expr_id_to_z3(effect.value_id(), timestep);
+    z3::expr fluent_t = non_const_this->convert_expr_id_to_z3(effect.fluent_id(), timestep);
+    if (z3::eq(fluent_value, fluent_t)) return expr;
+    z3::expr_vector from(ctx_), to(ctx_);
+    from.push_back(fluent_t);
+    to.push_back(fluent_value);
+    z3::expr result = expr;
+    return result.substitute(from, to);
+}
+
+z3::expr ChainedGroundedEncoder::apply_effect_to_expression(
+    const EffectExpression& effect, const z3::expr& base_expr, const z3::expr& self_value,
+    int timestep) const {
+
+    // Convert the effect value to Z3 - cast away const for this method; the
+    // fluent itself is read as self_value (see encode_chained_effects).
+    auto* non_const_this = const_cast<ChainedGroundedEncoder*>(this);
+    z3::expr value_z3 = read_at(effect, non_const_this->convert_expr_id_to_z3(effect.value_id(), timestep),
+                                self_value, timestep);
 
     // Apply the effect operation to the base expression
     // Note: We can't reuse convert_effect_to_z3() from base class because that creates

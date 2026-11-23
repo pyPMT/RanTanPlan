@@ -2,6 +2,7 @@
 
 #include "grounded_encoder.hpp"
 
+#include <unordered_set>
 #include <utility>
 
 namespace rantanplan {
@@ -51,12 +52,18 @@ private:
     ///
     /// Booleans stay out: their frame axioms are cheap (no theory atom) and the
     /// chain's ite would be boolean-sorted, which Z3 internalizes as an iff
-    /// node — a fresh literal plus four gate clauses per write.
+    /// node — a fresh literal plus four gate clauses per write. The exception
+    /// is a Boolean whose own write reads it (self_reading_bools_).
     bool is_chained(ExprID fluent) const {
         auto it = variable_modifiers_.find(fluent);
         return it != variable_modifiers_.end() && !it->second.empty() &&
-               !problem_.is_bool_type(fluent);
+               (!problem_.is_bool_type(fluent) || self_reading_bools_.count(fluent));
     }
+
+    /// Writes whose guard or value reads the fluent they write, and the Boolean
+    /// fluents with such a write, which are chained (build_variable_modifiers_index).
+    std::unordered_set<const EffectExpression*> self_reading_effects_;
+    std::unordered_set<ExprID> self_reading_bools_;
 
     // Map from variable (ExprID) to the writes targeting it, as (action, effect)
     // pairs — one entry per EFFECT, not per action. An action that writes one
@@ -82,13 +89,21 @@ private:
     /**
      * @brief Apply an effect to an expression (for chaining)
      * @param effect The effect expression to apply
-     * @param base_expr The base expression to apply the effect to  
+     * @param base_expr The base expression to apply the effect to
+     * @param self_value The value at which the effect's terms read the fluent itself
      * @param timestep The current timestep for variable lookups
      * @return Z3 expression representing effect applied to base_expr
      */
-    z3::expr apply_effect_to_expression(const EffectExpression& effect, 
-                                      const z3::expr& base_expr, 
+    z3::expr apply_effect_to_expression(const EffectExpression& effect,
+                                      const z3::expr& base_expr,
+                                      const z3::expr& self_value,
                                       int timestep) const;
+
+    /// expr, a term or guard of effect converted at timestep, with the fluent
+    /// that effect writes read as fluent_value; expr itself unless the effect
+    /// reads that fluent.
+    z3::expr read_at(const EffectExpression& effect, const z3::expr& expr,
+                     const z3::expr& fluent_value, int timestep) const;
 };
 
 } // namespace rantanplan
