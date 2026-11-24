@@ -85,6 +85,16 @@ private:
      * Implements equations (7)-(9) from Section 5.2
      */
     z3::expr encode_chained_effects(int t);
+
+    /// --summed-links: x^{t+1} = ite(c_1, e_1, ... ite(c_m, e_m, x^t + sum of
+    /// the active increases)), over the plain assignments c_i -> x := e_i of
+    /// the writers of x, instead of x's chain. Two writers of x share a step
+    /// only if their writes commute, so the active plain assignments have one
+    /// value and leave no increase, and increases add up in any order. Exact
+    /// when no action writes x twice and no write of x reads x; otherwise
+    /// x keeps its chain and this returns false.
+    bool encode_summed_link(ExprID var_eid, int t, z3::expr_vector& constraints);
+    const bool summed_links_;
     
     /**
      * @brief Apply an effect to an expression (for chaining)

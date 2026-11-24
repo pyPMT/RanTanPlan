@@ -141,6 +141,9 @@ void CLIParser::parse(Config& config, int argc, char* argv[]) {
         else if (arg == "--plain-chains") {
             config.exists.plain_chains = true;
         }
+        else if (arg == "--summed-links") {
+            config.exists.summed_links = true;
+        }
         // Logging options
         else if (arg == "--log-file") {
             if (i + 1 < argc) {

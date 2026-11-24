@@ -134,6 +134,9 @@ def add_planner_arguments(parser):
     parser.add_argument("--plain-chains", action="store_true",
                        help="elsc: Rintanen's chains over the plain Boolean units, written up front; "
                             "the propagator checks the rest")
+    parser.add_argument("--summed-links", action="store_true",
+                       help="elsc: the next value of a numeric fluent as its value plus the sum of "
+                            "the step's increases, instead of a chain through its writers")
 
     # Logging
     parser.add_argument("--log-file", type=str,
@@ -187,6 +190,8 @@ def _build_planner_params(args) -> Dict[str, object]:
         planner_params['full_cycle_search'] = True
     if args.plain_chains:
         planner_params['plain_chains'] = True
+    if args.summed_links:
+        planner_params['summed_links'] = True
     if args.horizon_schedule is not None:
         planner_params['horizon_schedule'] = args.horizon_schedule
     if args.log_file:

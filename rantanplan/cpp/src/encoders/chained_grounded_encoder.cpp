@@ -1,4 +1,5 @@
 #include "chained_grounded_encoder.hpp"
+#include "../config/config.hpp"
 #include "../problem/visitors/fluent_collector.hpp"
 #include "../util/stats.hpp"
 #include <iostream>
@@ -9,7 +10,8 @@ namespace rantanplan {
 
 ChainedGroundedEncoder::ChainedGroundedEncoder(const Problem& problem, z3::context& ctx,
                                                std::unique_ptr<ParallelismStrategy> parallelism)
-    : GroundedEncoder(problem, ctx, std::move(parallelism)) {
+    : GroundedEncoder(problem, ctx, std::move(parallelism)),
+      summed_links_(Config::instance().exists.summed_links) {
     build_variable_modifiers_index();
 }
 
@@ -137,6 +139,7 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
     // said between them.
     for (const auto& [var_eid, writes] : variable_modifiers_) {
         if (!is_chained(var_eid)) continue;
+        if (summed_links_ && encode_summed_link(var_eid, t, constraints)) continue;
 
         // ζ is named after the atom and its id: a UP name may hold a space,
         // and n(a) and a 0-ary "n a" both render as (n a).
@@ -204,6 +207,34 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
     }
 
     return z3::mk_and(constraints);
+}
+
+bool ChainedGroundedEncoder::encode_summed_link(ExprID var, int t, z3::expr_vector& constraints) {
+    const auto& writes = variable_modifiers_.at(var);
+    std::unordered_set<const Action*> writers;
+    for (const auto& [action, effect] : writes) {
+        if (!writers.insert(action).second || self_reading_effects_.count(&effect->effect_expression())) return false;
+    }
+    const z3::expr x_t = convert_expr_id_to_z3(var, t);
+    z3::expr_vector terms(ctx_);
+    std::vector<std::pair<z3::expr, z3::expr>> assigns;  // (guard, value), the first one wins
+    for (const auto& [action, effect] : writes) {
+        const auto& ee = effect->effect_expression();
+        z3::expr guard = variable_factory_.get_action_variable(*action, t);
+        if (effect->is_conditional()) guard = guard && convert_expr_id_to_z3(ee.condition_id(), t);
+        z3::expr value = convert_expr_id_to_z3(ee.value_id(), t);
+        if (ee.kind() == EffectExpression::Kind::ASSIGN) {
+            assigns.emplace_back(guard, value);
+            continue;
+        }
+        if (ee.kind() == EffectExpression::Kind::DECREASE) value = -value;
+        terms.push_back(z3::ite(guard, value, value.is_int() ? ctx_.int_val(0) : ctx_.real_val(0)));
+    }
+    z3::expr next = terms.empty() ? x_t : x_t + z3::sum(terms);
+    for (auto it = assigns.rbegin(); it != assigns.rend(); ++it) next = z3::ite(it->first, it->second, next);
+    constraints.push_back(convert_expr_id_to_z3(var, t + 1) == next);
+    Stats::instance().add("encoder.summed_links");
+    return true;
 }
 
 z3::expr ChainedGroundedEncoder::read_at(const EffectExpression& effect, const z3::expr& expr,
