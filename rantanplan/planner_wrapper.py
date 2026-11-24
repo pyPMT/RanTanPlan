@@ -45,6 +45,7 @@ class _RantanPlanBase(Engine):
         self._smt_rpg_checker = options.get('smt_rpg_checker', False)
         self._no_goal_relevance = options.get('no_goal_relevance', False)
         self._full_cycle_search = options.get('full_cycle_search', False)
+        self._plain_chains = options.get('plain_chains', False)
         self._horizon_schedule = options.get('horizon_schedule')
         self._log_file = options.get('log_file')
         self._up_grounding = options.get('up_grounding', False)
@@ -96,6 +97,14 @@ class _RantanPlanBase(Engine):
                     f"horizon_schedule '{self._horizon_schedule}' is incompatible "
                     f"with the double-tail strategy '{self._strategy}'; use one "
                     f"without -dt, or the linear schedule")
+
+        # The options of elsc's exists-step encoding are checked there only:
+        # its plain incremental search, by plan length.
+        elsc_options = [name for name in ("plain_chains",) if getattr(self, "_" + name)]
+        if elsc_options and (self._strategy != "elsc" or self._mode not in (None, "satisficing")):
+            raise UPUsageError(
+                f"{', '.join(elsc_options)}: only with the strategy 'elsc' in satisficing "
+                f"mode, not '{self._strategy}' in mode '{self._mode or 'satisficing'}'")
 
     @staticmethod
     def _check_timeout(timeout: Optional[float]) -> None:
@@ -218,6 +227,8 @@ class _RantanPlanBase(Engine):
             command.append("--no-goal-relevance")
         if self._full_cycle_search:
             command.append("--full-cycle-search")
+        if self._plain_chains:
+            command.append("--plain-chains")
         if self._no_cnf_normalization:
             command.append("--no-cnf-normalization")
         if self._horizon_schedule is not None:

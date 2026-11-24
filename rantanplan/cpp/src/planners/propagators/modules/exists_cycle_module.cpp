@@ -1,10 +1,16 @@
 #include "exists_cycle_module.hpp"
 #include "../../../config/config.hpp"
+#include "../../../encoders/parallelism/exists_semantics.hpp"
 #include "../../../util/stats.hpp"
 #include <algorithm>
 #include <functional>
 
 namespace rantanplan {
+
+bool ExistsCycleModule::manages_parallelism_constraints() const {
+    const auto* exists = dynamic_cast<const ExistsSemantics*>(shared_ ? shared_->parallelism : nullptr);
+    return !(exists && exists->plain_chains());
+}
 
 void ExistsCycleModule::on_fixed(const z3::expr& ast, const z3::expr& value) {
     if (!value.is_true()) return;

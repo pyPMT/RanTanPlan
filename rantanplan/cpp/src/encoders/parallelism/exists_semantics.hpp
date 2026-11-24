@@ -90,6 +90,10 @@ public:
     /// it needs an eager (graph-bearing) analyzer.
     const ExistsStepOrder& step_order() const;
 
+    /// PlainChains: chains over the plain Boolean units only; the ExistsCycle
+    /// module checks every edge, so the planner still posts these chains.
+    bool plain_chains() const { return mutexes_ == EstepMutexes::PlainChains; }
+
 private:
     std::unique_ptr<InterferenceOracle> interference_analyzer_;
     const InterferenceGraphAnalysis* graph_ = nullptr;
@@ -133,6 +137,9 @@ private:
     void prepare_pairs();
     /// For Chains: the chain of every unit.
     void prepare_chains();
+    /// For PlainChains: the order of the graph of the plain units, and the
+    /// chain of every plain unit none of whose pairs that order breaks.
+    void prepare_plain_chains();
     /// The chain that forbids each of `writers` with every later action of
     /// `affected`, both in step order.
     void add_chain(const std::vector<int>& writers, const std::vector<int>& affected);

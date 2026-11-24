@@ -63,9 +63,11 @@ public:
         std::string horizon_schedule = "linear";  ///< Schedule type: linear|arithmetic|geometric|doubling
     } planner;
 
-    /// Exists-step search (the ExistsCycle propagator module).
+    /// Exists-step search (the ExistsCycle propagator module), and the
+    /// options of elsc (rantanplan/planner_wrapper.py checks where they apply).
     struct Exists {
         bool full_cycle_search = false;  ///< --full-cycle-search: search for a cycle from every active action, not only from the one just fixed
+        bool plain_chains = false;       ///< --plain-chains: Rintanen's chains over the plain Boolean units, the propagator for the rest
     } exists;
 
     struct Symmetry {

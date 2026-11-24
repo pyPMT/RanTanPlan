@@ -125,7 +125,7 @@ ExistsStepOrder::ExistsStepOrder(const Graph& graph) {
 }
 
 const ExistsStepOrder& ExistsSemantics::step_order() const {
-    if (!graph_) {
+    if (!step_order_ && !graph_) {
         throw std::logic_error(
             "ExistsSemantics::step_order requires an eager "
             "(graph-bearing) interference analyzer");
@@ -138,9 +138,11 @@ const ExistsStepOrder& ExistsSemantics::step_order() const {
 
 void ExistsSemantics::prepare() {
     prepared_ = true;
-    step_order();  // timed on its own, as estep.order_time_ms
+    if (!plain_chains()) step_order();  // timed on its own, as estep.order_time_ms
     ScopedTimer timer("estep.prepare_time_ms");
-    if (mutexes_ == EstepMutexes::Pairs) {
+    if (plain_chains()) {
+        prepare_plain_chains();
+    } else if (mutexes_ == EstepMutexes::Pairs) {
         prepare_pairs();
     } else {
         prepare_chains();
@@ -155,7 +157,7 @@ void ExistsSemantics::prepare() {
     stats.set("estep.clauses_per_step", static_cast<double>(clauses));
     stats.set("estep.chain_variables_per_step", static_cast<double>(variables));
     Logger::instance().component(VerbosityLevel::INFO, "Exists", {
-        {"mutexes", mutexes_ == EstepMutexes::Pairs ? "pairs" : "chains"},
+        {"mutexes", mutexes_ == EstepMutexes::Pairs ? "pairs" : plain_chains() ? "plain chains" : "chains"},
         {"clauses/step", std::to_string(clauses)},
         {"chain vars/step", std::to_string(variables)},
         {"time", std::to_string(static_cast<int>(timer.elapsed_ms())) + "ms"},
@@ -188,6 +190,79 @@ void ExistsSemantics::prepare_chains() {
         for (int a : unit.affected) unit_roles_[a].emplace_back(index, Role::Affected);
         add_chain(unit.writers, unit.affected);
     }
+}
+
+void ExistsSemantics::prepare_plain_chains() {
+    // Over a plain unit the oracle's relation is the unit's syntactic pairs,
+    // up to pairs that cannot share a step (plain_boolean_fluents). G is the
+    // graph of the plain units' pairs, ordered by its own ExistsStepOrder. A
+    // unit's chain forbids each writer with every later affected action; when
+    // every such pair has its reverse in G it is a 2-cycle of the oracle's
+    // relation as well, so the chain forbids nothing ExistsCycle would allow.
+    // A unit with a broken pair (forbidden, no reverse in G) is left to
+    // ExistsCycle; dropping it can remove the reverse of another unit's pair,
+    // hence the loop.
+    const int n = static_cast<int>(problem_->action_count());
+    const std::unordered_set<ExprID> plain = interference_analyzer_->plain_boolean_fluents();
+    std::vector<InterferenceOracle::InterferenceUnit> units;
+    for (auto& unit : interference_analyzer_->interference_units()) {
+        if (!unit.numeric && plain.count(unit.fluent)) units.push_back(std::move(unit));
+    }
+    auto key = [](int u, int v) { return (static_cast<uint64_t>(u) << 32) | static_cast<uint32_t>(v); };
+    std::vector<char> chained(units.size(), 1);
+    std::vector<uint64_t> edges;
+    auto collect_edges = [&]() {
+        edges.clear();
+        for (size_t i = 0; i < units.size(); ++i) {
+            if (!chained[i]) continue;
+            for (int w : units[i].writers)
+                for (int r : units[i].affected)
+                    if (w != r) edges.push_back(key(w, r));
+        }
+        std::sort(edges.begin(), edges.end());
+        edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+    };
+    collect_edges();
+    {
+        Graph g(n);
+        for (uint64_t e : edges) g.add_edge(static_cast<int>(e >> 32), static_cast<int>(e & 0xffffffffu));
+        step_order_ = std::make_unique<ExistsStepOrder>(g);
+    }
+    const ExistsStepOrder& order = *step_order_;
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (size_t i = 0; i < units.size(); ++i) {
+            if (!chained[i]) continue;
+            bool broken = false;
+            for (int w : units[i].writers) {
+                for (int r : units[i].affected) {
+                    if (w != r && order.forbids(w, r) &&
+                        !std::binary_search(edges.begin(), edges.end(), key(r, w))) {
+                        broken = true;
+                        break;
+                    }
+                }
+                if (broken) break;
+            }
+            if (broken) {
+                chained[i] = 0;
+                changed = true;
+            }
+        }
+        if (changed) collect_edges();
+    }
+
+    auto by_position = [&](int x, int y) { return order.position(x) < order.position(y); };
+    size_t chained_units = 0;
+    for (size_t i = 0; i < units.size(); ++i) {
+        if (!chained[i]) continue;
+        ++chained_units;
+        std::sort(units[i].writers.begin(), units[i].writers.end(), by_position);
+        std::sort(units[i].affected.begin(), units[i].affected.end(), by_position);
+        add_chain(units[i].writers, units[i].affected);
+    }
+    Stats::instance().set("estep.plain_units", static_cast<double>(units.size()));
+    Stats::instance().set("estep.chained_units", static_cast<double>(chained_units));
 }
 
 void ExistsSemantics::add_chain(const std::vector<int>& writers, const std::vector<int>& affected) {
@@ -287,8 +362,9 @@ void ExistsSemantics::encode_chain(size_t unit, int timestep, z3::expr_vector& c
 
 z3::expr ExistsSemantics::encode_parallelism(int timestep) {
     // graph_ is non-null whenever encode_parallelism is reachable: lazy
-    // analyzers require a propagator module that manages parallelism.
-    if (!graph_) {
+    // analyzers require a propagator module that manages parallelism, except
+    // with plain chains, whose order comes from the plain units.
+    if (!graph_ && !plain_chains()) {
         throw std::logic_error(
             "ExistsSemantics::encode_parallelism requires an eager "
             "(graph-bearing) interference analyzer");

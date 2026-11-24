@@ -131,6 +131,9 @@ def add_planner_arguments(parser):
     parser.add_argument("--full-cycle-search", action="store_true",
                        help="Exists-step propagator: search for a cycle from every active action, "
                             "not only from the one just fixed")
+    parser.add_argument("--plain-chains", action="store_true",
+                       help="elsc: Rintanen's chains over the plain Boolean units, written up front; "
+                            "the propagator checks the rest")
 
     # Logging
     parser.add_argument("--log-file", type=str,
@@ -182,6 +185,8 @@ def _build_planner_params(args) -> Dict[str, object]:
         planner_params['no_goal_relevance'] = True
     if args.full_cycle_search:
         planner_params['full_cycle_search'] = True
+    if args.plain_chains:
+        planner_params['plain_chains'] = True
     if args.horizon_schedule is not None:
         planner_params['horizon_schedule'] = args.horizon_schedule
     if args.log_file:

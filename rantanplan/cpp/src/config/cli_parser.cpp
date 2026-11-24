@@ -138,6 +138,9 @@ void CLIParser::parse(Config& config, int argc, char* argv[]) {
         else if (arg == "--full-cycle-search") {
             config.exists.full_cycle_search = true;
         }
+        else if (arg == "--plain-chains") {
+            config.exists.plain_chains = true;
+        }
         // Logging options
         else if (arg == "--log-file") {
             if (i + 1 < argc) {

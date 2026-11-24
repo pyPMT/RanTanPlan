@@ -39,8 +39,11 @@ using PropagatorFlags = std::set<PropagatorModuleKind>;
 /// How Exists semantics writes the pairs its step order forbids: Pairs (one
 /// clause per pair) or Chains (Rintanen's linear encoding, one chain per
 /// interference unit). Chains need eager syntactic interference and no
-/// module that manages parallelism (StrategyFactory::validate).
-enum class EstepMutexes { Pairs, Chains };
+/// module that manages parallelism (StrategyFactory::validate). PlainChains
+/// (--plain-chains, for elsc) writes the chains of the plain Boolean units
+/// only and leaves every edge to the ExistsCycle module as well
+/// (ExistsSemantics::prepare_plain_chains).
+enum class EstepMutexes { Pairs, Chains, PlainChains };
 
 /// A named, validated combination of encoder/semantics/interference/
 /// propagator/planner — the contributor unit for adding a new backend

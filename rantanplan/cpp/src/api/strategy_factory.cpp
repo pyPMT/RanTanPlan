@@ -113,6 +113,16 @@ void StrategyFactory::validate(const StrategySpec& spec,
         }
     }
 
+    // Plain chains are encoded up front over the plain Boolean units, and the
+    // ExistsCycle module, with the lazy oracle, checks every edge.
+    if (spec.estep_mutexes == EstepMutexes::PlainChains &&
+        (spec.semantics != SemanticsKind::Exists || !is_lazy(spec.interference) ||
+         !spec.propagator.count(PropagatorModuleKind::ExistsCycle))) {
+        throw std::invalid_argument(
+            "Plain chains need exists-step semantics, lazy interference and "
+            "the ExistsCycle propagator module");
+    }
+
     if (spec.propagator.count(PropagatorModuleKind::FrameAxiom) &&
         uses_double_tail(spec)) {
         throw std::invalid_argument(
@@ -131,6 +141,8 @@ void StrategyFactory::validate(const StrategySpec& spec,
 }
 
 void StrategyFactory::adjust_spec(StrategySpec& spec, const Problem& problem) {
+    if (Config::instance().exists.plain_chains) spec.estep_mutexes = EstepMutexes::PlainChains;
+
     if (uses_branch_and_bound(spec) &&
         problem.has_metric() && problem.has_state_dependent_costs() &&
         sdac_unsafe(spec)) {

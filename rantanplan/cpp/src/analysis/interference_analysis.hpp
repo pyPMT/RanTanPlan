@@ -104,7 +104,15 @@ public:
     struct InterferenceUnit {
         std::vector<int> writers;   ///< action ids
         std::vector<int> affected;  ///< action ids
+        ExprID fluent;              ///< the fluent written
+        bool numeric = false;       ///< written numerically, else made true or false
     };
+
+    /// The Boolean fluents every write of which is an unconditional
+    /// assignment of a constant, and every read of which is a precondition
+    /// conjunct p or (not p). Over such a fluent the semantic relation is the
+    /// syntactic one, up to pairs whose preconditions contradict.
+    std::unordered_set<ExprID> plain_boolean_fluents() const;
 
     /**
      * @brief The syntactic interference relation, split by fluent

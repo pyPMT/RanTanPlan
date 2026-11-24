@@ -188,9 +188,66 @@ std::vector<InterferenceOracle::InterferenceUnit> InterferenceOracle::interferen
     // A unit without writers or without affected actions forbids nothing.
     std::vector<InterferenceUnit> result;
     for (auto& [key, unit] : units) {
+        unit.fluent = key.first;
+        unit.numeric = key.second == Numeric;
         if (!unit.writers.empty() && !unit.affected.empty()) result.push_back(std::move(unit));
     }
     return result;
+}
+
+std::unordered_set<ExprID> InterferenceOracle::plain_boolean_fluents() const {
+    // Over a plain fluent p, a write that makes p false (true) affects an
+    // action exactly when that action needs p (not p) or writes p true
+    // (false), whatever the state.
+    const ExprPool& pool = problem_->pool();
+    std::unordered_set<ExprID> written, not_plain;
+    auto mark_reads = [&](ExprID e) {
+        if (!e.valid()) return;
+        FluentPolarityCollector collector(*problem_);
+        collector.collect_from_id(e);
+        for (const auto& [f, _] : collector.get_boolean_fluents()) not_plain.insert(f);
+    };
+    auto is_atom = [&](ExprID e) {
+        const ExprKind k = pool.kind(e);
+        return (k == ExprKind::FLUENT_SYMBOL || k == ExprKind::STATE_VARIABLE) && problem_->is_bool_type(e);
+    };
+    for (const Action& action : problem_->actions()) {
+        if (action.has_precondition()) {
+            std::vector<ExprID> conjuncts{action.precondition_id()};
+            while (!conjuncts.empty()) {
+                const ExprID e = conjuncts.back();
+                conjuncts.pop_back();
+                if (is_atom(e)) continue;
+                if (pool.is_function_application(e)) {
+                    auto args = pool.arguments(e);
+                    if (pool.is_and(e)) {
+                        for (ExprID a : args) conjuncts.push_back(a);
+                        continue;
+                    }
+                    if (pool.is_not(e) && args.size() == 1 && is_atom(args[0])) continue;
+                }
+                mark_reads(e);
+            }
+        }
+        for (const Effect& effect : action.effects()) {
+            const EffectExpression& expr = effect.effect_expression();
+            if (effect.is_conditional()) mark_reads(expr.condition_id());
+            mark_reads(expr.value_id());  // a constant reads nothing
+            const ExprID f = expr.fluent_id();
+            if (!problem_->is_bool_type(f)) continue;
+            written.insert(f);
+            const ExprID v = expr.value_id();
+            if (effect.is_conditional() || effect.kind() != EffectExpression::Kind::ASSIGN ||
+                !(pool.is_constant(v) && pool.payload_is_bool(v))) {
+                not_plain.insert(f);
+            }
+        }
+    }
+    std::unordered_set<ExprID> plain;
+    for (ExprID f : written) {
+        if (!not_plain.count(f)) plain.insert(f);
+    }
+    return plain;
 }
 
 } // namespace rantanplan

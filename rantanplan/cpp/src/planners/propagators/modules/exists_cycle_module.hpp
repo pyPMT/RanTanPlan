@@ -23,7 +23,8 @@ namespace rantanplan {
 class ExistsCycleModule : public PropagatorModule {
 public:
     std::string get_name() const override { return "ExistsCycle"; }
-    bool manages_parallelism_constraints() const override { return true; }
+    /// False with plain chains (--plain-chains), which the planner posts.
+    bool manages_parallelism_constraints() const override;
 
     void on_fixed(const z3::expr& ast, const z3::expr& value) override;
     void on_final() override;
