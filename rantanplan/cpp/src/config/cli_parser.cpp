@@ -147,6 +147,9 @@ void CLIParser::parse(Config& config, int argc, char* argv[]) {
         else if (arg == "--robust-actions") {
             config.exists.robust_actions = true;
         }
+        else if (arg == "--rolling") {
+            config.exists.rolling = true;
+        }
         // Logging options
         else if (arg == "--log-file") {
             if (i + 1 < argc) {

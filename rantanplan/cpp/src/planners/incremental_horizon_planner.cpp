@@ -2,6 +2,7 @@
 #include "../config/config.hpp"
 #include "../analysis/graph.hpp"
 #include "../analysis/interference_analysis.hpp"
+#include "../encoders/chained_grounded_encoder.hpp"
 #include "../util/memory_tracker.hpp"
 #include "../util/stats.hpp"
 #include "../util/logger.hpp"
@@ -64,6 +65,13 @@ Plan IncrementalHorizonPlanner::search() {
     // Add initial state constraints (invariant across all horizons).
     solver_.add(encoder_.encode_initial_state());
     register_propagator_variables(0);
+
+    // The first horizon assumes one run of an action per step, which rolling
+    // does not: with some action that rolls, the search starts from 1.
+    if (auto* chained = dynamic_cast<ChainedGroundedEncoder*>(&encoder_);
+        start_timestep > 1 && chained && chained->rolling_applies()) {
+        start_timestep = 1;
+    }
 
     // Pre-fill all transitions for [0, start_timestep - 1] so the first SAT call
     // begins from the RPG lower bound without redundant checks.

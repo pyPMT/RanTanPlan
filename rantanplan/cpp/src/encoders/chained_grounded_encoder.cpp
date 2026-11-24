@@ -14,6 +14,7 @@ ChainedGroundedEncoder::ChainedGroundedEncoder(const Problem& problem, z3::conte
                                                std::unique_ptr<ParallelismStrategy> parallelism)
     : GroundedEncoder(problem, ctx, std::move(parallelism)),
       robust_actions_(Config::instance().exists.robust_actions),
+      rolling_(Config::instance().exists.rolling),
       summed_links_(Config::instance().exists.summed_links) {
     build_variable_modifiers_index();
 }
@@ -109,6 +110,16 @@ z3::expr ChainedGroundedEncoder::encode_actions(int t) {
         if (!filtered_effects.empty()) {
             all_constraints.push_back(z3::implies(action_var, z3::mk_and(filtered_effects)));
         }
+    }
+
+    // The run counts of step t, which the summed links read.
+    if (robust_actions_ && !robust_built_) build_robust(t);
+    for (int a : roll_set_) {
+        const z3::expr n = variable_factory_.create_int_variable("roll_n_" + std::to_string(a) + "_t" + std::to_string(t));
+        const z3::expr av = variable_factory_.get_action_variable(problem_.action(a), t);
+        roll_n_.emplace(std::make_pair(a, t), n);
+        all_constraints.push_back(z3::implies(av, n >= 1));
+        all_constraints.push_back(z3::implies(!av, n == 0));
     }
 
     // Add chained effect constraints for multi-modified non-Boolean variables
@@ -214,12 +225,17 @@ z3::expr ChainedGroundedEncoder::encode_chained_effects(int t) {
     return z3::mk_and(constraints);
 }
 
-bool ChainedGroundedEncoder::encode_summed_link(ExprID var, int t, z3::expr_vector& constraints) {
-    const auto& writes = variable_modifiers_.at(var);
+bool ChainedGroundedEncoder::summed_link_exact(ExprID var) const {
     std::unordered_set<const Action*> writers;
-    for (const auto& [action, effect] : writes) {
+    for (const auto& [action, effect] : variable_modifiers_.at(var)) {
         if (!writers.insert(action).second || self_reading_effects_.count(&effect->effect_expression())) return false;
     }
+    return true;
+}
+
+bool ChainedGroundedEncoder::encode_summed_link(ExprID var, int t, z3::expr_vector& constraints) {
+    if (!summed_link_exact(var)) return false;
+    const auto& writes = variable_modifiers_.at(var);
     const z3::expr x_t = convert_expr_id_to_z3(var, t);
     z3::expr_vector terms(ctx_);
     std::vector<std::pair<z3::expr, z3::expr>> assigns;  // (guard, value), the first one wins
@@ -233,7 +249,11 @@ bool ChainedGroundedEncoder::encode_summed_link(ExprID var, int t, z3::expr_vect
             continue;
         }
         if (ee.kind() == EffectExpression::Kind::DECREASE) value = -value;
-        terms.push_back(z3::ite(guard, value, value.is_int() ? ctx_.int_val(0) : ctx_.real_val(0)));
+        auto rn = roll_n_.find({action->id(), t});
+        if (rn != roll_n_.end())
+            terms.push_back((value.is_real() ? z3::to_real(rn->second) : rn->second) * value);
+        else
+            terms.push_back(z3::ite(guard, value, value.is_int() ? ctx_.int_val(0) : ctx_.real_val(0)));
     }
     z3::expr next = terms.empty() ? x_t : x_t + z3::sum(terms);
     for (auto it = assigns.rbegin(); it != assigns.rend(); ++it) next = z3::ite(it->first, it->second, next);
@@ -386,6 +406,7 @@ void ChainedGroundedEncoder::build_robust(int t) {
                 return false;
         return true;
     };
+    std::map<int, RobustInfo> all_info;
     for (const Action& v : problem_.actions()) {
         if (!v.has_precondition() || v.effects().empty()) continue;
         RobustInfo info;
@@ -446,9 +467,29 @@ void ChainedGroundedEncoder::build_robust(int t) {
             }
             info.conj.push_back(std::move(rc));
         }
+        all_info.emplace(v.id(), std::move(info));
+    }
+    if (rolling_) {
+        for (const Action& a : problem_.actions()) {
+            auto it = all_info.find(a.id());
+            if (rollable(a, it == all_info.end() ? nullptr : &it->second, t)) roll_set_.insert(a.id());
+        }
+        Stats::instance().set("roll.rollable_actions", static_cast<double>(roll_set_.size()));
+    }
+    for (auto& [vid, info] : all_info) {
+        if (roll_set_.contains(vid)) {
+            for (RobustConj& rc : info.conj) {
+                if (std::find(rc.writers.begin(), rc.writers.end(), vid) == rc.writers.end()) continue;
+                const z3::expr sh = robust_shift(vid, rc, t);
+                if (sh.is_numeral() && (sh < 0).simplify().is_true()) {
+                    rc.harmless = false;
+                    info.self_decrease = true;
+                }
+            }
+        }
         bool candidate = false;
         for (const RobustConj& rc : info.conj) candidate = candidate || !rc.harmless;
-        if (candidate) robust_info_.emplace(v.id(), std::move(info));
+        if (candidate) robust_info_.emplace(vid, std::move(info));
     }
     Stats::instance().set("robust.candidates", static_cast<double>(robust_info_.size()));
 }
@@ -476,7 +517,30 @@ z3::expr ChainedGroundedEncoder::robust_weight(int u, const RobustConj& c, int t
     return z3::ite(sh < 0, sh, zero);
 }
 
+bool ChainedGroundedEncoder::rollable(const Action& a, const RobustInfo* info, int t) {
+    if (a.effects().empty()) return false;
+    for (const Effect& eff : a.effects()) {
+        if (eff.is_conditional()) return false;
+        const auto& ee = eff.effect_expression();
+        const ExprID f = ee.fluent_id();
+        // Every condition of a that mentions a variable a writes is a threshold
+        // condition: other_fluents holds the variables of a's literals and of
+        // its other conjuncts.
+        if (info && info->other_fluents.contains(f)) return false;
+        const z3::expr val = convert_expr_id_to_z3(ee.value_id(), t).simplify();
+        if (problem_.is_bool_type(f)) {
+            if (!val.is_true() && !val.is_false()) return false;
+            continue;
+        }
+        if (ee.kind() == EffectExpression::Kind::ASSIGN || !val.is_numeral()) return false;
+        if (!summed_link_exact(f)) return false;  // the runs add up through the summed link of f
+    }
+    return true;
+}
+
 z3::expr ChainedGroundedEncoder::robust_term(int u, const z3::expr& w, const z3::expr& zero, int t) {
+    auto rn = roll_n_.find({u, t});
+    if (rn != roll_n_.end()) return (w.is_real() ? z3::to_real(rn->second) : rn->second) * w;
     return z3::ite(variable_factory_.get_action_variable(problem_.action(u), t), w, zero);
 }
 
@@ -528,6 +592,8 @@ void ChainedGroundedEncoder::encode_robust_rows(int t, z3::expr_vector& constrai
         }
         if (rows.empty()) continue;
         constraints.push_back(z3::implies(r && variable_factory_.get_action_variable(v, t), z3::mk_and(rows)));
+        // A rolled v that lowers its own threshold condition counts itself n_v - 1 times in its row.
+        if (info.self_decrease) constraints.push_back(z3::implies(roll_n_.at({vid, t}) >= 2, r));
     }
 }
 
@@ -551,7 +617,7 @@ bool ChainedGroundedEncoder::robust_removable(int u, int v) const {
 
 std::vector<const Action*> ChainedGroundedEncoder::order_step(const z3::model& model, int t,
                                                              const std::vector<const Action*>& actions) const {
-    if (!robust_actions_ || actions.size() <= 1) return GroundedEncoder::order_step(model, t, actions);
+    if (!robust_actions_) return GroundedEncoder::order_step(model, t, actions);
     const InterferenceOracle* oracle = get_parallelism_strategy()->get_interference_analyzer();
     std::unordered_set<int> robust;
     for (const Action* a : actions) {
@@ -582,7 +648,17 @@ std::vector<const Action*> ChainedGroundedEncoder::order_step(const z3::model& m
         for (size_t k : after[pick]) --before[k];
     }
     Stats::instance().add("robust.robust_in_plan", static_cast<double>(robust.size()));
-    return out;
+    if (roll_n_.empty()) return out;
+    std::vector<const Action*> runs;
+    for (const Action* a : out) {
+        int64_t n = 1;
+        if (auto rn = roll_n_.find({a->id(), t}); rn != roll_n_.end()) {
+            const z3::expr value = model.eval(rn->second, true);
+            if (value.is_numeral()) n = std::max<int64_t>(1, value.get_numeral_int64());
+        }
+        runs.insert(runs.end(), n, a);
+    }
+    return runs;
 }
 
 std::optional<z3::expr> ChainedGroundedEncoder::encode_non_cumulative_effects(

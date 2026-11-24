@@ -141,6 +141,10 @@ def add_planner_arguments(parser):
                        help="elsc: an action whose linear threshold conditions hold whatever the other "
                             "actions of its step decrease may share the step with the actions that "
                             "decrease them (robust exists-steps)")
+    parser.add_argument("--rolling", action="store_true",
+                       help="elsc, with --summed-links and --robust-actions: an action whose effects "
+                            "are constant increases, decreases and Boolean assignments may run several "
+                            "times in one step")
 
     # Logging
     parser.add_argument("--log-file", type=str,
@@ -198,6 +202,8 @@ def _build_planner_params(args) -> Dict[str, object]:
         planner_params['summed_links'] = True
     if args.robust_actions:
         planner_params['robust_actions'] = True
+    if args.rolling:
+        planner_params['rolling'] = True
     if args.horizon_schedule is not None:
         planner_params['horizon_schedule'] = args.horizon_schedule
     if args.log_file:

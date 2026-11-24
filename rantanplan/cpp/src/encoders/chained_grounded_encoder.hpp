@@ -65,6 +65,18 @@ public:
     std::vector<const Action*> order_step(const z3::model& model, int t,
                                           const std::vector<const Action*>& actions) const override;
 
+    /// --rolling. An action whose effects are unconditional increases and
+    /// decreases by constants of numeric fluents with exact summed links, and
+    /// constant Boolean assignments to fluents its precondition does not
+    /// mention, runs n_a^t >= 0 times in step t (a^t <-> n_a^t >= 1): the
+    /// summed links add n_a d_a, the rows count n_u for every other writer and
+    /// n_v - 1 for v itself, and n_v >= 2 needs r_v when v's own run lowers one
+    /// of its threshold conditions. Whether some action rolls.
+    bool rolling_applies() {
+        if (robust_actions_ && !robust_built_) build_robust(0);
+        return rolling_ && !roll_set_.empty();
+    }
+
 private:
     struct RobustConj {
         size_t index = 0;                                 ///< among the precondition's top-level conjuncts
@@ -77,7 +89,12 @@ private:
     struct RobustInfo {
         std::vector<RobustConj> conj;
         std::unordered_set<ExprID> other_fluents;         ///< fluents of the other conjuncts and literals
+        bool self_decrease = false;                       ///< rolled: its own run lowers a threshold condition
     };
+    const bool rolling_;
+    std::unordered_set<int> roll_set_;
+    std::map<std::pair<int, int>, z3::expr> roll_n_;
+    bool rollable(const Action& a, const RobustInfo* info, int t);
     const bool robust_actions_;
     bool robust_built_ = false;
     std::unordered_map<int, RobustInfo> robust_info_;
@@ -91,7 +108,7 @@ private:
     /// c.d_u for the condition, at step t (before the minimum with 0).
     z3::expr robust_shift(int u, const RobustConj& c, int t);
     z3::expr robust_weight(int u, const RobustConj& c, int t);
-    /// ite(u^t, w, 0).
+    /// ite(u^t, w, 0), or n_u^t * w for a rolled action u.
     z3::expr robust_term(int u, const z3::expr& w, const z3::expr& zero, int t);
 
     /// Whether this fluent's successor is built by the chain rather than by
@@ -151,6 +168,7 @@ private:
     /// when no action writes x twice and no write of x reads x; otherwise
     /// x keeps its chain and this returns false.
     bool encode_summed_link(ExprID var_eid, int t, z3::expr_vector& constraints);
+    bool summed_link_exact(ExprID var_eid) const;
     const bool summed_links_;
     
     /**
