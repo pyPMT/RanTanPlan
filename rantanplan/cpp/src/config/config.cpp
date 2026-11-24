@@ -17,6 +17,7 @@ void Config::initialize(int argc, char* argv[]) {
     global = Global{};
     rpg = RPG{};
     planner = Planner{};
+    exists = Exists{};
     symmetry = Symmetry{};
     formula_export = FormulaExport{};
     logging = Logging{};

@@ -128,6 +128,9 @@ def add_planner_arguments(parser):
                        help="Use Z3 SMT solver for RPG applicability checks instead of interval arithmetic (default: interval)")
     parser.add_argument("--no-goal-relevance", action="store_true",
                        help="Disable semantic goal-relevance analysis (enabled by default)")
+    parser.add_argument("--full-cycle-search", action="store_true",
+                       help="Exists-step propagator: search for a cycle from every active action, "
+                            "not only from the one just fixed")
 
     # Logging
     parser.add_argument("--log-file", type=str,
@@ -177,6 +180,8 @@ def _build_planner_params(args) -> Dict[str, object]:
         planner_params['smt_rpg_checker'] = True
     if args.no_goal_relevance:
         planner_params['no_goal_relevance'] = True
+    if args.full_cycle_search:
+        planner_params['full_cycle_search'] = True
     if args.horizon_schedule is not None:
         planner_params['horizon_schedule'] = args.horizon_schedule
     if args.log_file:

@@ -63,6 +63,11 @@ public:
         std::string horizon_schedule = "linear";  ///< Schedule type: linear|arithmetic|geometric|doubling
     } planner;
 
+    /// Exists-step search (the ExistsCycle propagator module).
+    struct Exists {
+        bool full_cycle_search = false;  ///< --full-cycle-search: search for a cycle from every active action, not only from the one just fixed
+    } exists;
+
     struct Symmetry {
         bool enable_symmetries = false;  ///< Enable symmetry detection
     } symmetry;

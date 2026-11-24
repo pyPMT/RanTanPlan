@@ -44,6 +44,7 @@ class _RantanPlanBase(Engine):
         self._no_cnf_normalization = options.get('no_cnf_normalization', False)
         self._smt_rpg_checker = options.get('smt_rpg_checker', False)
         self._no_goal_relevance = options.get('no_goal_relevance', False)
+        self._full_cycle_search = options.get('full_cycle_search', False)
         self._horizon_schedule = options.get('horizon_schedule')
         self._log_file = options.get('log_file')
         self._up_grounding = options.get('up_grounding', False)
@@ -215,6 +216,8 @@ class _RantanPlanBase(Engine):
             command.append("--smt-rpg-checker")
         if self._no_goal_relevance:
             command.append("--no-goal-relevance")
+        if self._full_cycle_search:
+            command.append("--full-cycle-search")
         if self._no_cnf_normalization:
             command.append("--no-cnf-normalization")
         if self._horizon_schedule is not None:

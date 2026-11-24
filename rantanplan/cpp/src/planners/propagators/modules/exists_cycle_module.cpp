@@ -1,4 +1,5 @@
 #include "exists_cycle_module.hpp"
+#include "../../../config/config.hpp"
 #include "../../../util/stats.hpp"
 #include <algorithm>
 #include <functional>
@@ -18,24 +19,39 @@ void ExistsCycleModule::perform_exists_propagation(const Action& action,
                                                    const z3::expr& action_var) {
     shared_->build_footprint_index();
     const auto& active = shared_->active_actions_per_timestep[timestep];
+    const int start = Config::instance().exists.full_cycle_search ? -1 : action.id();
 
     std::vector<int> cycle;
-    if (find_cycle_in_active_actions(active, cycle)) {
-        cycle_count_++;
+    if (find_cycle_in_active_actions(active, cycle, start)) report_cycle(cycle, timestep);
+}
 
-        z3::expr_vector conflict_actions(host_->z3_ctx());
-        for (int nid : cycle) {
-            z3::expr var = shared_->variable_factory->get_action_variable(
-                shared_->problem->action(nid), timestep);
-            conflict_actions.push_back(var);
+void ExistsCycleModule::on_final() {
+    if (Config::instance().exists.full_cycle_search) return;
+    shared_->build_footprint_index();
+    for (const auto& [timestep, active] : shared_->active_actions_per_timestep) {
+        std::vector<int> cycle;
+        if (find_cycle_in_active_actions(active, cycle)) {
+            report_cycle(cycle, timestep);
+            return;
         }
-        host_->module_conflict(conflict_actions);
     }
+}
+
+void ExistsCycleModule::report_cycle(const std::vector<int>& cycle, int timestep) {
+    cycle_count_++;
+
+    z3::expr_vector conflict_actions(host_->z3_ctx());
+    for (int nid : cycle) {
+        z3::expr var = shared_->variable_factory->get_action_variable(
+            shared_->problem->action(nid), timestep);
+        conflict_actions.push_back(var);
+    }
+    host_->module_conflict(conflict_actions);
 }
 
 bool ExistsCycleModule::find_cycle_in_active_actions(
         const std::unordered_set<int>& active_node_ids,
-        std::vector<int>& cycle) {
+        std::vector<int>& cycle, int start) {
     if (active_node_ids.size() < 2) return false;
 
     std::unordered_set<int> visited;
@@ -69,6 +85,7 @@ bool ExistsCycleModule::find_cycle_in_active_actions(
         return false;
     };
 
+    if (start >= 0) return dfs(start);
     for (int start_node : active_node_ids) {
         if (!visited.count(start_node)) {
             if (dfs(start_node)) return true;

@@ -134,6 +134,10 @@ void CLIParser::parse(Config& config, int argc, char* argv[]) {
         else if (arg == "--symmetries") {
             config.symmetry.enable_symmetries = true;
         }
+        // Exists-step options
+        else if (arg == "--full-cycle-search") {
+            config.exists.full_cycle_search = true;
+        }
         // Logging options
         else if (arg == "--log-file") {
             if (i + 1 < argc) {
