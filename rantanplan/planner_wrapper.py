@@ -47,6 +47,7 @@ class _RantanPlanBase(Engine):
         self._full_cycle_search = options.get('full_cycle_search', False)
         self._plain_chains = options.get('plain_chains', False)
         self._summed_links = options.get('summed_links', False)
+        self._robust_actions = options.get('robust_actions', False)
         self._horizon_schedule = options.get('horizon_schedule')
         self._log_file = options.get('log_file')
         self._up_grounding = options.get('up_grounding', False)
@@ -101,7 +102,8 @@ class _RantanPlanBase(Engine):
 
         # The options of elsc's exists-step encoding are checked there only:
         # its plain incremental search, by plan length.
-        elsc_options = [name for name in ("plain_chains", "summed_links") if getattr(self, "_" + name)]
+        elsc_options = [name for name in ("plain_chains", "summed_links", "robust_actions")
+                        if getattr(self, "_" + name)]
         if elsc_options and (self._strategy != "elsc" or self._mode not in (None, "satisficing")):
             raise UPUsageError(
                 f"{', '.join(elsc_options)}: only with the strategy 'elsc' in satisficing "
@@ -232,6 +234,8 @@ class _RantanPlanBase(Engine):
             command.append("--plain-chains")
         if self._summed_links:
             command.append("--summed-links")
+        if self._robust_actions:
+            command.append("--robust-actions")
         if self._no_cnf_normalization:
             command.append("--no-cnf-normalization")
         if self._horizon_schedule is not None:

@@ -1,16 +1,19 @@
 #include "chained_grounded_encoder.hpp"
+#include "../analysis/semantic_interference_analysis.hpp"
 #include "../config/config.hpp"
 #include "../problem/visitors/fluent_collector.hpp"
 #include "../util/stats.hpp"
 #include <iostream>
 #include <algorithm>
 #include <cassert>
+#include <set>
 
 namespace rantanplan {
 
 ChainedGroundedEncoder::ChainedGroundedEncoder(const Problem& problem, z3::context& ctx,
                                                std::unique_ptr<ParallelismStrategy> parallelism)
     : GroundedEncoder(problem, ctx, std::move(parallelism)),
+      robust_actions_(Config::instance().exists.robust_actions),
       summed_links_(Config::instance().exists.summed_links) {
     build_variable_modifiers_index();
 }
@@ -110,6 +113,8 @@ z3::expr ChainedGroundedEncoder::encode_actions(int t) {
 
     // Add chained effect constraints for multi-modified non-Boolean variables
     all_constraints.push_back(encode_chained_effects(t));
+
+    if (robust_actions_) encode_robust_rows(t, all_constraints);
 
     stats.add("encoder.action_constraints", all_constraints.size());
 
@@ -276,6 +281,308 @@ z3::expr ChainedGroundedEncoder::apply_effect_to_expression(
 
     // Fallback - should never reach here
     return base_expr;
+}
+
+// ---------------------------------------------------------------------------
+// Robust actions (--robust-actions)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+void flatten_and(const z3::expr& e, std::vector<z3::expr>& out) {
+    if (e.is_app() && e.decl().decl_kind() == Z3_OP_AND) {
+        for (unsigned i = 0; i < e.num_args(); ++i) flatten_and(e.arg(i), out);
+    } else {
+        out.push_back(e);
+    }
+}
+
+bool has_const(const z3::expr& e) {
+    if (e.is_numeral()) return false;
+    if (e.is_const()) return true;
+    if (!e.is_app()) return true;
+    for (unsigned i = 0; i < e.num_args(); ++i)
+        if (has_const(e.arg(i))) return true;
+    return false;
+}
+
+/// Linear arithmetic in uninterpreted constants: sums, numeral multiples, numeral divisors.
+bool is_linear(const z3::expr& e) {
+    if (e.is_numeral()) return true;
+    if (!e.is_app() || !e.is_arith()) return false;
+    if (e.is_const()) return e.decl().decl_kind() == Z3_OP_UNINTERPRETED;
+    switch (e.decl().decl_kind()) {
+        case Z3_OP_ADD: case Z3_OP_SUB: case Z3_OP_UMINUS: case Z3_OP_TO_REAL:
+            for (unsigned i = 0; i < e.num_args(); ++i)
+                if (!is_linear(e.arg(i))) return false;
+            return true;
+        case Z3_OP_MUL: {
+            int with_const = 0;
+            for (unsigned i = 0; i < e.num_args(); ++i) {
+                if (!is_linear(e.arg(i))) return false;
+                if (has_const(e.arg(i))) ++with_const;
+            }
+            return with_const <= 1;
+        }
+        case Z3_OP_DIV:
+            return e.num_args() == 2 && is_linear(e.arg(0)) && e.arg(1).is_numeral();
+        default:
+            return false;
+    }
+}
+
+void collect_consts(const z3::expr& e, std::vector<z3::expr>& out, std::set<unsigned>& seen) {
+    if (e.is_numeral() || !e.is_app()) return;
+    if (e.is_const()) {
+        if (e.decl().decl_kind() == Z3_OP_UNINTERPRETED && seen.insert(e.id()).second) out.push_back(e);
+        return;
+    }
+    for (unsigned i = 0; i < e.num_args(); ++i) collect_consts(e.arg(i), out, seen);
+}
+
+/// An arithmetic comparison as e >= 0 (strict: e > 0); false for anything else.
+bool normalize_atom(const z3::expr& atom, z3::expr& e, bool& strict) {
+    z3::expr a = atom;
+    bool neg = false;
+    if (a.is_app() && a.decl().decl_kind() == Z3_OP_NOT) {
+        neg = true;
+        a = a.arg(0);
+    }
+    if (!a.is_app() || a.num_args() != 2 || !a.arg(0).is_arith() || !a.arg(1).is_arith()) return false;
+    const z3::expr l = a.arg(0), r = a.arg(1);
+    switch (a.decl().decl_kind()) {
+        case Z3_OP_GE: e = neg ? r - l : l - r; strict = neg; return true;   // not(l >= r): r - l > 0
+        case Z3_OP_GT: e = neg ? r - l : l - r; strict = !neg; return true;  // not(l > r): r - l >= 0
+        case Z3_OP_LE: e = neg ? l - r : r - l; strict = neg; return true;
+        case Z3_OP_LT: e = neg ? l - r : r - l; strict = !neg; return true;
+        default: return false;
+    }
+}
+
+bool is_zero(const z3::expr& e) { return e.is_numeral() && (e == 0).simplify().is_true(); }
+
+z3::expr same_sort(const z3::expr& w, const z3::expr& like) {
+    if (like.is_real() && w.is_int()) return z3::to_real(w);
+    return w;
+}
+
+}  // namespace
+
+void ChainedGroundedEncoder::build_robust(int t) {
+    robust_built_ = true;
+    std::unordered_map<unsigned, ExprID> num_at, bool_at;
+    for (const auto& [f, writes] : variable_modifiers_) {
+        if (writes.empty()) continue;
+        const z3::expr x = convert_expr_id_to_z3(f, t);
+        (problem_.is_bool_type(f) ? bool_at : num_at)[x.id()] = f;
+    }
+    // The variables of a threshold condition are written only by unconditional
+    // increases and decreases whose terms do not read the variable they change,
+    // so their changes add up in any order.
+    auto additive = [&](ExprID f) {
+        for (const auto& [a, eff] : variable_modifiers_.at(f))
+            if (eff->is_conditional() || eff->effect_expression().kind() == EffectExpression::Kind::ASSIGN ||
+                self_reading_effects_.count(&eff->effect_expression()))
+                return false;
+        return true;
+    };
+    for (const Action& v : problem_.actions()) {
+        if (!v.has_precondition() || v.effects().empty()) continue;
+        RobustInfo info;
+        std::vector<z3::expr> conj;
+        flatten_and(convert_expr_id_to_z3(v.precondition_id(), t), conj);
+        for (size_t j = 0; j < conj.size(); ++j) {
+            const z3::expr& a = conj[j];
+            if (a.is_bool() && a.is_const() && bool_at.contains(a.id())) {
+                info.other_fluents.insert(bool_at.at(a.id()));
+                continue;
+            }
+            if (a.is_app() && a.decl().decl_kind() == Z3_OP_NOT && a.arg(0).is_const() &&
+                bool_at.contains(a.arg(0).id())) {
+                info.other_fluents.insert(bool_at.at(a.arg(0).id()));
+                continue;
+            }
+            std::vector<z3::expr> vars;
+            std::set<unsigned> seen;
+            collect_consts(a, vars, seen);
+            z3::expr e(ctx_);
+            RobustConj rc;
+            rc.index = j;
+            bool ok = normalize_atom(a, e, rc.strict) && is_linear(e);
+            if (ok) {
+                for (const z3::expr& x : vars) {
+                    auto it = num_at.find(x.id());
+                    if (it == num_at.end()) continue;  // not written: constant within the step
+                    z3::expr_vector from(ctx_), to(ctx_);
+                    from.push_back(x);
+                    to.push_back(x + 1);
+                    z3::expr shifted = e;
+                    z3::expr c = (shifted.substitute(from, to) - e).simplify();
+                    if (is_zero(c)) continue;
+                    if (!c.is_numeral() || !additive(it->second)) {
+                        ok = false;
+                        break;
+                    }
+                    rc.coef.emplace_back(it->second, c);
+                }
+            }
+            if (!ok || rc.coef.empty()) {
+                for (const z3::expr& x : vars) {
+                    if (auto it = num_at.find(x.id()); it != num_at.end()) info.other_fluents.insert(it->second);
+                    if (auto it = bool_at.find(x.id()); it != bool_at.end()) info.other_fluents.insert(it->second);
+                }
+                continue;
+            }
+            std::set<int> writers;
+            for (const auto& [f, c] : rc.coef) {
+                rc.key += std::to_string(f.id) + ":" + c.to_string() + ";";
+                for (const auto& [a2, eff] : variable_modifiers_.at(f)) writers.insert(a2->id());
+            }
+            rc.writers.assign(writers.begin(), writers.end());
+            for (int u : rc.writers) {
+                if (u == v.id()) continue;
+                const z3::expr sh = robust_shift(u, rc, t);
+                if (!(sh.is_numeral() && (sh >= 0).simplify().is_true())) rc.harmless = false;
+            }
+            info.conj.push_back(std::move(rc));
+        }
+        bool candidate = false;
+        for (const RobustConj& rc : info.conj) candidate = candidate || !rc.harmless;
+        if (candidate) robust_info_.emplace(v.id(), std::move(info));
+    }
+    Stats::instance().set("robust.candidates", static_cast<double>(robust_info_.size()));
+}
+
+z3::expr ChainedGroundedEncoder::robust_shift(int u, const RobustConj& c, int t) {
+    z3::expr sum = ctx_.int_val(0);
+    bool any = false;
+    for (const Effect& eff : problem_.action(u).effects()) {
+        const auto& ee = eff.effect_expression();
+        for (const auto& [f, coef] : c.coef) {
+            if (ee.fluent_id() != f) continue;
+            z3::expr d = convert_expr_id_to_z3(ee.value_id(), t);
+            if (ee.kind() == EffectExpression::Kind::DECREASE) d = -d;
+            sum = any ? sum + coef * d : coef * d;
+            any = true;
+        }
+    }
+    return sum.simplify();
+}
+
+z3::expr ChainedGroundedEncoder::robust_weight(int u, const RobustConj& c, int t) {
+    const z3::expr sh = robust_shift(u, c, t);
+    const z3::expr zero = sh.is_real() ? ctx_.real_val(0) : ctx_.int_val(0);
+    if (sh.is_numeral()) return (sh < 0).simplify().is_true() ? sh : zero;
+    return z3::ite(sh < 0, sh, zero);
+}
+
+z3::expr ChainedGroundedEncoder::robust_term(int u, const z3::expr& w, const z3::expr& zero, int t) {
+    return z3::ite(variable_factory_.get_action_variable(problem_.action(u), t), w, zero);
+}
+
+const z3::expr* ChainedGroundedEncoder::robust_var(int action, int t) const {
+    auto it = robust_r_.find({action, t});
+    return it == robust_r_.end() ? nullptr : &it->second;
+}
+
+const std::vector<z3::expr>& ChainedGroundedEncoder::robust_vars_at(int t) const {
+    static const std::vector<z3::expr> none;
+    auto it = robust_by_t_.find(t);
+    return it == robust_by_t_.end() ? none : it->second;
+}
+
+void ChainedGroundedEncoder::encode_robust_rows(int t, z3::expr_vector& constraints) {
+    if (!robust_built_) build_robust(t);
+    for (const auto& [vid, info] : robust_info_) {
+        const Action& v = problem_.action(vid);
+        const z3::expr r = variable_factory_.create_bool_variable(
+            "robust_" + std::to_string(vid) + "_t" + std::to_string(t));
+        robust_r_.emplace(std::make_pair(vid, t), r);
+        robust_by_t_[t].push_back(r);
+        robust_ids_[r.id()] = {vid, t};
+        std::vector<z3::expr> conj;
+        flatten_and(convert_expr_id_to_z3(v.precondition_id(), t), conj);
+        z3::expr_vector rows(ctx_);
+        for (const RobustConj& rc : info.conj) {
+            if (rc.harmless) continue;
+            z3::expr e(ctx_);
+            bool strict = false;
+            normalize_atom(conj[rc.index], e, strict);
+            const z3::expr zero = e.is_real() ? ctx_.real_val(0) : ctx_.int_val(0);
+            // The sum over every writer, shared by the actions with the same condition.
+            auto key = std::make_pair(rc.key, t);
+            auto it = robust_sum_.find(key);
+            if (it == robust_sum_.end()) {
+                z3::expr_vector terms(ctx_);
+                for (int u : rc.writers) {
+                    const z3::expr w = same_sort(robust_weight(u, rc, t), e);
+                    if (is_zero(w)) continue;
+                    terms.push_back(robust_term(u, w, zero, t));
+                }
+                it = robust_sum_.emplace(key, terms.empty() ? zero : z3::sum(terms)).first;
+            }
+            z3::expr lhs = e + it->second;
+            if (std::find(rc.writers.begin(), rc.writers.end(), vid) != rc.writers.end())
+                lhs = lhs - same_sort(robust_weight(vid, rc, t), e);  // v's own term: v runs once
+            rows.push_back(strict ? lhs > zero : lhs >= zero);
+        }
+        if (rows.empty()) continue;
+        constraints.push_back(z3::implies(r && variable_factory_.get_action_variable(v, t), z3::mk_and(rows)));
+    }
+}
+
+bool ChainedGroundedEncoder::robust_removable(int u, int v) const {
+    if (auto it = robust_removable_.find({u, v}); it != robust_removable_.end()) return it->second;
+    bool ok = false;
+    auto info = robust_info_.find(v);
+    const auto* oracle = dynamic_cast<const SemanticInterferenceAnalysis*>(
+        get_parallelism_strategy()->get_interference_analyzer());
+    if (info != robust_info_.end() && oracle && oracle->has_interference(u, v) &&
+        oracle->get_interference_source(u, v) == InterferenceSource::CHECK1 && oracle->effects_commute(u, v)) {
+        ok = true;
+        for (const Effect& eff : problem_.action(u).effects())
+            if (info->second.other_fluents.contains(eff.effect_expression().fluent_id())) {
+                ok = false;
+                break;
+            }
+    }
+    return robust_removable_[{u, v}] = ok;
+}
+
+std::vector<const Action*> ChainedGroundedEncoder::order_step(const z3::model& model, int t,
+                                                             const std::vector<const Action*>& actions) const {
+    if (!robust_actions_ || actions.size() <= 1) return GroundedEncoder::order_step(model, t, actions);
+    const InterferenceOracle* oracle = get_parallelism_strategy()->get_interference_analyzer();
+    std::unordered_set<int> robust;
+    for (const Action* a : actions) {
+        const z3::expr* r = robust_var(a->id(), t);
+        if (r && model.eval(*r, true).is_true()) robust.insert(a->id());
+    }
+    // Kahn's algorithm in the given order; an edge u -> v (u may disable v) runs v first.
+    const size_t n = actions.size();
+    std::vector<std::vector<size_t>> after(n);
+    std::vector<int> before(n, 0);
+    for (size_t i = 0; i < n; ++i)
+        for (size_t j = 0; j < n; ++j) {
+            const int u = actions[i]->id(), v = actions[j]->id();
+            if (i == j || !oracle->has_interference(u, v)) continue;
+            if (robust.contains(v) && robust_removable(u, v)) continue;
+            after[j].push_back(i);
+            ++before[i];
+        }
+    std::vector<const Action*> out;
+    std::vector<char> done(n, 0);
+    for (size_t round = 0; round < n; ++round) {
+        size_t pick = n;
+        for (size_t i = 0; i < n && pick == n; ++i)
+            if (!done[i] && before[i] == 0) pick = i;
+        if (pick == n) return GroundedEncoder::order_step(model, t, actions);  // a cycle: not an exists-step
+        done[pick] = 1;
+        out.push_back(actions[pick]);
+        for (size_t k : after[pick]) --before[k];
+    }
+    Stats::instance().add("robust.robust_in_plan", static_cast<double>(robust.size()));
+    return out;
 }
 
 std::optional<z3::expr> ChainedGroundedEncoder::encode_non_cumulative_effects(

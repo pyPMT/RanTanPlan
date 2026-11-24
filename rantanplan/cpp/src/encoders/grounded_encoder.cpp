@@ -558,7 +558,7 @@ Plan GroundedEncoder::extract_plan(const z3::model& model, int max_timestep) con
             std::vector<const Action*> parallel_actions = extract_parallel_actions_at_timestep(model, t);
             
             if (!parallel_actions.empty()) {
-                std::vector<const Action*> ordered_actions = topologically_sort_actions(parallel_actions);
+                std::vector<const Action*> ordered_actions = order_step(model, t, parallel_actions);
                 for (const Action* action : ordered_actions) {
                     plan.add_action(action);
                 }

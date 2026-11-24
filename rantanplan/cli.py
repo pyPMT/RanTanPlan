@@ -137,6 +137,10 @@ def add_planner_arguments(parser):
     parser.add_argument("--summed-links", action="store_true",
                        help="elsc: the next value of a numeric fluent as its value plus the sum of "
                             "the step's increases, instead of a chain through its writers")
+    parser.add_argument("--robust-actions", action="store_true",
+                       help="elsc: an action whose linear threshold conditions hold whatever the other "
+                            "actions of its step decrease may share the step with the actions that "
+                            "decrease them (robust exists-steps)")
 
     # Logging
     parser.add_argument("--log-file", type=str,
@@ -192,6 +196,8 @@ def _build_planner_params(args) -> Dict[str, object]:
         planner_params['plain_chains'] = True
     if args.summed_links:
         planner_params['summed_links'] = True
+    if args.robust_actions:
+        planner_params['robust_actions'] = True
     if args.horizon_schedule is not None:
         planner_params['horizon_schedule'] = args.horizon_schedule
     if args.log_file:

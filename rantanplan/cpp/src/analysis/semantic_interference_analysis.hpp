@@ -30,8 +30,12 @@ public:
     /// Source of interference for a previously-queried pair (NONE if not queried).
     InterferenceSource get_interference_source(int source_id, int target_id) const;
 
+    /// The effects of the two actions commute (SemanticInterferencePredicate::effects_commute), cached.
+    bool effects_commute(int u, int v) const;
+
 private:
     std::unique_ptr<SemanticInterferencePredicate> predicate_;
+    mutable std::unordered_map<std::pair<int, int>, bool, PairHash> commute_cache_;
 
     // Cache of the directional result-with-source, keyed by (a1.id(), a2.id()).
     mutable std::unordered_map<std::pair<int, int>, InterferenceSource, PairHash> source_cache_;

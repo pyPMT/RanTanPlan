@@ -1,4 +1,5 @@
 #include "semantic_interference_analysis.hpp"
+#include <algorithm>
 
 namespace rantanplan {
 
@@ -10,6 +11,7 @@ void SemanticInterferenceAnalysis::initialize(const Problem& problem) {
     problem_ = &problem;
     action_analysis_.clear();
     source_cache_.clear();
+    commute_cache_.clear();
     analyze_all_actions();  // base-class per-action metadata
     predicate_ = std::make_unique<SemanticInterferencePredicate>(problem);
 }
@@ -34,6 +36,13 @@ InterferenceSource SemanticInterferenceAnalysis::get_interference_source(int sou
                                                                         int target_id) const {
     auto it = source_cache_.find({source_id, target_id});
     return it != source_cache_.end() ? it->second : InterferenceSource::NONE;
+}
+
+bool SemanticInterferenceAnalysis::effects_commute(int u, int v) const {
+    auto key = std::make_pair(std::min(u, v), std::max(u, v));
+    auto it = commute_cache_.find(key);
+    if (it != commute_cache_.end()) return it->second;
+    return commute_cache_[key] = predicate_->effects_commute(problem_->action(u), problem_->action(v));
 }
 
 std::vector<const Action*> SemanticInterferenceAnalysis::topological_sort_actions(

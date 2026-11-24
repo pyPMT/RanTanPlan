@@ -121,6 +121,11 @@ public:
 
     /// Extract true action variables at a timestep from a Z3 model.
     std::vector<const Action*> extract_parallel_actions_at_timestep(const z3::model& model, int timestep) const;
+    /// The execution order of the actions of step t in `model`.
+    virtual std::vector<const Action*> order_step(const z3::model& /*model*/, int /*t*/,
+                                                  const std::vector<const Action*>& actions) const {
+        return topologically_sort_actions(actions);
+    }
 
 protected:
 

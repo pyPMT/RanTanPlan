@@ -69,6 +69,7 @@ public:
         bool full_cycle_search = false;  ///< --full-cycle-search: search for a cycle from every active action, not only from the one just fixed
         bool plain_chains = false;       ///< --plain-chains: Rintanen's chains over the plain Boolean units, the propagator for the rest
         bool summed_links = false;       ///< --summed-links: one summed link per numeric fluent and step instead of its chain
+        bool robust_actions = false;     ///< --robust-actions: threshold rows that the solver may impose, instead of the edges they cover
     } exists;
 
     struct Symmetry {

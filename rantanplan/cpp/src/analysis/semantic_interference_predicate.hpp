@@ -78,6 +78,13 @@ public:
     /// interference). Computed fresh on each call; wrappers add their own caching.
     InterferenceSource affects_source(const Action& a1, const Action& a2) const;
 
+    /// Neither direction of the second condition holds: the effects of the two
+    /// actions commute, and executing one after the other gives their happening.
+    bool effects_commute(const Action& a1, const Action& a2) const {
+        return check2_source(a1, a2) == InterferenceSource::NONE &&
+               check2_source(a2, a1) == InterferenceSource::NONE;
+    }
+
 private:
     mutable std::unique_ptr<z3::context> z3_context_;
     mutable std::unique_ptr<z3::solver> z3_solver_;

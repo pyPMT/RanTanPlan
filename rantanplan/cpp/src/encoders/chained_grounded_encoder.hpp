@@ -2,8 +2,11 @@
 
 #include "grounded_encoder.hpp"
 
+#include <map>
+#include <string>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace rantanplan {
 
@@ -36,7 +39,61 @@ public:
         return is_chained(fluent);
     }
 
+    /// --robust-actions. A linear condition c.x >= c0 (or > c0) of an action's
+    /// precondition whose written variables are written only by unconditional
+    /// increases and decreases whose terms do not read the variable they change
+    /// is a threshold condition. An action v with one that another action can
+    /// lower is a candidate: it gets per step t a Boolean r_v^t and, up front,
+    ///     r_v^t AND v^t -> c.x^t + sum_{u != v} ite(u^t, min(0, c.d_u), 0) >= c0
+    /// per threshold condition, which then holds after the decreases of every
+    /// other writer active in the step, in any order. With r_v^t true the
+    /// ExistsCycle module leaves out the removable edges into v.
+    bool robust_on() const { return robust_actions_; }
+    /// r_v^t, or null when v is no candidate or step t is not encoded yet.
+    const z3::expr* robust_var(int action, int t) const;
+    const std::vector<z3::expr>& robust_vars_at(int t) const;
+    /// Z3 ast id of an r variable -> (action, step).
+    const std::unordered_map<unsigned, std::pair<int, int>>& robust_ids() const { return robust_ids_; }
+    /// The edge u -> v (u may disable v) is removable: v is a candidate, the
+    /// edge comes from the first condition of the semantic relation, the
+    /// effects of u and v commute, and u writes no variable of v's other
+    /// conditions, so u can disable v only through its threshold conditions,
+    /// whose rows count u. Cached.
+    bool robust_removable(int u, int v) const;
+    /// The order of the oracle without the removable edges into the step's
+    /// robust actions.
+    std::vector<const Action*> order_step(const z3::model& model, int t,
+                                          const std::vector<const Action*>& actions) const override;
+
 private:
+    struct RobustConj {
+        size_t index = 0;                                 ///< among the precondition's top-level conjuncts
+        bool strict = false;                              ///< e > 0 rather than e >= 0
+        std::vector<std::pair<ExprID, z3::expr>> coef;    ///< written fluents with their coefficient in e
+        std::vector<int> writers;                         ///< every action writing one of them
+        std::string key;                                  ///< the coefficients, for the shared sum
+        bool harmless = true;                             ///< no writer can lower e: no row needed
+    };
+    struct RobustInfo {
+        std::vector<RobustConj> conj;
+        std::unordered_set<ExprID> other_fluents;         ///< fluents of the other conjuncts and literals
+    };
+    const bool robust_actions_;
+    bool robust_built_ = false;
+    std::unordered_map<int, RobustInfo> robust_info_;
+    std::map<std::pair<int, int>, z3::expr> robust_r_;
+    std::unordered_map<int, std::vector<z3::expr>> robust_by_t_;
+    std::unordered_map<unsigned, std::pair<int, int>> robust_ids_;
+    std::map<std::pair<std::string, int>, z3::expr> robust_sum_;
+    mutable std::map<std::pair<int, int>, bool> robust_removable_;
+    void build_robust(int t);
+    void encode_robust_rows(int t, z3::expr_vector& constraints);
+    /// c.d_u for the condition, at step t (before the minimum with 0).
+    z3::expr robust_shift(int u, const RobustConj& c, int t);
+    z3::expr robust_weight(int u, const RobustConj& c, int t);
+    /// ite(u^t, w, 0).
+    z3::expr robust_term(int u, const z3::expr& w, const z3::expr& zero, int t);
+
     /// Whether this fluent's successor is built by the chain rather than by
     /// per-action effect implications.  THE definition, consulted by every site
     /// that has to agree on the split — the effect filters, the chain builder,

@@ -144,6 +144,9 @@ void CLIParser::parse(Config& config, int argc, char* argv[]) {
         else if (arg == "--summed-links") {
             config.exists.summed_links = true;
         }
+        else if (arg == "--robust-actions") {
+            config.exists.robust_actions = true;
+        }
         // Logging options
         else if (arg == "--log-file") {
             if (i + 1 < argc) {
