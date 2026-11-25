@@ -29,6 +29,9 @@ except ImportError:  # extension module not built yet
 # Shared base class
 # ═══════════════════════════════════════════════════════════════════════
 
+_MATERIALIZE_LIMIT = 10_000
+
+
 class _RantanPlanBase(Engine):
     """Shared logic for all RantanPlan UP engines."""
 
@@ -316,11 +319,18 @@ class _RantanPlanBase(Engine):
         (This enumerates via ``get_all_fluent_exp``, not ``problem.initial_values``:
         the latter returns only explicitly-set values -- UP does not default
         numeric fluents at all -- so it cannot supply the un-init instances that
-        are exactly the ones the validator leaves undefined.)"""
+        are exactly the ones the validator leaves undefined.)
+
+        A fluent with more than _MATERIALIZE_LIMIT instances is left as it is:
+        writing them all can take hours (pathwaysmetric has fluents with 6.3
+        million instances), and the validator then reports any instance the
+        plan reads without a value."""
         _em = get_environment().expression_manager
         for fluent in problem.fluents:
             tpe = fluent.type
             if not (tpe.is_int_type() or tpe.is_real_type()):
+                continue
+            if math.prod(len(list(problem.objects(p.type))) for p in fluent.signature) > _MATERIALIZE_LIMIT:
                 continue
             declared = problem.fluents_defaults.get(fluent)
             for fe in get_all_fluent_exp(problem, fluent):
